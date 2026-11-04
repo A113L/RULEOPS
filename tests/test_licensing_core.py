@@ -84,13 +84,6 @@ def test_license_summary_shape(isolated_licensing):
     assert set(summary["modules"]) == set(core.MODULES)
 
 
-def test_reset_demo_usage(isolated_licensing):
-    core.record_module_run("RULEST")
-    core.record_module_run("RULEST")
-    core.reset_demo_usage("RULEST")
-    assert core.get_module_usage_count("RULEST") == 0
-    assert core.module_mode("RULEST") == "DEMO"
-
 
 def test_normalize_module_aliases(isolated_licensing):
     assert core.normalize_module("rulest") == "RULEST"

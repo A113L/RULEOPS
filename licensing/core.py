@@ -367,13 +367,3 @@ def license_summary() -> Dict[str, Any]:
         "modules": modules,
         "fully_licensed": is_fully_licensed(),
     }
-
-
-def reset_demo_usage(module: Optional[str] = None) -> None:
-    """Admin-only helper: clear counters (e.g. after license install tests)."""
-    with usage_db_session() as conn:
-        if module:
-            module = normalize_module(module)
-            conn.execute("DELETE FROM demo_usage WHERE module = ?", (module,))
-        else:
-            conn.execute("DELETE FROM demo_usage")

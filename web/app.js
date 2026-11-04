@@ -33,6 +33,7 @@ const defaults = {
   bloom_no_shard: false, allow_reject_rules: false, no_builtin_seeds: false,
   token_strip: false, token_strip_min_stem: 4, token_strip_max_prefix: 4,
   token_strip_max_suffix: 4, token_strip_min_leet_amb: 3, token_strip_workers: 0, token_strip_chunk_size: 0,
+  token_strip_bloom_mb: 0,
   genetic: false, genetic_generations: 50, genetic_pop: 200, genetic_elite: 0.15,
   select_mode: 'frequency', select_budget: 0, select_budgets: '', select_cost_alpha: 0, exact_recovery: false,
   debug: false, profile: false,
@@ -573,6 +574,7 @@ async function startRun() {
     ['token_strip_min_leet_amb', 0, Infinity, 'Minimum leet ambiguity cannot be negative.'],
     ['token_strip_workers', 0, Infinity, 'Worker processes cannot be negative.'],
     ['token_strip_chunk_size', 0, Infinity, 'Chunk size cannot be negative.'],
+    ['token_strip_bloom_mb', -1, Infinity, 'Base Bloom size must be −1 (auto), 0 (exact set), or a positive MB value.'],
   ];
   if (Number(config.max_depth) < 1 || Number(config.max_depth) > 31) { toast('Maximum depth must be between 1 and 31.', true); return; }
   if (config.genetic && Number(config.max_depth) < 2) { toast('Genetic Algorithm requires Maximum depth ≥ 2. Increase Maximum depth or switch Genetic off.', true); return; }
@@ -1183,8 +1185,6 @@ function applyAdminVisibility(auth) {
   const userPanel = document.getElementById('license-user-panel');
   if (installPanel) installPanel.hidden = !isAdmin;
   if (userPanel) userPanel.hidden = !isAdmin;
-  const resetBtn = document.getElementById('reset-demo-button');
-  if (resetBtn) resetBtn.hidden = !isAdmin;
   if (auth && auth.license) applyLicenseToUI(auth.license);
 }
 
@@ -1294,7 +1294,6 @@ async function refreshLicense() {
 
 function wireLicenseAdmin() {
   const installBtn = document.getElementById('install-license-button');
-  const resetBtn = document.getElementById('reset-demo-button');
   const userBtn = document.getElementById('set-user-password-button');
   const feedback = document.getElementById('license-feedback');
 
@@ -1325,21 +1324,6 @@ function wireLicenseAdmin() {
       } catch (err) {
         showFeedback(String(err), true);
       }
-    });
-  }
-
-  if (resetBtn) {
-    resetBtn.addEventListener('click', async () => {
-      if (!confirm('Reset DEMO counters for all modules?')) return;
-      try {
-        const response = await fetch('/api/license/reset-demo', {
-          method: 'POST', headers: csrfHeaders(), body: '{}',
-        });
-        const data = await response.json();
-        if (!response.ok) { showFeedback(data.error || 'Reset failed', true); return; }
-        showFeedback(data.message || 'Counters reset.', false);
-        if (data.license) applyLicenseToUI(data.license);
-      } catch (err) { showFeedback(String(err), true); }
     });
   }
 

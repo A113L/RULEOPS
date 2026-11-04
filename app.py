@@ -37,7 +37,6 @@ from licensing.core import (
     license_summary,
     module_mode,
     record_module_run,
-    reset_demo_usage,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -132,6 +131,7 @@ VALUE_OPTIONS = {
     "token_strip_min_leet_amb": "--token-strip-min-leet-amb",
     "token_strip_workers": "--token-strip-workers",
     "token_strip_chunk_size": "--token-strip-chunk-size",
+    "token_strip_bloom_mb": "--token-strip-bloom-mb",
     "genetic_generations": "--genetic-generations", "genetic_pop": "--genetic-pop",
     "genetic_elite": "--genetic-elite", "select_mode": "--select-mode",
     "select_budget": "--select-budget", "select_budgets": "--select-budgets",
@@ -1620,8 +1620,6 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_auth_set_user_password()
         elif parsed.path == "/api/license/install":
             self.handle_license_install()
-        elif parsed.path == "/api/license/reset-demo":
-            self.handle_license_reset_demo()
         elif parsed.path.startswith("/api/upload/"):
             self.handle_upload(parsed, ranker=False)
         elif parsed.path.startswith("/api/ranker/upload/"):
@@ -1942,27 +1940,6 @@ class Handler(BaseHTTPRequestHandler):
             "message": "License installed. All modules restored to full capability.",
             "license": summary,
         })
-
-    def handle_license_reset_demo(self):
-        """Administrator resets per-module DEMO counters (support / testing)."""
-        if not require_admin(self, api=True):
-            return
-        data = self.read_json_body(16 * 1024) if int(self.headers.get("Content-Length") or 0) else {}
-        if self._body_read_failed:
-            return
-        module = None
-        if isinstance(data, dict):
-            module = data.get("module")
-        try:
-            reset_demo_usage(module)
-        except ValueError as exc:
-            self.send_json({"error": str(exc)}, 400)
-            return
-        except Exception as exc:
-            self.send_json({"error": f"Could not reset demo usage: {type(exc).__name__}"}, 500)
-            return
-        self.send_json({"ok": True, "license": license_summary(), "message": "DEMO counters reset."})
-
 
     def handle_clear_logs(self):
         try:

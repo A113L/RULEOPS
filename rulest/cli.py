@@ -64,6 +64,12 @@ def main():
     pt.add_argument('--token-strip-min-leet-amb', type=int, default=3)
     pt.add_argument('--token-strip-workers', type=int, default=0)
     pt.add_argument('--token-strip-chunk-size', type=int, default=0)
+    pt.add_argument('--token-strip-bloom-mb', type=int, default=0,
+                    help='Stage 0 base membership: 0 = exact set[str] (default), '
+                         '>0 = Bloom filter of this many MB, <0 = auto '
+                         '(exact for small bases, ~8 bits/item Bloom for large). '
+                         'False positives only cost CPU; every hit is still '
+                         'verified by the rule chain.')
     ga = ap.add_argument_group('Genetic Algorithm')
     ga.add_argument('-g', '--genetic', action='store_true')
     ga.add_argument('-G', '--genetic-generations', type=int, default=50)
@@ -166,7 +172,14 @@ def main():
 
     if args.token_strip:
         _inj = green('→ STAGE S sbd → STAGE 2') if not args.no_builtin_seeds else yellow('→ STAGE 1 only → STAGE 2')
-        log_info(f"  {bold(cyan('STAGE 0'))}  : {green('enabled')} — CPU exact-match (core+insert)  min-stem={args.token_strip_min_stem}  prefix={args.token_strip_max_prefix}  suffix={args.token_strip_max_suffix}  leet-amb={args.token_strip_min_leet_amb}  workers={safe_worker_count(args.token_strip_workers or mp.cpu_count())}  {_inj}  {_EXCL}")
+        bloom_desc = args.token_strip_bloom_mb
+        if bloom_desc == 0:
+            bloom_desc = 'exact'
+        elif bloom_desc < 0:
+            bloom_desc = 'auto'
+        else:
+            bloom_desc = f'{bloom_desc}MB'
+        log_info(f"  {bold(cyan('STAGE 0'))}  : {green('enabled')} — CPU exact-match (core+insert)  min-stem={args.token_strip_min_stem}  prefix={args.token_strip_max_prefix}  suffix={args.token_strip_max_suffix}  leet-amb={args.token_strip_min_leet_amb}  workers={safe_worker_count(args.token_strip_workers or mp.cpu_count())}  bloom={bloom_desc}  {_inj}  {_EXCL}")
     else:
         log_info(f"  {bold(dim('STAGE 0'))}  : {red('disabled')}")
 
@@ -215,6 +228,7 @@ def main():
         token_strip_min_leet_amb=args.token_strip_min_leet_amb,
         token_strip_workers=args.token_strip_workers,
         token_strip_chunk_size=args.token_strip_chunk_size,
+        token_strip_bloom_mb=args.token_strip_bloom_mb,
         rng_seed=args.seed,
     )
     depth_overrides = {f'depth{i}_override': getattr(args, f'depth{i}_chains') for i in range(2,11)}

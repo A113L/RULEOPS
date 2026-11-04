@@ -4,6 +4,10 @@ target word as a base-wordlist word plus a short, exact-match transform
 (case toggling, leet substitution, reversal, duplication, edge deletion,
 insertion, prefix/suffix boundary stripping) before any GPU work happens.
 Runs across a multiprocessing pool for throughput on large target lists.
+
+Membership structure for the base wordlist can be either a plain set[str]
+(exact, higher RAM) or a Bloom filter (compact, false-positive safe
+because every hit is still verified by py_apply_chain).
 """
 import os
 import time
@@ -23,6 +27,126 @@ from .common import (
     TOKEN_STRIP_LEET_CHARS, TOKEN_STRIP_BOUNDARY, TOKEN_STRIP_ALPHA_BOUNDARY,
     _kb,
 )
+from .hashing import fast_fnv1a_hash_64
+
+# ---------------------------------------------------------------------------
+# Compact Bloom filter for base-wordlist membership (Stage 0 only)
+# ---------------------------------------------------------------------------
+
+class BloomFilter:
+    """Simple multi-hash Bloom filter over strings.
+
+    False positives are acceptable: every positive membership test is still
+    verified by applying the candidate rule chain. False negatives are not
+    allowed, so we never delete bits after insert.
+    """
+    __slots__ = ('n_bits', 'n_hashes', 'bits', 'mask', 'count')
+
+    def __init__(self, n_bits: int, n_hashes: int = 5):
+        # Round up to next power of two for fast masking
+        if n_bits < 64:
+            n_bits = 64
+        p = 1
+        while p < n_bits:
+            p <<= 1
+        self.n_bits = p
+        self.mask = p - 1
+        self.n_hashes = max(1, min(n_hashes, 16))
+        self.bits = bytearray(self.n_bits // 8)
+        self.count = 0
+
+    @classmethod
+    def from_size_mb(cls, mb: float, n_hashes: int = 5):
+        n_bits = max(64, int(mb * 1024 * 1024 * 8))
+        return cls(n_bits, n_hashes=n_hashes)
+
+    @classmethod
+    def for_capacity(cls, n_items: int, bits_per_item: float = 8.0, n_hashes: int = 5):
+        """Create a Bloom sized for ~n_items at the given bits/item ratio."""
+        n_bits = max(64, int(n_items * bits_per_item))
+        return cls(n_bits, n_hashes=n_hashes)
+
+    def _hashes(self, key: str):
+        data = key.encode('utf-8', errors='ignore')
+        h1 = fast_fnv1a_hash_64(data)
+        # Second independent-ish mix (splitmix-style)
+        h2 = h1 ^ (h1 >> 30)
+        h2 = (h2 * 0xbf58476d1ce4e5b9) & ((1 << 64) - 1)
+        h2 ^= (h2 >> 27)
+        h2 = (h2 * 0x94d049bb133111eb) & ((1 << 64) - 1)
+        h2 ^= (h2 >> 31)
+        if h2 == 0:
+            h2 = 0x9e3779b97f4a7c15
+        for i in range(self.n_hashes):
+            yield (h1 + i * h2) & self.mask
+
+    def add(self, key: str) -> None:
+        for h in self._hashes(key):
+            self.bits[h >> 3] |= (1 << (h & 7))
+        self.count += 1
+
+    def __contains__(self, key: str) -> bool:
+        for h in self._hashes(key):
+            if not (self.bits[h >> 3] & (1 << (h & 7))):
+                return False
+        return True
+
+    def __len__(self):
+        return self.count
+
+    @property
+    def size_bytes(self) -> int:
+        return len(self.bits)
+
+    def estimated_fpr(self) -> float:
+        """Approximate false-positive rate for the inserted count."""
+        if self.count <= 0 or self.n_bits <= 0:
+            return 0.0
+        # (1 - e^(-k n / m))^k
+        kn_over_m = self.n_hashes * self.count / self.n_bits
+        try:
+            return (1.0 - (2.718281828459045 ** (-kn_over_m))) ** self.n_hashes
+        except OverflowError:
+            return 1.0
+
+
+def _build_membership(base_words, bloom_mb=0):
+    """Return (membership_obj, base_by_len_or_empty, mode_str).
+
+    bloom_mb:
+      0  -> exact set[str] (default, highest RAM, zero FP)
+     >0  -> Bloom filter of approximately that many megabytes
+     <0  -> auto: exact for small bases, Bloom (~8 bits/item) when large
+    """
+    n = len(base_words)
+    if bloom_mb == 0:
+        base_set = set(base_words)
+        base_by_len = defaultdict(set)
+        for w in base_set:
+            base_by_len[len(w)].add(w)
+        return base_set, dict(base_by_len), f"exact set ({n:,} words)"
+
+    if bloom_mb < 0:
+        # Auto threshold: ~500k strings at ~40-80 B each already hurts; switch earlier
+        if n < 400_000:
+            base_set = set(base_words)
+            base_by_len = defaultdict(set)
+            for w in base_set:
+                base_by_len[len(w)].add(w)
+            return base_set, dict(base_by_len), f"exact set (auto, {n:,} words)"
+        # ~8 bits/item → low single-digit % FP, still tiny vs set[str]
+        bf = BloomFilter.for_capacity(n, bits_per_item=8.0, n_hashes=5)
+        mode = f"Bloom auto (~8 bits/item, {bf.size_bytes/1024/1024:.1f} MB, est.FP≈{bf.estimated_fpr()*100:.2f}%)"
+    else:
+        bf = BloomFilter.from_size_mb(float(bloom_mb), n_hashes=5)
+        mode = f"Bloom {bloom_mb} MB ({bf.n_bits:,} bits, k={bf.n_hashes})"
+
+    for w in base_words:
+        if w:
+            bf.add(w)
+    # base_by_len unused by current insert path; keep empty to save RAM
+    return bf, {}, mode + f"  inserted={bf.count:,}  est.FP≈{bf.estimated_fpr()*100:.3f}%"
+
 
 def _hashcat_title_case(s):
     """Mirror hashcat's 'E' rule: capitalize the first letter of each space-separated word."""
@@ -242,17 +366,35 @@ def _generate_toggle_chain_seeds(max_depth):
 
 def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=4,
                               max_prefix_len=4, max_suffix_len=4, max_leet_ambiguity=3,
-                              workers=0, chunk_size=0):
+                              workers=0, chunk_size=0, bloom_mb=0):
+    """Extract Stage-0 rules.
+
+    base_set may be a set[str] or any membership object supporting ``in``.
+    When bloom_mb != 0 the caller should pass the raw base word iterable and
+    this function will build the Bloom / set itself; when bloom_mb == 0 the
+    provided base_set is used as-is (back-compat).
+    """
     if max_depth<=0: max_depth=MAX_HASHCAT_CHAIN
     n_workers = safe_worker_count(workers or mp.cpu_count())
     n_words = len(target_words)
     if chunk_size<=0: chunk_size = max(500, n_words//(n_workers*4)+1)
-    base_by_len = defaultdict(set)
-    for w in base_set: base_by_len[len(w)].add(w)
-    base_by_len = dict(base_by_len)
+
+    # Build or adopt membership structure
+    if bloom_mb != 0 or not isinstance(base_set, (set, frozenset)):
+        # When bloom requested, rebuild from whatever was passed (iterable or set)
+        words_iter = list(base_set) if not isinstance(base_set, (list, tuple)) else base_set
+        membership, base_by_len, mode_str = _build_membership(words_iter, bloom_mb=bloom_mb)
+        log_info(f"[S0]    Membership : {mode_str}")
+    else:
+        membership = base_set
+        base_by_len = defaultdict(set)
+        for w in membership:
+            base_by_len[len(w)].add(w)
+        base_by_len = dict(base_by_len)
+        log_info(f"[S0]    Membership : exact set ({len(membership):,} words)")
     # Large wordlists use the same multi-worker chunked path as smaller ones
     # (no forced single-worker / disk-buffer fallback).
-    worker_state.p0_worker_base_set = base_set
+    worker_state.p0_worker_base_set = membership
     worker_state.p0_worker_base_by_len = base_by_len
     chunks = [target_words[i:i+chunk_size] for i in range(0,n_words,chunk_size)]
     task_args = [(ch, max_depth, min_stem_len, max_leet_ambiguity, max_prefix_len, max_suffix_len) for ch in chunks]
@@ -260,8 +402,11 @@ def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=
     found = set()
     use_fork = hasattr(os,'fork')
     ctx = mp.get_context('fork' if use_fork else 'spawn')
-    if use_fork: pool_kw = dict(processes=n_workers, initializer=_worker_init_p0)
-    else: pool_kw = dict(processes=n_workers, initializer=_worker_init_p0, initargs=(base_set, base_by_len))
+    if use_fork:
+        pool_kw = dict(processes=n_workers, initializer=_worker_init_p0)
+    else:
+        pool_kw = dict(processes=n_workers, initializer=_worker_init_p0,
+                       initargs=(membership, base_by_len))
     ncols = shutil.get_terminal_size((80,24)).columns
     with ctx.Pool(**pool_kw) as pool:
         with tqdm(total=n_words, desc=green("  STAGE 0 "), unit="word", ncols=ncols,
@@ -279,8 +424,12 @@ def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=
                 spd = _fmt_speed(words_done / elapsed if elapsed>0 else 0, "words")
                 pbar.set_postfix({"rules": cyan(str(len(found))), "spd": green(spd)}, refresh=False)
                 pbar.update(len(task[0]))
-    worker_state.p0_worker_base_set.clear()
-    worker_state.p0_worker_base_by_len.clear()
+    # Clear references so large structures can be GC'd
+    try:
+        worker_state.p0_worker_base_set = set()
+        worker_state.p0_worker_base_by_len = {}
+    except Exception:
+        pass
     return sorted(found)
 
 def _log_token_strip_stats(n_words, rules, inject_sbd):

@@ -168,3 +168,7 @@ RULEOPS includes an offline Ed25519 license verifier.
 **With a signed PROFESSIONAL or ENTERPRISE `license.lic`:** all modules and CELF features are fully unlocked.
 
 Install the added dependency with `python3 -m pip install -r requirements.txt`.
+
+**Pricing**
+
+https://hcrt.pages.dev/offer

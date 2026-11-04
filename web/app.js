@@ -1205,7 +1205,7 @@ document.addEventListener('DOMContentLoaded', boot);
 
 
 
-/* ===== RULEOPS 2.4.7 licensing UI ===== */
+/* ===== RULEOPS 2.4.8 licensing UI ===== */
 let currentLicense = null;
 let currentRole = null;
 

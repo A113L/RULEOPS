@@ -2445,7 +2445,7 @@ def main():
     server = RulestHTTPServer((args.host, args.port), Handler)
     actual_port = server.server_address[1]
     print()
-    print("  RULEOPS v2.4.7  /  HASHCAT RULE TOOLCHAIN")
+    print("  RULEOPS v2.4.8  /  HASHCAT RULE TOOLCHAIN")
     print(f"  Listening on: {args.host}:{actual_port}")
     print(f"  Connection limit: {MAX_CONCURRENT_CONNECTIONS} concurrent clients")
     print(f"  Upload limits: {MAX_UPLOAD_BYTES / 1024**3:.1f} GiB/file, {MAX_TOTAL_UPLOAD_BYTES / 1024**3:.1f} GiB total")

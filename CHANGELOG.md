@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.4.8] - 2026-11-04
+
+### Changed
+- Install signed license panel: default textarea size increased (min-height 320px, ~42vh) so the activation field fills available empty space more usefully; panel uses flex layout so the field grows with the view.
+- RULEST Stage 0 (Token Strip): removed the 150 MB disk-buffer / single-worker fallback. Large target wordlists are now processed with the same multi-worker chunked path as smaller files.
+
+### Notes
+- Application version set to **2.4.8**.
+
 ## [2.4.7] - 2026-11-04
 
 ### Added

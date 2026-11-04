@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c0e13">
+  <title>RULEOPS — Hashcat Rule Toolchain</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
+  <link rel="stylesheet" href="/styles.css?v=ruleops-2.4.7-contact">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="RULEOPS navigation">
+      <a class="brand" href="#workspace" aria-label="RULEOPS home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 44 44" role="img" focusable="false">
+            <rect x="1" y="1" width="42" height="42" rx="11" fill="#17221b" stroke="#405633" />
+            <path d="M17 10 13.5 34 M29 10 25.5 34 M9.5 18.5H35 M8 27H33.5" fill="none" stroke="#b8f36b" stroke-width="3.1" stroke-linecap="round" />
+            <circle cx="34.5" cy="31.5" r="3" fill="#b8f36b" />
+          </svg>
+        </span>
+        <span class="brand-copy"><strong>RULEOPS</strong><small>HASHCAT RULE TOOLCHAIN</small></span>
+      </a>
+      <div class="side-label">TOOLCHAIN</div>
+      <nav class="sidebar-nav" aria-label="Programs">
+        <div class="nav-group" id="rulest-nav-group">
+          <button class="nav-item nav-group-toggle active" id="nav-rulest" type="button" aria-expanded="true" aria-controls="rulest-subnav" title="RULEST — rule generation engine">
+            <span class="nav-icon">#</span><span class="nav-main-copy"><b>RULEST</b><small>Rule generation engine</small></span><span class="license-badge" id="badge-RULEST" data-mode="FULL" hidden></span><span class="nav-chevron" aria-hidden="true">⌄</span>
+          </button>
+          <div class="nav-submenu" id="rulest-subnav">
+            <a class="nav-subitem active" href="#workspace" data-nav-section="workspace"><span></span>Run workspace</a>
+            <a class="nav-subitem" href="#tuning" data-nav-section="tuning"><span></span>Engine tuning</a>
+            <a class="nav-subitem" href="#gpu-diagnostic" data-nav-section="gpu-diagnostic"><span></span>GPU diagnostics</a>
+          </div>
+        </div>
+        <a class="nav-item nav-program-link" href="#ranker" data-nav-tool="ranker" title="Rule Ranker — score and optimize rulesets">
+          <span class="nav-icon">⇧</span><span class="nav-main-copy"><b>Rule Ranker</b><small>Score &amp; optimize rulesets</small></span><span class="license-badge" id="badge-RULE_RANKER" data-mode="FULL" hidden></span>
+        </a>
+        <a class="nav-item nav-program-link" href="#concentrator" data-nav-tool="concentrator" title="Concentrator — extract, generate and clean rules">
+          <span class="nav-icon">⌘</span><span class="nav-main-copy"><b>Concentrator</b><small>Extract, generate &amp; clean</small></span><span class="license-badge" id="badge-CONCENTRATOR" data-mode="FULL" hidden></span>
+        </a>
+      </nav>
+      <div class="sidebar-utility">
+        <div class="side-label">MONITORING</div>
+        <a class="nav-item nav-utility-link" href="#live-log" data-nav-section="live-log" title="Live activity and engine logs"><span class="nav-icon">⌁</span><span class="nav-main-copy"><b>Live activity</b><small>Shared execution log</small></span></a>
+      </div>
+      <div class="sidebar-utility system-utility">
+        <div class="side-label">SYSTEM</div>
+        <a class="nav-item nav-utility-link" href="#run-storage" data-nav-section="run-storage" title="Manage saved run directories"><span class="nav-icon">▤</span><span class="nav-main-copy"><b>Run storage</b><small>History &amp; cleanup</small></span></a>
+        <a class="nav-item nav-utility-link" href="#license-admin" data-nav-section="license-admin" id="nav-license-admin" hidden title="License and DEMO status"><span class="nav-icon">⚿</span><span class="nav-main-copy"><b>License</b><small>DEMO status &amp; activation</small></span></a>
+      </div>
+      <div class="sidebar-bottom">
+        <div class="gpu-card" id="local-engine-card" data-engine-state="ready" aria-label="Local engine status: ready">
+          <div class="gpu-top"><span class="pulse-dot" aria-hidden="true"></span><span>LOCAL ENGINE</span><span class="gpu-tag" id="local-engine-status" role="status" aria-live="polite">READY</span></div>
+          <p>Runs on your machine</p>
+          <small>OpenCL · GPU accelerated</small>
+        </div>
+        <div class="license-card" id="license-card" data-edition="DEMO">
+          <div class="license-card-top"><span class="license-edition" id="license-edition-label">DEMO</span><span class="license-valid" id="license-valid-label">unlicensed</span></div>
+          <p id="license-card-detail">3 full runs per module, then DEMO LIMITED</p>
+          <small id="license-card-modules">RULEST · Ranker · Concentrator</small>
+        </div>
+        <div class="side-foot"><span class="version-dot"></span> RULEOPS <b>v2.4.7</b><br><span>Password protected · LAN access</span></div>
+      </div>
+    </aside>
+
+    <main class="main-content" id="top">
+      <header class="topbar">
+        <div class="breadcrumb"><span>RULEOPS</span><i>/</i><strong>Run workspace</strong></div>
+        <div class="topbar-right"><span class="secure-label"><span class="lock-icon">⌑</span> PASSWORD SESSION</span><button id="change-password-button" class="account-button" type="button">Change password</button><button id="logout-button" class="account-button logout-button" type="button">Log out ↗</button><span class="avatar">O</span></div>
+      </header>
+
+      <div id="rulest-view">
+      <section class="page-heading" id="workspace">
+        <div><div class="eyebrow">GPU RULE ENGINE <span class="eyebrow-line"></span> CONFIGURATION</div><h1>Run workspace<span class="title-period">.</span></h1><p>Configure your search, launch the engine and monitor every stage in real time.</p></div>
+        <div class="heading-badge"><span class="badge-orbit">✳</span><div><b>Precision mode</b><small>Every parameter in your control</small></div></div>
+      </section>
+
+      <section class="metrics-grid" aria-label="Run metrics">
+        <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" id="metric-status">Idle</div><div class="metric-note"><span class="status-dot"></span><span id="status-note">Ready to configure</span></div></article>
+        <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" id="metric-stage">—</div><div class="metric-note">Live pipeline phase</div></article>
+        <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" id="metric-elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
+        <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" id="metric-outputs">0</div><div class="metric-note">Generated in this run</div></article>
+      </section>
+
+      <div class="content-grid">
+        <div class="primary-column">
+          <section class="panel input-panel">
+            <div class="panel-heading"><div><span class="section-index">01</span><h2>Input files</h2><p>Upload wordlists directly — no local paths required.</p></div><span class="required-pill">2 REQUIRED</span></div>
+            <div class="upload-grid">
+              <div class="upload-card" data-upload="base">
+                <div class="upload-head"><div class="file-icon base-icon">B</div><div><h3>Base wordlist</h3><small>Source words · BASE</small></div><span class="required-star">*</span></div>
+                <label class="drop-zone" for="base-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT, wordlist or plain text</small><input id="base-file" type="file"></label>
+                <div class="file-state" id="base-state"><span class="file-state-dot"></span><span>No file selected</span></div>
+                <div class="upload-progress"><span id="base-progress"></span></div>
+              </div>
+              <div class="upload-card" data-upload="target">
+                <div class="upload-head"><div class="file-icon target-icon">T</div><div><h3>Target wordlist</h3><small>Target words · TARGET</small></div><span class="required-star">*</span></div>
+                <label class="drop-zone" for="target-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT, wordlist or plain text</small><input id="target-file" type="file"></label>
+                <div class="file-state" id="target-state"><span class="file-state-dot"></span><span>No file selected</span></div>
+                <div class="upload-progress"><span id="target-progress"></span></div>
+              </div>
+            </div>
+            <div class="optional-upload-row">
+              <div class="optional-copy"><span class="optional-icon">＋</span><div><b>Custom seed rules <span>OPTIONAL</span></b><small>Upload a Hashcat rules file to extend the seed pool.</small></div></div>
+              <label class="secondary-upload" for="seed-file">＋ Add rules file<input id="seed-file" type="file"></label>
+            </div>
+            <div class="seed-file-state" id="seed-state">No custom seed rules uploaded</div>
+          </section>
+
+          <section class="panel" id="tuning">
+            <div class="panel-heading"><div><span class="section-index">02</span><h2>Engine configuration</h2><p>Fine-tune search depth, runtime and GPU memory behaviour.</p></div><button class="text-button" id="reset-defaults" type="button">↺ Reset defaults</button></div>
+            <div class="form-grid three-col">
+              <label class="field"><span>Maximum depth <i>?</i></span><div class="input-suffix"><input type="number" min="1" max="31" value="2" id="max_depth"><b>levels</b></div><small>Maximum rule chain depth (1–31).</small></label>
+              <label class="field"><span>Target runtime</span><div class="input-suffix"><input type="number" min="0.01" step="0.05" value="0.5" id="target_hours"><b>hours</b></div><small>Time budget for the search.</small></label>
+              <label class="field"><span>Maximum chains</span><div class="input-suffix"><input type="number" min="0" step="1" value="0" id="max_chains"><b>chains</b></div><small>0 = engine default / unlimited.</small></label>
+              <label class="field"><span>RNG seed <em>OPTIONAL</em></span><input type="number" min="0" max="4294967295" step="1" inputmode="numeric" placeholder="Random (unset)" id="rng_seed"><small>Reuse the same seed with identical inputs and settings to repeat randomized steps. GPU reduction order may still vary rarely. Range: 0–4294967295.</small></label>
+              <label class="field"><span>Bloom filter size</span><div class="input-suffix"><input type="number" min="0" step="1" value="0" id="bloom_mb"><b>MB</b></div><small>0 = automatic GPU sizing.</small></label>
+              <label class="field"><span>GPU device</span><input type="text" id="device" list="device-options" placeholder="Auto-select best GPU"><datalist id="device-options"><option value="all">All detected GPUs</option></datalist><small>Leave blank for auto · use all, an index, name or list.</small><button class="inline-detect" id="detect-devices" type="button">⌁ Detect GPUs</button></label>
+              <label class="field"><span>Output filename</span><input type="text" id="output_name" value="rulest_output.txt"><small>Saved in the run output folder.</small></label>
+            </div>
+            <section class="gpu-diagnostic" id="gpu-diagnostic" data-state="unknown" aria-live="polite">
+              <div class="gpu-diagnostic-head">
+                <span class="gpu-diagnostic-icon" id="gpu-diagnostic-icon">⌁</span>
+                <div class="gpu-diagnostic-copy"><b id="gpu-diagnostic-summary">GPU status not checked</b><small id="gpu-diagnostic-action">GPU detection runs automatically when the Control Center opens.</small></div>
+                <span class="gpu-count-badge" id="gpu-count-badge">NOT CHECKED</span>
+              </div>
+              <details class="gpu-diagnostic-details" id="gpu-diagnostic-details">
+                <summary>Open detailed diagnostics</summary>
+                <pre id="gpu-diagnostic-report">No diagnostic report yet.</pre>
+                <button class="small-ghost" id="copy-gpu-report" type="button">Copy diagnostic report</button>
+              </details>
+            </section>
+            <div class="toggle-row compact-toggle"><div><b>Disable Bloom sharding</b><small>Force one Bloom filter shard, even for large filters.</small></div><label class="switch"><input type="checkbox" id="bloom_no_shard"><span></span></label></div>
+            <div class="toggle-row compact-toggle"><div><b>Allow reject rules</b><small>Allow rules which intentionally reject candidate words.</small></div><label class="switch"><input type="checkbox" id="allow_reject_rules"><span></span></label></div>
+            <div class="toggle-row compact-toggle"><div><b>Disable built-in seeds</b><small>Skip the built-in numeric and pattern seed families (A–M).</small></div><label class="switch"><input type="checkbox" id="no_builtin_seeds"><span></span></label></div>
+            <div class="subsection depth-overrides"><div class="subsection-title"><div><h3>Per-depth chain limits</h3><p>Override automatically calculated chain counts for individual depths.</p></div><span class="subtle-tag">OPTIONAL OVERRIDES</span></div><div class="depth-grid" id="depth-grid"></div></div>
+          </section>
+
+          <section class="panel stage-panel" id="token-stage-panel">
+            <div class="panel-heading"><div><span class="section-index">03</span><h2>Stage 0 · Token Strip</h2><p>CPU exact-match extraction for core and insertion patterns.</p></div><div class="stage-enable-control"><span class="stage-state-pill" id="token-state" data-enabled="false">DISABLED</span><label class="stage-enable-toggle"><input type="checkbox" id="token_strip" aria-label="Enable Stage 0 Token Strip"><span class="stage-toggle-track" aria-hidden="true"></span><span class="stage-toggle-caption">Enable Stage 0</span></label></div></div>
+            <div class="stage-options" id="token-options">
+              <label class="field"><span>Minimum stem length</span><input type="number" min="1" value="4" id="token_strip_min_stem"></label>
+              <label class="field"><span>Maximum prefix length</span><input type="number" min="0" value="4" id="token_strip_max_prefix"></label>
+              <label class="field"><span>Maximum suffix length</span><input type="number" min="0" value="4" id="token_strip_max_suffix"></label>
+              <label class="field"><span>Minimum leet ambiguity</span><input type="number" min="0" value="3" id="token_strip_min_leet_amb"></label>
+              <label class="field"><span>Worker processes</span><input type="number" min="0" value="0" id="token_strip_workers"><small>0 = auto-detect CPU count.</small></label>
+              <label class="field"><span>Chunk size</span><input type="number" min="0" value="0" id="token_strip_chunk_size"><small>0 = engine default.</small></label>
+            </div>
+            <div class="stage-disabled-note" id="token-note">Stage 0 is OFF. Turn on <b>Enable Stage 0</b> above to include Token Strip in the run.</div>
+          </section>
+
+          <section class="panel stage-panel" id="genetic-stage-panel">
+            <div class="panel-heading"><div><span class="section-index">04</span><h2>Genetic algorithm</h2><p>Optional evolutionary search for additional rule candidates.</p></div><div class="stage-enable-control"><span class="stage-state-pill" id="genetic-state" data-enabled="false">DISABLED</span><label class="stage-enable-toggle"><input type="checkbox" id="genetic" aria-label="Enable Genetic Algorithm"><span class="stage-toggle-track" aria-hidden="true"></span><span class="stage-toggle-caption">Enable Genetic</span></label></div></div>
+            <div class="stage-options three-col" id="genetic-options">
+              <label class="field"><span>Generations</span><input type="number" min="1" value="50" id="genetic_generations"></label>
+              <label class="field"><span>Population size</span><input type="number" min="1" value="200" id="genetic_pop"></label>
+              <label class="field"><span>Elite ratio</span><div class="input-suffix"><input type="number" min="0.01" max="0.99" step="0.01" value="0.15" id="genetic_elite"><b>0–1</b></div></label>
+            </div>
+            <div class="stage-disabled-note" id="genetic-note">Genetic search is OFF. Turn on <b>Enable Genetic</b> above to include Stage 3. Genetic search requires <b>Maximum depth ≥ 2</b>.</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading"><div><span class="section-index">05</span><h2>Rule selection</h2><p>Choose how final rules are ranked and trimmed.</p></div><span class="subtle-tag">POST-PROCESSING</span></div>
+            <div class="form-grid three-col">
+              <label class="field"><span>Selection mode</span><select id="select_mode"><option value="frequency">Frequency · GPU hit count</option><option value="greedy">Greedy · Marginal coverage</option></select><small>Greedy evaluates exact target coverage.</small></label>
+              <label class="field"><span>Selection budget</span><div class="input-suffix"><input type="number" min="0" value="0" id="select_budget"><b>rules</b></div><small>0 = continue to saturation (greedy mode).</small></label>
+              <label class="field"><span>Cost alpha</span><input type="number" min="0" step="0.1" value="0" id="select_cost_alpha"><small>Higher values favour shorter chains.</small></label>
+              <label class="field field-wide"><span>Additional budget sweep</span><input type="text" id="select_budgets" placeholder="100, 1000, 10000"><small>Comma-separated rule budgets; emits separate prefix files.</small></label>
+            </div>
+            <div class="toggle-row compact-toggle"><div><b>Report exact recovery</b><small>Explicitly report distinct target-word recovery in greedy mode.</small></div><label class="switch"><input type="checkbox" id="exact_recovery"><span></span></label></div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <button class="advanced-trigger" id="advanced-trigger" type="button" aria-expanded="false"><div><span class="section-index">06</span><div><h2>Diagnostics & profiling</h2><p>Logging, detailed timing and troubleshooting flags.</p></div></div><span class="chevron">⌄</span></button>
+            <div class="advanced-content" id="advanced-content">
+              <div class="toggle-row"><div><b>Debug logging</b><small>Enable verbose diagnostic messages.</small></div><label class="switch"><input type="checkbox" id="debug"><span></span></label></div>
+              <div class="toggle-row"><div><b>Stage profiling</b><small>Print a per-stage wall-clock breakdown and GPU-event accounting.</small></div><label class="switch"><input type="checkbox" id="profile"><span></span></label></div>
+            </div>
+          </section>
+
+          <div class="launch-bar"><div><span class="launch-check">✓</span><div><b>Rule engine standing by</b><small>Configure your inputs and parameters, then launch a rule search.</small></div></div><button id="start-run" class="primary-button" type="button"><span>Launch engine</span><b>↗</b></button></div>
+        </div>
+
+        <aside class="secondary-column">
+          <section class="panel run-panel" id="activity">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">LIVE MONITOR</span><h2>Run activity</h2></div><span class="live-pill" id="live-pill"><span></span> STANDBY</span></div>
+            <div class="monitor-status-main"><small>ACTIVE PHASE</small><b id="current-stage">Waiting for a run</b><p id="current-stage-detail">Start a run to see the active processing phase.</p></div>
+            <div class="progress-head"><span>PHASE PROGRESS</span><b id="progress-label">—</b></div>
+            <div class="progress-track"><span id="phase-progress"></span></div>
+            <div class="monitor-details"><div><small>RUNTIME</small><b id="monitor-runtime">00:00</b></div><div><small>PROCESS ID</small><b id="monitor-pid">—</b></div></div>
+            <div class="control-buttons"><button id="pause-run" type="button" disabled>Ⅱ <span>Pause</span></button><button id="resume-run" type="button" disabled>▶ <span>Resume</span></button><button id="stop-run" type="button" disabled>■ <span>Save & stop</span></button></div>
+            <div class="control-hint">Pause / resume / stop are handled by the engine at its next safe checkpoint.</div>
+          </section>
+
+          <section class="panel outputs-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ARTIFACTS</span><h2>Output files</h2></div><span class="output-count" id="output-count">0</span></div>
+            <div id="output-list" class="output-list"><div class="empty-output"><span>▤</span><b>No outputs yet</b><small>Generated rulesets will appear here.</small></div></div>
+          </section>
+
+          <section class="panel notes-panel">
+            <div class="notes-icon">✦</div><h3>Quick notes</h3>
+            <div class="note-row"><span>01</span><p>Leave Bloom filter size at <b>0</b> to let the engine estimate GPU memory automatically.</p></div>
+            <div class="note-row"><span>02</span><p>Use <b>Greedy</b> selection when coverage matters more than raw hit frequency.</p></div>
+            <div class="note-row"><span>03</span><p>Temporary server copies are automatically deleted when the run completes or is stopped. Generated results and logs are kept.</p></div>
+          </section>
+        </aside>
+      </div>
+
+      </div><!-- /rulest-view -->
+
+      <div id="ranker-view" hidden>
+        <section class="page-heading" id="ranker">
+          <div><div class="eyebrow">HASHCAT RULESET OPTIMIZER <span class="eyebrow-line"></span> WORKBENCH</div><h1>Rule Ranker<span class="title-period">.</span></h1><p>Score candidate rules, optimize an existing ruleset with CELF, or analyze ranking CSV files.</p></div>
+          <div class="heading-badge"><span class="badge-orbit">⇧</span><div><b>Three workflows</b><small>Ranking · Optimization · Analysis</small></div></div>
+        </section>
+
+        <section class="rank-mode-block rank-mode-block-prominent" id="ranker-engine-mode-card" aria-labelledby="rank-mode-heading">
+          <div class="rank-mode-header">
+            <div><span class="rank-mode-kicker">RANKING ENGINE</span><h2 id="rank-mode-heading">Choose ranking mode</h2><p>Select the original exhaustive Legacy engine or the newer Adaptive MAB screening strategy.</p></div>
+            <span class="rank-mode-current" id="rank-mode-current" aria-live="polite">ACTIVE · ADAPTIVE MAB</span>
+          </div>
+          <div class="rank-mode-switch" id="rank-mode-switch" role="group" aria-label="Ranking method">
+            <button class="rank-mode-tab active" type="button" data-rank-mode="mab" aria-pressed="true"><span class="mode-indicator"></span><span class="rank-mode-copy"><b>Adaptive MAB</b><small>Multi-pass screening · configurable exploration and trials</small></span><span class="mode-state">ACTIVE</span></button>
+            <button class="rank-mode-tab" type="button" data-rank-mode="legacy" aria-pressed="false"><span class="mode-indicator"></span><span class="rank-mode-copy"><b>Legacy exhaustive</b><small>Original full ranking · no MAB candidate elimination</small></span><span class="mode-state">SELECT</span></button>
+          </div>
+          <div class="rank-mode-footnote" id="rank-mode-description">Adaptive MAB screens candidates over multiple passes before final evaluation. MAB tuning controls are enabled below.</div>
+        </section>
+
+        <section class="panel ranker-input-panel">
+          <div class="panel-heading"><div><span class="section-index">01</span><h2>Shared input data</h2><p>Wordlist and cracked-password list used by GPU ranking and ruleset optimization.</p></div><span class="required-pill">WORKFLOW DEPENDENT</span></div>
+          <div class="upload-grid two-col">
+            <div class="upload-card" data-upload="ranker_wordlist">
+              <div class="upload-head"><div class="file-icon base-icon">W</div><div><h3>Base wordlist</h3><small>Source words · WORDLIST</small></div></div>
+              <label class="drop-zone" for="ranker_wordlist-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT or plain text</small><input id="ranker_wordlist-file" type="file" accept=".txt,.lst,.dict,text/plain"></label>
+              <div class="file-state" id="ranker_wordlist-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_wordlist-progress"></span></div>
+            </div>
+            <div class="upload-card" data-upload="ranker_cracked">
+              <div class="upload-head"><div class="file-icon target-icon">C</div><div><h3>Cracked-password list</h3><small>Coverage universe · CRACKED</small></div></div>
+              <label class="drop-zone" for="ranker_cracked-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT or plain text</small><input id="ranker_cracked-file" type="file" accept=".txt,.lst,text/plain"></label>
+              <div class="file-state" id="ranker_cracked-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_cracked-progress"></span></div>
+            </div>
+          </div>
+          <div class="ranker-input-note">Temporary server-side copies are removed after each job. Re-upload inputs before starting another workflow.</div>
+        </section>
+
+        <div class="ranker-layout">
+          <div class="ranker-main-column">
+            <div class="ranker-workflow-tabs" id="ranker-workflow-tabs" role="tablist" aria-label="Rule Ranker workflows">
+              <button class="ranker-workflow-tab active" type="button" data-workflow="rank" role="tab" aria-selected="true"><b>01</b><span><strong>Rank rules</strong><small>GPU · MAB scoring</small></span></button>
+              <button class="ranker-workflow-tab" type="button" data-workflow="optimize" role="tab" aria-selected="false"><b>02</b><span><strong>Optimize ruleset</strong><small>GPU · CELF coverage</small></span></button>
+              <button class="ranker-workflow-tab" type="button" data-workflow="analyze" role="tab" aria-selected="false"><b>03</b><span><strong>Analyze CSV</strong><small>CPU · Clean & summarize</small></span></button>
+            </div>
+
+            <section class="panel ranker-workflow-panel active" id="ranker-rank-panel" data-workflow-panel="rank">
+              <div class="panel-heading"><div><span class="section-index">02A</span><h2>GPU rule ranking</h2><p>Measure candidate-rule effectiveness against the uploaded wordlist and cracked set.</p></div><span class="subtle-tag">RANKER V6</span></div>
+              <div class="upload-card ranker-source-upload" data-upload="ranker_rules">
+                <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Candidate ruleset</h3><small>Hashcat-compatible rules · RULES</small></div><span class="required-star">*</span></div>
+                <label class="drop-zone" for="ranker_rules-file"><span class="upload-cloud">↑</span><strong>Choose a .rule file <em>or drop it here</em></strong><small>Plain text Hashcat rules</small><input id="ranker_rules-file" type="file" accept=".rule,.txt,text/plain"></label>
+                <div class="file-state" id="ranker_rules-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_rules-progress"></span></div>
+              </div>
+              <div class="form-grid three-col ranker-fields">
+                <label class="field"><span>Ranking CSV output</span><input id="rank_output_name" type="text" value="ranker_output.csv"><small>Main ranking result.</small></label>
+                <label class="field"><span>Top rules to export</span><input id="rank_topk" type="number" min="0" value="1000"><small>0 disables the extra optimized .rule output.</small></label>
+                <label class="field"><span>GPU memory preset</span><select id="rank_preset"><option value="recommend">Recommend</option><option value="low_memory">Low memory</option><option value="medium_memory">Medium memory</option><option value="high_memory">High memory</option></select><small>Guides GPU buffer sizing.</small></label>
+                <label class="field"><span>Words per GPU batch</span><input id="rank_batch_size" type="number" min="1" placeholder="Auto"><small>Leave blank for automatic sizing.</small></label>
+                <label class="field"><span>Global hash-map bits</span><input id="rank_global_bits" type="number" min="1" placeholder="Preset default"></label>
+                <label class="field"><span>Cracked hash-map bits</span><input id="rank_cracked_bits" type="number" min="1" placeholder="Preset default"></label>
+              </div>
+              <div class="subsection ranker-subsection" id="rank-mab-tuning"><div class="subsection-title"><div><h3>MAB tuning</h3><p>Multi-pass bandit screening and survivor evaluation.</p></div><span class="subtle-tag">DEFAULT MODE</span></div>
+                <div class="form-grid three-col">
+                  <label class="field"><span>Exploration factor</span><input id="rank_mab_exploration" type="number" min="0" step="0.1" value="2.0"></label>
+                  <label class="field"><span>Screening trials</span><input id="rank_mab_screening_trials" type="number" min="1" value="5"></label>
+                  <label class="field"><span>Final trials</span><input id="rank_mab_final_trials" type="number" min="1" value="50"></label>
+                  <label class="field"><span>Sample words / trial</span><input id="rank_mab_sample_words" type="number" min="1" value="8192"></label>
+                  <label class="field"><span>OpenCL device ID</span><input id="rank_device" type="number" min="0" placeholder="Auto"></label>
+                </div>
+                <div class="toggle-row compact-toggle" id="rank-mab-zero-row"><div><b>Zero-success elimination</b><small>Eliminate rules with no successes during MAB screening.</small></div><label class="switch"><input type="checkbox" id="rank_mab_zero_eliminate" checked><span></span></label></div>
+              </div>
+            </section>
+
+            <section class="panel ranker-workflow-panel" id="ranker-optimize-panel" data-workflow-panel="optimize" hidden>
+              <div class="panel-heading"><div><span class="section-index">02B</span><h2>Optimize an existing ruleset</h2><p>Run GPU coverage recomputation and lazy-greedy CELF selection on an existing rule set.</p></div><span class="subtle-tag">CELF · RECOMPUTE GPU</span></div>
+              <div class="ranker-source-choice"><span class="field-label">Optimization source</span><label><input type="radio" name="rank_source_type" value="rules" checked> Plain .rule file</label><label><input type="radio" name="rank_source_type" value="csv"> Ranking CSV</label></div>
+              <div class="upload-card ranker-source-upload" id="opt-rules-upload" data-upload="ranker_source_rules">
+                <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Existing ruleset</h3><small>Plain Hashcat .rule file</small></div><span class="required-star">*</span></div>
+                <label class="drop-zone" for="ranker_source_rules-file"><span class="upload-cloud">↑</span><strong>Choose a .rule file</strong><small>Existing rules to optimize</small><input id="ranker_source_rules-file" type="file" accept=".rule,.txt,text/plain"></label>
+                <div class="file-state" id="ranker_source_rules-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_source_rules-progress"></span></div>
+              </div>
+              <div class="upload-card ranker-source-upload" id="opt-csv-upload" data-upload="ranker_source_csv" hidden>
+                <div class="upload-head"><div class="file-icon target-icon">CSV</div><div><h3>Ranking CSV</h3><small>Ranker output · CSV</small></div><span class="required-star">*</span></div>
+                <label class="drop-zone" for="ranker_source_csv-file"><span class="upload-cloud">↑</span><strong>Choose a ranking CSV</strong><small>Legacy or MAB ranker output</small><input id="ranker_source_csv-file" type="file" accept=".csv,.txt,text/plain,text/csv"></label>
+                <div class="file-state" id="ranker_source_csv-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_source_csv-progress"></span></div>
+              </div>
+              <div class="form-grid three-col ranker-fields">
+                <label class="field"><span>Output rules filename</span><input id="opt_output_name" type="text" value="ranker_optimized.rule"></label>
+                <label class="field"><span>Candidate limit</span><input id="opt_candidates" type="number" min="1" value="20000"><small>Top-scored rules fed into CELF.</small></label>
+                <label class="field"><span>Selection budget</span><input id="opt_budget" type="number" min="1" placeholder="No fixed budget"><small>Maximum number of selected rules.</small></label>
+                <label class="field field-wide"><span>Budget sweep</span><input id="opt_budgets" type="text" placeholder="64, 250, 5000"><small>Optional comma-separated cutoffs; exports multiple prefixes.</small></label>
+                <label class="field"><span>Rule batch size</span><input id="opt_rule_batch_size" type="number" min="1" value="1024"></label>
+                <label class="field"><span>Words per GPU batch</span><input id="opt_words_batch_size" type="number" min="1" value="150000"></label>
+                <label class="field"><span>Maximum word length</span><input id="opt_max_word_len" type="number" min="1" value="32"></label>
+                <label class="field"><span>Maximum rule length</span><input id="opt_max_rule_len" type="number" min="1" value="255"></label>
+                <label class="field"><span>Maximum output length</span><input id="opt_max_output_len" type="number" min="1" value="512"><small>Must be ≥ max word length unless auto-sized.</small></label>
+                <label class="field"><span>Cost alpha</span><input id="opt_cost_alpha" type="number" min="0" step="0.1" value="0"><small>0 = pure marginal coverage.</small></label>
+                <label class="field"><span>OpenCL device ID</span><input id="opt_device" type="number" min="0" placeholder="Auto"></label>
+              </div>
+              <div class="toggle-row compact-toggle"><div><b>Automatically size maximum output length</b><small>Estimate the worst-case transformed word length before GPU scoring.</small></div><label class="switch"><input type="checkbox" id="opt_auto_max_output_len"><span></span></label></div>
+              <div class="toggle-row compact-toggle"><div><b>Print output-length estimate only</b><small>Run the static estimate and exit without starting GPU coverage.</small></div><label class="switch"><input type="checkbox" id="opt_print_output_len_estimate"><span></span></label></div>
+            </section>
+
+            <section class="panel ranker-workflow-panel" id="ranker-analyze-panel" data-workflow-panel="analyze" hidden>
+              <div class="panel-heading"><div><span class="section-index">02C</span><h2>Analyze ranking CSV</h2><p>Summarize existing ranking output, extract clean rules and optionally export scores.</p></div><span class="subtle-tag">CPU · CSV HANDLER</span></div>
+              <div class="upload-card ranker-source-upload" data-upload="ranker_analysis_csv">
+                <div class="upload-head"><div class="file-icon target-icon">CSV</div><div><h3>Ranking data</h3><small>Legacy or MAB ranking CSV</small></div><span class="required-star">*</span></div>
+                <label class="drop-zone" for="ranker_analysis_csv-file"><span class="upload-cloud">↑</span><strong>Choose a CSV file <em>or drop it here</em></strong><small>Ranker output CSV</small><input id="ranker_analysis_csv-file" type="file" accept=".csv,.txt,text/plain,text/csv"></label>
+                <div class="file-state" id="ranker_analysis_csv-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_analysis_csv-progress"></span></div>
+              </div>
+              <div class="form-grid three-col ranker-fields">
+                <label class="field"><span>Summary filename</span><input id="an_summary_name" type="text" value="rule_analysis_summary.txt"></label>
+                <label class="field"><span>Clean rules filename</span><input id="an_rules_output_name" type="text" value="clean_rules.rule"></label>
+                <label class="field"><span>Scored rules filename</span><input id="an_scores_output_name" type="text" value="rules_with_scores.csv"></label>
+                <label class="field"><span>Top rules</span><input id="an_top" type="number" min="1" placeholder="All rules"></label>
+                <label class="field"><span>Console top</span><input id="an_console_top" type="number" min="0" value="20"></label>
+                <label class="field"><span>Chunk size</span><input id="an_chunk_size" type="number" min="1" value="10000"></label>
+              </div>
+              <div class="toggle-row compact-toggle"><div><b>Write clean rules output</b><small>Extract cleaned Hashcat rules from the ranking data.</small></div><label class="switch"><input type="checkbox" id="an_write_rules" checked><span></span></label></div>
+              <div class="toggle-row compact-toggle"><div><b>Write rules with scores</b><small>Export a CSV containing per-rule score details.</small></div><label class="switch"><input type="checkbox" id="an_write_scores"><span></span></label></div>
+              <div class="toggle-row compact-toggle"><div><b>Rules only</b><small>Skip the analysis summary file.</small></div><label class="switch"><input type="checkbox" id="an_rules_only"><span></span></label></div>
+              <div class="toggle-row compact-toggle"><div><b>Skip statistics</b><small>Reduce RAM use on large files; no analysis summary is written.</small></div><label class="switch"><input type="checkbox" id="an_no_stats"><span></span></label></div>
+              <div class="toggle-row compact-toggle"><div><b>Parallel file processing</b><small>Use multiple CPU processes when handling the input.</small></div><label class="switch"><input type="checkbox" id="an_parallel"><span></span></label></div>
+              <div class="toggle-row compact-toggle"><div><b>Hide console result tables</b><small>Keep the live log focused on progress and messages.</small></div><label class="switch"><input type="checkbox" id="an_no_console" checked><span></span></label></div>
+              <div class="toggle-row compact-toggle"><div><b>Disable progress bars</b><small>Turn off the CSV handler progress renderer.</small></div><label class="switch"><input type="checkbox" id="an_no_progress"><span></span></label></div>
+            </section>
+
+            <div class="ranker-launch-bar"><div><b id="ranker-launch-title">GPU ranking ready</b><small id="ranker-launch-hint">Upload a wordlist, cracked list and candidate rules to begin.</small></div><button id="ranker-start-run" class="primary-button" type="button"><span>Run ranking</span><b>↗</b></button></div>
+          </div>
+
+          <aside class="ranker-side-column">
+            <section class="panel ranker-activity-card">
+              <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">RANKER MONITOR</span><h2>Job activity</h2></div><span class="live-pill" id="ranker-live-pill"><span></span> STANDBY</span></div>
+              <div class="monitor-status-main"><small>ACTIVE WORKFLOW</small><b id="ranker-current-stage">Waiting for a Ranker job</b><p id="ranker-stage-detail">Choose a workflow and configure the required inputs.</p></div>
+              <div class="monitor-details"><div><small>RUNTIME</small><b id="ranker-runtime">00:00</b></div><div><small>PROCESS ID</small><b id="ranker-pid">—</b></div></div>
+              <button id="ranker-cancel" class="ranker-cancel-button" type="button" disabled>■ Cancel Ranker job</button>
+              <small class="ranker-cancel-note">Ranker workflows do not support RULEST safe-checkpoint pause/resume. Cancel interrupts the active process.</small>
+            </section>
+            <section class="panel outputs-panel">
+              <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ARTIFACTS</span><h2>Ranker outputs</h2></div><span class="output-count" id="ranker-output-count">0</span></div>
+              <div id="ranker-output-list" class="output-list"><div class="empty-output"><span>▤</span><b>No outputs yet</b><small>Ranking CSVs and optimized rules will appear here.</small></div></div>
+            </section>
+            <section class="panel notes-panel"><div class="notes-icon">✦</div><h3>Workflow guide</h3><div class="note-row"><span>01</span><p><b>Rank rules</b> scores an input rule set against a wordlist and cracked list.</p></div><div class="note-row"><span>02</span><p><b>Optimize ruleset</b> selects a smaller coverage-focused subset using exact GPU recomputation and CELF.</p></div><div class="note-row"><span>03</span><p><b>Analyze CSV</b> creates summaries and clean rule exports without requiring a GPU.</p></div></section>
+          </aside>
+        </div>
+      </div><!-- /ranker-view -->
+
+      <div id="concentrator-view" hidden>
+        <section class="page-heading" id="concentrator">
+          <div><div class="eyebrow">UNIFIED HASHCAT RULE PROCESSOR <span class="eyebrow-line"></span> TOOLKIT</div><h1>Concentrator<span class="title-period">.</span></h1><p>Extract, generate, normalize and refine Hashcat rule collections using the original Concentrator processing pipeline.</p></div>
+          <div class="heading-badge"><span class="badge-orbit">⌘</span><div><b>Concentrator v3.5</b><small>Four processing workflows · CPU / OpenCL</small></div></div>
+        </section>
+
+        <section class="panel concentrator-input-panel">
+          <div class="panel-heading"><div><span class="section-index">01</span><h2>Rule source files</h2><p>Upload one or more existing Hashcat rule files. Files are combined and analyzed by the original Concentrator loader.</p></div><span class="required-pill">1–32 FILES</span></div>
+          <div class="upload-card" data-upload="concentrator_files">
+            <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Ruleset collection</h3><small>.rule, .rules, .txt, .lst, .hr, .hashcat</small></div><span class="required-star">*</span></div>
+            <label class="drop-zone" for="concentrator_files-file"><span class="upload-cloud">↑</span><strong>Choose files <em>or drop them here</em></strong><small>Select multiple rules files · 40 GiB combined upload limit</small><input id="concentrator_files-file" type="file" multiple accept=".rule,.rules,.hr,.hashcat,.txt,.lst,text/plain"></label>
+            <div class="file-state" id="concentrator_files-state"><span class="file-state-dot"></span><span>No rules files selected</span></div>
+            <div class="upload-progress"><span id="concentrator_files-progress"></span></div>
+          </div>
+          <div class="ranker-input-note">Server-side upload copies are removed when the job completes, fails or is cancelled. Your original local files are never modified.</div>
+        </section>
+
+        <div class="concentrator-layout">
+          <div class="concentrator-main-column">
+            <div class="concentrator-mode-tabs" id="concentrator-mode-tabs" role="tablist" aria-label="Concentrator workflows">
+              <button class="concentrator-mode-tab active" type="button" data-concentrator-mode="extract" role="tab" aria-selected="true"><span class="mode-number">01</span><span><b>Extract</b><small>Top existing rules</small></span></button>
+              <button class="concentrator-mode-tab" type="button" data-concentrator-mode="combo" role="tab" aria-selected="false"><span class="mode-number">02</span><span><b>Combinatorial</b><small>Generate token chains</small></span></button>
+              <button class="concentrator-mode-tab" type="button" data-concentrator-mode="markov" role="tab" aria-selected="false"><span class="mode-number">03</span><span><b>Markov</b><small>Statistical generation</small></span></button>
+              <button class="concentrator-mode-tab" type="button" data-concentrator-mode="process" role="tab" aria-selected="false"><span class="mode-number">04</span><span><b>Process & clean</b><small>Filter an existing set</small></span></button>
+            </div>
+
+            <section class="panel concentrator-config-panel">
+              <div class="panel-heading"><div><span class="section-index">02</span><h2 id="concentrator-mode-title">Extract top rules</h2><p id="concentrator-mode-description">Aggregate the uploaded rule files, rank unique rules by frequency and export the top entries.</p></div><span class="subtle-tag">CONCENTRATOR CORE</span></div>
+
+              <div class="concentrator-mode-panel" data-concentrator-panel="extract">
+                <div class="form-grid three-col concentrator-fields">
+                  <label class="field"><span>Top rules to extract</span><input id="conc_top_rules" type="number" min="1" value="10000"><small>Maximum number of unique rules in the output.</small></label>
+                  <label class="field"><span>Ranking strategy</span><select id="conc_sort_mode"><option value="frequency">Frequency</option><option value="statistical">Statistical · Markov</option></select><small>Statistical sorting builds the token-level Markov model.</small></label>
+                </div>
+              </div>
+
+              <div class="concentrator-mode-panel" data-concentrator-panel="combo" hidden>
+                <div class="form-grid three-col concentrator-fields">
+                  <label class="field"><span>Target rules</span><input id="conc_combo_target" type="number" min="1" value="100000"><small>Approximate number of rules to generate.</small></label>
+                  <label class="field"><span>Minimum token length</span><input id="conc_combo_min" type="number" min="1" max="31" value="1"></label>
+                  <label class="field"><span>Maximum token length</span><input id="conc_combo_max" type="number" min="1" max="31" value="3"></label>
+                </div>
+              </div>
+
+              <div class="concentrator-mode-panel" data-concentrator-panel="markov" hidden>
+                <div class="form-grid three-col concentrator-fields">
+                  <label class="field"><span>Target rules</span><input id="conc_markov_target" type="number" min="1" value="10000"><small>Number of probable rule chains to emit.</small></label>
+                  <label class="field"><span>Minimum token length</span><input id="conc_markov_min" type="number" min="1" max="31" value="1"></label>
+                  <label class="field"><span>Maximum token length</span><input id="conc_markov_max" type="number" min="1" max="31" value="3"></label>
+                </div>
+                <div class="concentrator-info-note"><b>Markov pipeline</b><span>Uses the source's Kneser–Ney token model and crack-focused synthetic corpus before best-first rule generation.</span></div>
+              </div>
+
+              <div class="concentrator-mode-panel" data-concentrator-panel="process" hidden>
+                <div class="concentrator-info-note"><b>Processing pipeline</b><span>Applies selected filters in the original fixed order: minimum occurrence, top-N, functional minimization, inverse filter, then Hashcat cleanup.</span></div>
+                <div class="form-grid three-col concentrator-fields">
+                  <label class="field"><span>Minimum occurrence</span><input id="conc_filter_min_occ" type="number" min="1" placeholder="No minimum"><small>Keep rules appearing at least N times.</small></label>
+                  <label class="field"><span>Maximum rules</span><input id="conc_filter_max_rules" type="number" min="1" placeholder="Keep all"><small>Keep the top N by occurrence.</small></label>
+                  <label class="field"><span>Inverse cutoff</span><input id="conc_filter_inverse" type="number" min="1" placeholder="Disabled"><small>Keep rules ranked below N.</small></label>
+                  <label class="field"><span>Hashcat cleanup</span><select id="conc_hashcat_cleanup"><option value="none">Disabled</option><option value="cpu">CPU validation</option><option value="gpu">GPU validation</option></select><small>Validate supported Hashcat rule syntax.</small></label>
+                </div>
+                <div class="toggle-row compact-toggle"><div><b>Functional minimization</b><small>Remove rules with equivalent transformations using the source signature engine. If the source is large, enable high-memory confirmation; otherwise this step is safely skipped instead of prompting in the background.</small></div><label class="switch"><input type="checkbox" id="conc_func_min"><span></span></label></div>
+              </div>
+
+              <div class="concentrator-global-settings">
+                <div class="subsection-title"><div><h3>Global settings</h3><p>Output, memory and acceleration settings shared by all workflows.</p></div><span class="subtle-tag">COMMON</span></div>
+                <div class="form-grid three-col concentrator-fields">
+                  <label class="field"><span>Output base name</span><input id="conc_output_base" type="text" value="concentrator_output"><small>Mode suffix is added automatically.</small></label>
+                  <label class="field"><span>Maximum input rule length</span><input id="conc_max_length" type="number" min="1" max="255" value="31"><small>Longer source lines are skipped.</small></label>
+                  <label class="field"><span>Output format</span><select id="conc_output_format"><option value="line">Standard line</option><option value="expanded">Expanded tokens</option></select></label>
+                </div>
+                <div class="toggle-row compact-toggle"><div><b>Enable OpenCL acceleration</b><small>Use an available OpenCL device for rule validation. Disable to force CPU-compatible processing.</small></div><label class="switch"><input type="checkbox" id="conc_use_gpu" checked><span></span></label></div>
+                <div class="toggle-row compact-toggle"><div><b>In-memory processing</b><small>Keep processing data in RAM instead of using the disk-backed temporary mode.</small></div><label class="switch"><input type="checkbox" id="conc_in_memory"><span></span></label></div>
+                <div class="toggle-row compact-toggle"><div><b>Confirm high-memory operations</b><small>Allow explicitly selected functional minimization / Markov steps to proceed when RAM is above the safety threshold and no swap is available.</small></div><label class="switch"><input type="checkbox" id="conc_confirm_memory"><span></span></label></div>
+              </div>
+            </section>
+
+            <div class="concentrator-launch-bar"><div><b id="concentrator-launch-title">Rule extraction ready</b><small id="concentrator-launch-hint">Upload at least one rule file, choose the extraction limit and launch the processor.</small></div><button id="start-concentrator-run" class="primary-button" type="button"><span>Run Concentrator</span><b>↗</b></button></div>
+          </div>
+
+          <aside class="concentrator-side-column">
+            <section class="panel concentrator-activity-card">
+              <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">CONCENTRATOR MONITOR</span><h2>Job activity</h2></div><span class="live-pill" id="concentrator-live-pill"><span></span> STANDBY</span></div>
+              <div class="monitor-status-main"><small>ACTIVE WORKFLOW</small><b id="concentrator-current-stage">Waiting for a Concentrator job</b><p id="concentrator-stage-detail">Choose one of the four workflows and configure the required inputs.</p></div>
+              <div class="monitor-details"><div><small>RUNTIME</small><b id="concentrator-runtime">00:00</b></div><div><small>PROCESS ID</small><b id="concentrator-pid">—</b></div></div>
+              <button id="concentrator-cancel" class="ranker-cancel-button" type="button" disabled>■ Cancel Concentrator job</button>
+              <small class="ranker-cancel-note">Cancellation interrupts the active process. Generated partial output files are preserved where possible.</small>
+            </section>
+            <section class="panel outputs-panel">
+              <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ARTIFACTS</span><h2>Concentrator outputs</h2></div><span class="output-count" id="concentrator-output-count">0</span></div>
+              <div id="concentrator-output-list" class="output-list"><div class="empty-output"><span>▤</span><b>No outputs yet</b><small>Extracted, generated and processed rules will appear here.</small></div></div>
+            </section>
+            <section class="panel notes-panel"><div class="notes-icon">⌘</div><h3>Concentrator guide</h3><div class="note-row"><span>01</span><p><b>Extract</b> ranks the unique input rules by occurrence or statistical weight.</p></div><div class="note-row"><span>02</span><p><b>Combinatorial / Markov</b> generate validated rule chains from the uploaded corpus.</p></div><div class="note-row"><span>03</span><p><b>Process & clean</b> applies the selected filters in their defined order.</p></div></section>
+          </aside>
+        </div>
+      </div><!-- /concentrator-view -->
+
+      <div id="system-view" hidden>
+        <section class="page-heading storage-page-heading" id="run-storage">
+          <div class="storage-heading-copy">
+            <span class="side-panel-kicker">SYSTEM MANAGEMENT <span aria-hidden="true">/</span> STORAGE</span>
+            <h1>Run storage<span class="title-period">.</span></h1>
+            <p>Review and remove saved run folders created by RULEST, Rule Ranker and Concentrator.</p>
+          </div>
+          <div class="heading-badge storage-heading-badge"><span class="badge-orbit">▤</span><div><b>Local run archive</b><small>Uploads are stored separately</small></div></div>
+        </section>
+        <section class="metrics-grid storage-metrics" aria-label="Run storage summary">
+          <article class="metric-card"><div class="metric-label">RUN DIRECTORIES</div><div class="metric-value" id="storage-run-count">—</div><div class="metric-note">Saved jobs across all tools</div></article>
+          <article class="metric-card"><div class="metric-label">FILES</div><div class="metric-value" id="storage-file-count">—</div><div class="metric-note">Outputs, logs and partial results</div></article>
+          <article class="metric-card"><div class="metric-label">DISK USAGE</div><div class="metric-value" id="storage-bytes">—</div><div class="metric-note">Total run directory size</div></article>
+          <article class="metric-card"><div class="metric-label">ENGINE STATUS</div><div class="metric-value" id="storage-engine-state">READY</div><div class="metric-note" id="storage-engine-note">No active run detected</div></article>
+        </section>
+        <section class="panel storage-cleanup-panel">
+          <div class="panel-heading"><div class="panel-heading-copy storage-panel-heading-copy"><span class="side-panel-kicker">GLOBAL CLEANUP</span><h2>Delete run directories</h2><p>Remove saved run folders from all three tools in one operation.</p></div><span class="subtle-tag storage-destructive-tag">DESTRUCTIVE ACTION</span></div>
+          <div class="storage-warning"><span class="storage-warning-icon">!</span><div><b>This permanently removes saved run data</b><p>All folders directly inside <code>runs/</code> will be deleted except <code>runs/uploads/</code>. This includes generated outputs, engine logs, partial results and historical run files. The action cannot be undone.</p></div></div>
+          <div class="storage-cleanup-footer"><div><b id="storage-cleanup-summary">Loading run storage summary…</b><small>Authentication settings, application files and temporary uploaded inputs are not deleted.</small></div><button id="delete-run-directories" class="danger-action-button" type="button" disabled><span aria-hidden="true">⌫</span> Delete all run folders</button></div>
+          <div class="storage-feedback" id="storage-feedback" role="status" aria-live="polite"></div>
+        </section>
+      
+<section class="page-heading system-page" id="license-admin" hidden>
+        <div>
+          <div class="eyebrow">SYSTEM <span class="eyebrow-line"></span> LICENSING</div>
+          <h1>License<span class="title-period">.</span></h1>
+          <p>DEMO usage per module, activation of a signed offline license, and administrator controls.</p>
+        </div>
+      </section>
+      <section class="content-grid system-page" id="license-admin-grid" hidden>
+        <div class="primary-column">
+          <section class="panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">STATUS</span><h2>Module DEMO counters</h2></div></div>
+            <div class="license-modules-grid" id="license-modules-grid">
+              <div class="license-module-card" data-module="RULEST"><b>RULEST</b><span class="lm-mode">—</span><small class="lm-detail">—</small></div>
+              <div class="license-module-card" data-module="RULE_RANKER"><b>Rule Ranker</b><span class="lm-mode">—</span><small class="lm-detail">—</small></div>
+              <div class="license-module-card" data-module="CONCENTRATOR"><b>Concentrator</b><span class="lm-mode">—</span><small class="lm-detail">—</small></div>
+            </div>
+            <p class="license-hint" id="license-hint">Without a signed license each module allows 3 full runs, then enters DEMO LIMITED with restricted CELF.</p>
+          </section>
+          <section class="panel" id="license-install-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ACTIVATION</span><h2>Install signed license</h2></div></div>
+            <p class="license-hint">Paste the JSON contents of a signed <code>license.lic</code> file issued for this installation. Administrator only.</p>
+            <textarea id="license-json-input" class="license-textarea" rows="8" placeholder='{"payload":{...},"signature":"..."}'></textarea>
+            <div class="license-actions">
+              <button id="install-license-button" class="primary-button" type="button"><span>Install license</span><b>↗</b></button>
+              <button id="reset-demo-button" class="small-ghost" type="button">Reset DEMO counters</button>
+            </div>
+            <p class="license-feedback" id="license-feedback" hidden></p>
+          </section>
+        </div>
+        <div class="secondary-column">
+          <section class="panel notes-panel">
+            <div class="notes-icon">⚿</div>
+            <h3>Licensing guide</h3>
+            <div class="note-row"><span>01</span><p><b>DEMO</b> — 3 full runs per module (RULEST, Ranker, Concentrator).</p></div>
+            <div class="note-row"><span>02</span><p><b>DEMO LIMITED</b> — advanced CELF locked; basic demonstration remains.</p></div>
+            <div class="note-row"><span>03</span><p><b>PROFESSIONAL / ENTERPRISE</b> — signed offline license restores all features.</p></div>
+            <div class="note-row"><span>04</span><p>Counters survive restarts. Machine binding is optional at issue time.</p></div>
+          </section>
+          <section class="panel pricing-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">PRICING</span><h2>License plans</h2></div></div>
+            <div class="pricing-grid">
+              <div class="price-card"><b>1 month</b><span class="price">$5</span><small>Demo user · 30 days</small></div>
+              <div class="price-card"><b>1 year</b><span class="price">$40</span><small>Full license · 365 days</small></div>
+              <div class="price-card"><b>2 years</b><span class="price">$60</span><small>Full license · 730 days</small></div>
+              <div class="price-card price-card-featured"><b>Unlimited</b><span class="price">$150</span><small>No expiry</small></div>
+            </div>
+            <p class="license-hint">After payment, send the transaction ID and your preferred customer name. You will receive a signed <code>license.lic</code> for offline activation.</p>
+          </section>
+          <section class="panel payments-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">PAYMENTS</span><h2>Crypto</h2></div></div>
+            <div class="payment-list">
+              <div class="payment-row"><span class="pay-coin">ETH</span><code class="pay-addr">0x597c06b19bc90876f6375b8d1348b34c94f223a4</code></div>
+              <div class="payment-row"><span class="pay-coin">Bitcoin</span><code class="pay-addr">13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ</code></div>
+              <div class="payment-row"><span class="pay-coin">Litecoin</span><code class="pay-addr">LLDEKP1L7Zs99cYHSVdxXHZPUaR5Hcpand</code></div>
+              <div class="payment-row"><span class="pay-coin">Ravencoin</span><code class="pay-addr">RHXGULWc3jcgSHB9LAEmRCGnddRemnZ6hu</code></div>
+              <div class="payment-row"><span class="pay-coin">Tron</span><code class="pay-addr">TWCr67GVVWYmPhDadGFzqWu5rcWuqwD8gi</code></div>
+            </div>
+          </section>
+          <section class="panel contact-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">CONTACT</span><h2>Support &amp; orders</h2></div></div>
+            <p class="license-hint">After payment, send the transaction ID and your preferred customer name to receive a signed <code>license.lic</code>.</p>
+            <div class="contact-list">
+              <div class="contact-row"><span class="contact-label">Email</span><a class="contact-value" href="mailto:nullpointer@i2pmail.org">nullpointer@i2pmail.org</a></div>
+              <div class="contact-row"><span class="contact-label">Matrix</span><a class="contact-value" href="https://matrix.to/#/@a1131:matrix.org" target="_blank" rel="noopener noreferrer">@a1131:matrix.org</a></div>
+            </div>
+          </section>
+          <section class="panel" id="license-user-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ACCESS</span><h2>User password</h2></div></div>
+            <p class="license-hint">Optional regular user password (no license administration). Leave empty and save to remove.</p>
+            <input id="user-password-input" type="password" minlength="12" placeholder="Min. 12 characters" autocomplete="new-password">
+            <div class="license-actions">
+              <button id="set-user-password-button" class="primary-button" type="button"><span>Save user password</span></button>
+            </div>
+          </section>
+        </div>
+      </section>
+      </div><!-- /system-view -->
+
+      <section class="panel log-panel" id="live-log" tabindex="-1" aria-label="Live tool log">
+        <div class="panel-heading log-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ENGINE OUTPUT</span><h2>Live log</h2><p>Live output from the active RULEST, Rule Ranker or Concentrator job.</p></div><div class="log-actions"><span class="log-live"><i></i> LIVE STREAM</span><button id="wrap-log" class="small-ghost" type="button" aria-pressed="true">Wrap: ON</button><button id="expand-log" class="small-ghost" type="button" aria-expanded="false">Expand</button><button id="download-log" class="small-ghost" type="button">↓ Export log</button></div></div>
+        <div class="log-clear-row">
+          <div class="log-clear-copy"><b>Log history</b><small>Clear the visible stream and truncate the server-side <code>engine.log</code> file. New events will continue to appear.</small></div>
+          <button id="clear-log" class="clear-logs-action" type="button" title="Clear visible logs and truncate the saved engine.log" aria-label="Clear log history">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M8 5.5V3.8h4v1.7m-6.2 0 .7 10.2h6.9l.7-10.2M8.4 8.2v5.1m3.2-5.1v5.1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Clear log history</span>
+          </button>
+        </div>
+        <div class="terminal-window" id="terminal-window"><div class="terminal-top"><div class="terminal-dots"><i></i><i></i><i></i></div><span id="terminal-tool-label">rulest-engine / stdout</span><span class="terminal-right">UTF-8 <b>·</b> REAL TIME</span></div><div class="terminal-body" id="log-output"><div class="terminal-placeholder"><span>⌁</span><b>Waiting for engine output</b><small>Start a run to stream live progress and diagnostics.</small></div></div><div class="terminal-foot"><span><i></i> CONNECTED TO LOCAL ENGINE</span><span id="log-line-count">0 EVENTS</span></div></div>
+      </section>
+      <footer class="page-footer"><span>RULEOPS <b>·</b> HASHCAT RULE TOOLCHAIN</span><span>BUILT FOR FOCUS <i>✳</i></span></footer>
+    </main>
+  </div>
+  <dialog class="password-dialog" id="password-dialog">
+    <form id="password-form" method="dialog">
+      <div class="dialog-eyebrow">ACCOUNT SECURITY</div>
+      <h2>Change password</h2>
+      <p>Changing your password will sign out other browsers and devices.</p>
+      <label for="current-password">Current password</label><input id="current-password" type="password" autocomplete="current-password" required>
+      <label for="new-password">New password</label><input id="new-password" type="password" autocomplete="new-password" minlength="12" required>
+      <small>Use at least 12 characters.</small>
+      <label for="confirm-new-password">Confirm new password</label><input id="confirm-new-password" type="password" autocomplete="new-password" minlength="12" required>
+      <div class="dialog-error" id="password-change-error" role="alert"></div>
+      <div class="dialog-actions"><button class="small-ghost" id="cancel-password-change" type="button">Cancel</button><button class="primary-button" id="submit-password-change" type="submit">Update password</button></div>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status"></div>
+  
+      <script src="/app.js?v=ruleops-2.4.7-contact"></script>
+</body>
+</html>

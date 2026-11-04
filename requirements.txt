@@ -1,0 +1,7 @@
+numpy
+pyopencl
+tqdm
+
+msgpack>=1.0
+
+cryptography>=41.0

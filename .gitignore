@@ -1,0 +1,26 @@
+# Runtime state and secrets
+auth.json
+runs/
+*.log
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local environment files
+.env
+.env.*
+
+# Persistent login throttling state (contains client IP metadata)
+security.sqlite3
+security.sqlite3-shm
+security.sqlite3-wal
+security.sqlite3-journal
+# RULEOPS offline licensing secrets and local activation state
+license_issuer_private/
+issued_licenses/
+license_usage.sqlite3
+license.lic

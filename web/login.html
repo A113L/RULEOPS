@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c0e13">
+  <title>RULEOPS — Secure Access</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/login.css">
+</head>
+<body>
+  <main class="shell">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 44 44" aria-hidden="true"><rect x="1" y="1" width="42" height="42" rx="11" fill="#17221b" stroke="#405633"/><path d="M17 10 13.5 34 M29 10 25.5 34 M9.5 18.5H35 M8 27H33.5" fill="none" stroke="#b8f36b" stroke-width="3.1" stroke-linecap="round"/><circle cx="34.5" cy="31.5" r="3" fill="#b8f36b"/></svg>
+      <span><strong>RULEOPS</strong><small>HASHCAT RULE TOOLCHAIN</small></span>
+    </div>
+    <section class="card">
+      <div class="eyebrow">SECURE WORKSPACE</div>
+      <h1 id="title">Sign in to RULEOPS<span class="title-period">.</span></h1>
+      <p class="intro" id="intro">Enter your application password to access RULEOPS, the unified rule toolchain.</p>
+      <form id="auth-form">
+        <div class="error" id="error" role="alert"></div>
+        <div class="field">
+          <label for="password" id="password-label">Application password</label>
+          <div class="input-wrap"><input id="password" name="password" type="password" required autocomplete="current-password" autofocus><button class="reveal" type="button" data-reveal="password">SHOW</button></div>
+          <p class="hint hidden" id="password-hint">Use at least 12 characters. A unique passphrase is recommended.</p>
+        </div>
+        <div class="field hidden" id="confirm-field">
+          <label for="confirm-password">Confirm password</label>
+          <div class="input-wrap"><input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password"><button class="reveal" type="button" data-reveal="confirm-password">SHOW</button></div>
+        </div>
+        <button class="submit" id="submit" type="submit">Sign in <span aria-hidden="true">→</span></button>
+      </form>
+      <div class="notice" id="notice">Sessions expire after 12 hours. Five incorrect sign-in attempts temporarily lock access from that network address.</div>
+    </section>
+    <div class="foot"><span class="dot"></span> Password-protected · Local network access</div>
+  </main>
+<script src="/login.js" defer></script>
+</body>
+</html>

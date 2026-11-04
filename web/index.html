@@ -490,6 +490,57 @@
             </div>
             <p class="license-hint" id="license-hint">Without a signed license each module allows 3 full runs, then enters DEMO LIMITED with restricted CELF.</p>
           </section>
+          <section class="panel usecases-panel" id="license-usecases-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">TOOLKIT</span><h2>What each program is for</h2></div></div>
+            <p class="license-hint">RULEOPS packages three complementary Hashcat rule tools. Use the cards below to pick the right workflow for the job.</p>
+            <div class="usecases-grid">
+              <article class="usecase-card" data-tool="rulest">
+                <div class="usecase-head">
+                  <span class="usecase-icon" aria-hidden="true">#</span>
+                  <div>
+                    <b>RULEST</b>
+                    <small>Rule generation engine</small>
+                  </div>
+                </div>
+                <ul class="usecase-list">
+                  <li>Build optimized Hashcat rulesets from wordlists and cracked-password material</li>
+                  <li>GPU-accelerated CELF selection for high target coverage with fewer rules</li>
+                  <li>Tune Bloom filters, greedy vs frequency trade-offs, and multi-GPU runs</li>
+                  <li>Safe pause / resume checkpoints for long generation jobs</li>
+                </ul>
+              </article>
+              <article class="usecase-card" data-tool="ranker">
+                <div class="usecase-head">
+                  <span class="usecase-icon" aria-hidden="true">⇧</span>
+                  <div>
+                    <b>Rule Ranker</b>
+                    <small>Score &amp; optimize rulesets</small>
+                  </div>
+                </div>
+                <ul class="usecase-list">
+                  <li>Score candidate rules against hashes or cracked sets (ranking workflow)</li>
+                  <li>CELF-optimize an existing <code>.rule</code> file — shrink size while keeping coverage</li>
+                  <li>Analyze ranking CSVs: summaries, cleaned rules, re-scored exports</li>
+                  <li>GPU ranking &amp; optimization; CSV analysis stays CPU-only</li>
+                </ul>
+              </article>
+              <article class="usecase-card" data-tool="concentrator">
+                <div class="usecase-head">
+                  <span class="usecase-icon" aria-hidden="true">⌘</span>
+                  <div>
+                    <b>Concentrator</b>
+                    <small>Extract, generate &amp; clean</small>
+                  </div>
+                </div>
+                <ul class="usecase-list">
+                  <li>Frequency-ranked or Markov-weighted extraction from rule collections</li>
+                  <li>Combinatorial token-chain generation with length and target bounds</li>
+                  <li>Kneser–Ney Markov training and best-first rule generation</li>
+                  <li>Normalize, deduplicate and refine large multi-file rule libraries</li>
+                </ul>
+              </article>
+            </div>
+          </section>
           <section class="panel" id="license-install-panel">
             <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ACTIVATION</span><h2>Install signed license</h2></div></div>
             <p class="license-hint">Paste the JSON contents of a signed <code>license.lic</code> file issued for this installation. Administrator only.</p>

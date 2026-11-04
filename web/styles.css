@@ -695,6 +695,90 @@
 .license-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
 .license-feedback{font-size:12px;margin:8px 0 0;color:#9fd89a}
 .license-feedback.error{color:#f0a090}
+
+/* --- Use-cases (License page, visible to all roles) --- */
+.usecases-panel{margin-top:0}
+.usecases-grid{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:12px;
+  margin-top:4px;
+}
+.usecase-card{
+  border:1px solid #2a364c;
+  border-radius:12px;
+  padding:14px 14px 12px;
+  background:#121b2b;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  transition:border-color .18s ease, background .18s ease;
+}
+.usecase-card:hover{
+  border-color:#3a4a66;
+  background:#141e30;
+}
+.usecase-card[data-tool="rulest"]{border-left:3px solid #6b8cff}
+.usecase-card[data-tool="ranker"]{border-left:3px solid #e6c86a}
+.usecase-card[data-tool="concentrator"]{border-left:3px solid #9fd89a}
+.usecase-head{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+.usecase-icon{
+  width:36px;height:36px;
+  border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font:800 16px/1 var(--mono);
+  background:#0d1420;
+  border:1px solid #2a364c;
+  color:#c8d4e6;
+  flex-shrink:0;
+}
+.usecase-card[data-tool="rulest"] .usecase-icon{color:#8aa4ff;border-color:#3a4a7a;background:#121828}
+.usecase-card[data-tool="ranker"] .usecase-icon{color:#e6c86a;border-color:#5a4a22;background:#1a160e}
+.usecase-card[data-tool="concentrator"] .usecase-icon{color:#9fd89a;border-color:#3d5a3a;background:#121a14}
+.usecase-head b{
+  display:block;
+  font-size:13px;
+  color:#e8eef8;
+  letter-spacing:.01em;
+}
+.usecase-head small{
+  display:block;
+  font-size:11px;
+  color:#8090a8;
+  margin-top:2px;
+}
+.usecase-list{
+  margin:0;
+  padding:0 0 0 16px;
+  list-style:disc;
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+}
+.usecase-list li{
+  font-size:12px;
+  color:#a8b6ca;
+  line-height:1.45;
+}
+.usecase-list code{
+  font:11px/1.3 var(--mono);
+  color:#c8d4e6;
+  background:#0d1420;
+  padding:1px 5px;
+  border-radius:4px;
+  border:1px solid #2a364c;
+}
+@media(min-width:1100px){
+  .usecases-grid{grid-template-columns:1fr}
+}
+@media(max-width:980px){
+  .usecases-grid{grid-template-columns:1fr}
+}
+
 #user-password-input{
   width:100%;max-width:360px;border-radius:10px;border:1px solid #33445f;
   background:#0d1420;color:#dce6f5;padding:10px 12px;font:13px/1.3 system-ui;margin-bottom:12px

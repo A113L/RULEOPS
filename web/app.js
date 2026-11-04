@@ -436,7 +436,17 @@ function renderStatus(data) {
   $('live-pill').classList.toggle('paused', paused);
   $('live-pill').innerHTML = `<span></span> ${paused ? 'PAUSED' : data.pause_requested ? 'PAUSE PENDING' : running ? (data.status === 'stopping' ? 'STOPPING' : 'RUNNING') : data.status === 'completed' ? 'COMPLETE' : data.status === 'stopped' ? 'STOPPED' : data.status === 'failed' ? 'FAILED' : 'STANDBY'}`;
   const pct = data.progress;
-  $('progress-label').textContent = pct == null ? (running ? 'LIVE' : '—') : `${pct}%`;
+  const completed = Number.isFinite(data.progress_completed) ? data.progress_completed : null;
+  const total = Number.isFinite(data.progress_total) ? data.progress_total : null;
+  const formatCount = (value) => Number(value).toLocaleString();
+  const countLabel = completed != null && total != null
+    ? ` · ${formatCount(completed)}/${formatCount(total)}` : '';
+  $('progress-label').textContent = pct == null ? (running ? 'LIVE' : '—') : `${pct}%${countLabel}`;
+  $('progress-label').title = [
+    completed != null && total != null ? `${formatCount(completed)} of ${formatCount(total)} completed` : '',
+    data.progress_rate || '',
+    Number.isFinite(data.progress_rules) ? `${Number(data.progress_rules).toLocaleString()} rules` : '',
+  ].filter(Boolean).join(' · ');
   $('phase-progress').style.width = pct == null ? '0%' : `${pct}%`;
   $('phase-progress').classList.toggle('indeterminate', running && pct == null);
   $('start-run').disabled = running;
@@ -1219,9 +1229,39 @@ function formatModuleBadge(mod) {
   return { text: `DEMO ${used}/${limit}`, mode: 'DEMO', hide: false };
 }
 
+function syncLicenseInstallControl(license) {
+  const button = document.getElementById('install-license-button');
+  const input = document.getElementById('license-json-input');
+  const hint = document.getElementById('license-install-hint');
+  if (!button) return;
+
+  // ``installed`` covers valid, expired, and machine-mismatched license files:
+  // an administrator must still be able to remove any installed file.
+  const installed = typeof license?.installed === 'boolean'
+    ? license.installed
+    : !!(license?.valid || license?.fully_licensed);
+  button.dataset.licenseAction = installed ? 'uninstall' : 'install';
+  button.className = installed ? 'danger-action-button' : 'primary-button';
+  button.innerHTML = installed
+    ? '<span>Uninstall license</span><b>×</b>'
+    : '<span>Install license</span><b>↗</b>';
+  button.setAttribute('aria-label', installed ? 'Uninstall installed license' : 'Install license');
+
+  if (input) {
+    input.disabled = installed;
+    input.setAttribute('aria-disabled', installed ? 'true' : 'false');
+  }
+  if (hint) {
+    hint.textContent = installed
+      ? 'A license file is installed. Uninstall it to return this installation to DEMO mode; you can then install a replacement license.'
+      : 'Paste the JSON contents of a signed license.lic file issued for this installation. Administrator only.';
+  }
+}
+
 function applyLicenseToUI(license) {
   if (!license || typeof license !== 'object') return;
   currentLicense = license;
+  syncLicenseInstallControl(license);
   const edition = (license.edition || 'DEMO').toUpperCase();
   const card = document.getElementById('license-card');
   if (card) {
@@ -1306,6 +1346,34 @@ function wireLicenseAdmin() {
 
   if (installBtn) {
     installBtn.addEventListener('click', async () => {
+      if (installBtn.dataset.licenseAction === 'uninstall') {
+        const confirmed = window.confirm(
+          'Remove the installed RULEOPS license? This returns all modules to DEMO mode. You will need the license file to install it again.'
+        );
+        if (!confirmed) return;
+        installBtn.disabled = true;
+        try {
+          const response = await fetch('/api/license/uninstall', {
+            method: 'POST', headers: csrfHeaders(), body: JSON.stringify({}),
+          });
+          const data = await response.json();
+          if (data.license) applyLicenseToUI(data.license);
+          if (!response.ok) {
+            showFeedback(data.error || 'License removal failed.', true);
+            return;
+          }
+          const input = document.getElementById('license-json-input');
+          if (input) input.value = '';
+          showFeedback(data.message || 'License removed. RULEOPS has returned to DEMO mode.', false);
+          return;
+        } catch (err) {
+          showFeedback(String(err), true);
+          return;
+        } finally {
+          installBtn.disabled = false;
+        }
+      }
+
       const raw = (document.getElementById('license-json-input') || {}).value || '';
       let payload;
       try { payload = JSON.parse(raw); }
@@ -1316,6 +1384,7 @@ function wireLicenseAdmin() {
         });
         const data = await response.json();
         if (!response.ok) {
+          if (data.license) applyLicenseToUI(data.license);
           showFeedback(data.error || 'Install failed', true);
           return;
         }

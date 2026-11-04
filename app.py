@@ -36,6 +36,7 @@ from licensing.core import (
     is_fully_licensed,
     license_summary,
     module_mode,
+    uninstall_license,
     record_module_run,
 )
 
@@ -65,6 +66,8 @@ STATE = {
     "status": "idle", "tool": "rulest", "paused": False, "pause_requested": False, "job_id": None, "started_at": None, "finished_at": None,
     "pid": None, "stage": "Waiting for a run", "stage_detail": "Start a run to see the active processing phase.",
     "stage_started_at": None, "progress": None,
+    "progress_completed": None, "progress_total": None, "progress_rate": None,
+    "progress_rules": None,
     "exit_code": None, "logs": [], "log_seq": 0, "log_generation": 0, "outputs": [],
     "error": None, "control_file": None, "run_dir": None,
 }
@@ -663,6 +666,15 @@ ANSI_ESCAPE_RE = re.compile(
 )
 PROGRESS_PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3})%\s*\|")
 PROGRESS_COUNT_RE = re.compile(r"\|\s*([\d,]+)\s*/\s*([\d,]+)\s*\[")
+PROGRESS_RULES_RE = re.compile(r"\brules\s*=\s*([\d,]+)", re.IGNORECASE)
+# rulest uses tqdm-style bars with an additional ``spd=12.0K words/s`` or
+# ``spd=812.4M combos/s`` field. Keep this independent of the bar glyphs so
+# Windows consoles, ANSI color, and different Unicode progress characters all
+# produce the same parsed telemetry.
+PROGRESS_RATE_RE = re.compile(
+    r"\bspd\s*=\s*([\d,.]+)\s*([KMGT]?)\s*(words|combos|rules)\s*/s\b",
+    re.IGNORECASE,
+)
 
 
 def engine_badge_for_status(status: str, paused: bool = False) -> dict:
@@ -828,14 +840,26 @@ def update_stage(line: str):
             stage = "Concentrator · Processing"
     pct_match = PROGRESS_PERCENT_RE.search(clean)
     count_match = PROGRESS_COUNT_RE.search(clean)
+    rate_match = PROGRESS_RATE_RE.search(clean)
+    rules_match = PROGRESS_RULES_RE.search(clean)
     progress = None
+    progress_completed = progress_total = None
+    progress_rate = None
+    progress_rules = None
     if pct_match:
         progress = min(100, int(pct_match.group(1)))
-    elif count_match:
-        total = int(count_match.group(2).replace(",", ""))
-        done = int(count_match.group(1).replace(",", ""))
-        if total > 0:
-            progress = min(100, round(done * 100 / total))
+    if count_match:
+        progress_completed = int(count_match.group(1).replace(",", ""))
+        progress_total = int(count_match.group(2).replace(",", ""))
+        if progress is None and progress_total > 0:
+            progress = min(100, round(progress_completed * 100 / progress_total))
+    if rate_match:
+        progress_rate = (
+            f"{rate_match.group(1)}{rate_match.group(2).upper()} "
+            f"{rate_match.group(3).lower()}/s"
+        )
+    if rules_match:
+        progress_rules = int(rules_match.group(1).replace(",", ""))
 
     with LOCK:
         if "RESUMED" in clean.upper():
@@ -847,6 +871,10 @@ def update_stage(line: str):
         if stage:
             if stage != STATE["stage"]:
                 STATE["progress"] = None
+                STATE["progress_completed"] = None
+                STATE["progress_total"] = None
+                STATE["progress_rate"] = None
+                STATE["progress_rules"] = None
                 STATE["stage_started_at"] = time.time()
             STATE["stage"] = stage
             if stage == "Completed":
@@ -863,6 +891,14 @@ def update_stage(line: str):
                 STATE["stage_detail"] = clean[:320]
         if progress is not None:
             STATE["progress"] = progress
+        if progress_completed is not None:
+            STATE["progress_completed"] = progress_completed
+        if progress_total is not None:
+            STATE["progress_total"] = progress_total
+        if progress_rate is not None:
+            STATE["progress_rate"] = progress_rate
+        if progress_rules is not None:
+            STATE["progress_rules"] = progress_rules
 
 
 def build_command(options: dict, run_dir: Path):
@@ -1620,6 +1656,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_auth_set_user_password()
         elif parsed.path == "/api/license/install":
             self.handle_license_install()
+        elif parsed.path == "/api/license/uninstall":
+            self.handle_license_uninstall()
         elif parsed.path.startswith("/api/upload/"):
             self.handle_upload(parsed, ranker=False)
         elif parsed.path.startswith("/api/ranker/upload/"):
@@ -1941,6 +1979,26 @@ class Handler(BaseHTTPRequestHandler):
             "license": summary,
         })
 
+    def handle_license_uninstall(self):
+        """Remove the locally installed license and return the resulting status."""
+        if not require_admin(self, api=True):
+            return
+        try:
+            removed = uninstall_license()
+        except OSError as exc:
+            self.send_json({"error": f"Could not remove license.lic: {exc}"}, 500)
+            return
+        summary = license_summary()
+        self.send_json({
+            "ok": True,
+            "removed": removed,
+            "message": (
+                "License removed. RULEOPS has returned to DEMO mode."
+                if removed else "No installed license was found. RULEOPS is in DEMO mode."
+            ),
+            "license": summary,
+        })
+
     def handle_clear_logs(self):
         try:
             result = clear_log_history()
@@ -2129,7 +2187,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE.update({
                 "status": "running", "tool": "rulest", "paused": False, "pause_requested": False, "job_id": run_id, "started_at": time.time(), "finished_at": None,
                 "pid": None, "stage": "Starting engine", "stage_detail": "Launching the engine process…",
-                "stage_started_at": time.time(), "progress": None, "exit_code": None,
+                "stage_started_at": time.time(), "progress": None, "progress_completed": None, "progress_total": None, "progress_rate": None, "progress_rules": None, "exit_code": None,
                 "logs": [], "log_seq": 0,
                 "log_generation": int(STATE.get("log_generation", 0)) + 1,
                 "outputs": [], "error": None,
@@ -2182,7 +2240,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "running", "tool": "ranker", "paused": False, "pause_requested": False,
                 "job_id": run_id, "started_at": time.time(), "finished_at": None, "pid": None,
                 "stage": "Rule Ranker · Starting", "stage_detail": f"Launching {mode} workflow…",
-                "stage_started_at": time.time(), "progress": None, "exit_code": None,
+                "stage_started_at": time.time(), "progress": None, "progress_completed": None, "progress_total": None, "progress_rate": None, "progress_rules": None, "exit_code": None,
                 "logs": [], "log_seq": 0,
                 "log_generation": int(STATE.get("log_generation", 0)) + 1,
                 "outputs": [], "error": None, "control_file": None, "run_dir": str(run_dir),
@@ -2228,7 +2286,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "running", "tool": "concentrator", "paused": False, "pause_requested": False,
                 "job_id": run_id, "started_at": time.time(), "finished_at": None, "pid": None,
                 "stage": f"Concentrator · {mode.title()}", "stage_detail": "Launching Concentrator workflow…",
-                "stage_started_at": time.time(), "progress": None, "exit_code": None,
+                "stage_started_at": time.time(), "progress": None, "progress_completed": None, "progress_total": None, "progress_rate": None, "progress_rules": None, "exit_code": None,
                 "logs": [], "log_seq": 0,
                 "log_generation": int(STATE.get("log_generation", 0)) + 1,
                 "outputs": [], "error": None, "control_file": None, "run_dir": str(run_dir),

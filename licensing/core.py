@@ -84,6 +84,20 @@ def load_license(path: Optional[Path] = None) -> Dict[str, Any]:
         return {"edition": "DEMO", "valid": False, "reason": f"Invalid license: {type(exc).__name__}"}
 
 
+def uninstall_license(path: Optional[Path] = None) -> bool:
+    """Remove the local license file; return whether a file was removed.
+
+    ``unlink`` removes a symlink itself rather than following it, which keeps
+    removal confined to the configured license path.
+    """
+    target = Path(path) if path is not None else LICENSE_FILE
+    try:
+        target.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def is_fully_licensed() -> bool:
     lic = load_license()
     return bool(lic.get("valid")) and str(lic.get("edition", "")).upper() in ("PROFESSIONAL", "ENTERPRISE")
@@ -356,6 +370,7 @@ def license_summary() -> Dict[str, Any]:
         }
     return {
         "edition": lic.get("edition", "DEMO"),
+        "installed": LICENSE_FILE.is_file(),
         "valid": bool(lic.get("valid")),
         "customer": lic.get("customer", ""),
         "license_id": lic.get("license_id", ""),

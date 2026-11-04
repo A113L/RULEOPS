@@ -208,7 +208,13 @@ def main():
         log_info(f"  {bold(dim('SELECT'))}  : {dim('frequency')} — sort by raw GPU hit count (--select-mode greedy to enable)")
     print()
 
-    base_words = load_wordlist(args.base_wordlist)
+    # Keep both corpora resident in Shared Memory.  The base loader retains
+    # its compact membership table when Stage 0 is enabled, so Windows spawn
+    # workers attach to one table rather than receiving a pickled Python set.
+    base_words = load_wordlist(
+        args.base_wordlist,
+        retain_membership_index=bool(args.token_strip and args.token_strip_bloom_mb == 0),
+    )
     target_words = load_wordlist(args.target_wordlist)
     print()
 
@@ -307,7 +313,8 @@ def main():
                       "healthy --device.")
             sys.exit(1)
         candidate_rules = [r for r in final_counts if r != ':']
-        n_target = len(set(target_words))
+        # load_wordlist already deduplicates words while loading.
+        n_target = len(target_words)
         budget = args.select_budget if args.select_budget > 0 else None
 
         try:

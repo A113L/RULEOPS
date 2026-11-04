@@ -482,13 +482,43 @@ class GPUEngine:
         self.bloom_buf = cl.Buffer(self.context, cl.mem_flags.READ_ONLY|cl.mem_flags.COPY_HOST_PTR, hostbuf=bf)
 
     def _flatten(self, items):
+        """Flatten words without a second list of per-word byte objects.
+
+        SharedWordList/contiguous WordListView instances expose the packed RAM
+        buffer directly.  Other iterables use one exact-sized bytearray and
+        fill it in place, avoiding ``enc = [word.encode(...) ...]`` plus
+        ``b''.join(enc)`` which temporarily held two full copies.
+        """
         if not items:
-            return (np.array([], dtype=np.uint8), np.array([], dtype=np.int32), np.array([], dtype=np.int32))
-        enc = [x.encode('latin-1') for x in items]
-        flat = b''.join(enc)
-        offs = [0]; lens = [len(enc[0])]
-        for b in enc[1:]: offs.append(offs[-1]+lens[-1]); lens.append(len(b))
-        return (np.frombuffer(flat, dtype=np.uint8), np.array(offs, dtype=np.int32), np.array(lens, dtype=np.int32))
+            return (
+                np.array([], dtype=np.uint8),
+                np.array([], dtype=np.int32),
+                np.array([], dtype=np.int32),
+            )
+        shared_flatten = getattr(items, "numpy_flatten", None)
+        if shared_flatten is not None:
+            return shared_flatten()
+
+        n = len(items)
+        offsets = np.empty(n, dtype=np.int32)
+        lengths = np.empty(n, dtype=np.int32)
+        total = 0
+        for i, word in enumerate(items):
+            size = len(word.encode("latin-1"))
+            lengths[i] = size
+            total += size
+        if total > 0x7FFFFFFF:
+            raise OverflowError(
+                "GPU word offsets use int32; this wordlist exceeds the 2 GiB limit"
+            )
+        flat = bytearray(total)
+        position = 0
+        for i, word in enumerate(items):
+            encoded = word.encode("latin-1")
+            offsets[i] = position
+            flat[position:position + len(encoded)] = encoded
+            position += len(encoded)
+        return np.frombuffer(flat, dtype=np.uint8), offsets, lengths
 
     def prepare_words_data(self, words):
         wf,wo,wl = self._flatten(words)

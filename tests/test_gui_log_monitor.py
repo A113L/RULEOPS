@@ -14,6 +14,10 @@ def reset_stage_state():
             "stage_detail": "Launching the engine process…",
             "stage_started_at": None,
             "progress": None,
+            "progress_completed": None,
+            "progress_total": None,
+            "progress_rate": None,
+            "progress_rules": None,
             "paused": False,
             "pause_requested": False,
         })
@@ -106,3 +110,45 @@ def test_celf_upper_bound_bar_updates_phase_progress_from_web_log():
     assert app.STATE["stage"] == "Rule Selection · CELF"
     assert app.STATE["progress"] == 42
     assert app.STATE["stage_detail"].startswith("[CELF] Upper-bound pass")
+
+
+def test_windows_stage_zero_progress_parses_count_and_word_rate():
+    reset_stage_state()
+    line = (
+        "[19:54:38] STAGE 0 :  23%|████████████████████████████▌                         "
+        "| 234375/999997 [00:19<00:16] , rules=2293, spd=12.0K words/s"
+    )
+    app.update_stage("\x1b[96m" + line + "\x1b[0m\x1b[K")
+    assert app.STATE["stage"] == "Stage 0 · Token Strip"
+    assert app.STATE["progress"] == 23
+    assert app.STATE["progress_completed"] == 234375
+    assert app.STATE["progress_total"] == 999997
+    assert app.STATE["progress_rate"] == "12.0K words/s"
+    assert app.STATE["progress_rules"] == 2293
+
+
+def test_windows_stage_one_progress_parses_combo_rate():
+    reset_stage_state()
+    line = (
+        "[19:55:05] STAGE 1 :  11%|█████████████                         "
+        "| 1,602,667/14,343,719 [00:12<01:36] , rules=1939, spd=791.5M combos/s"
+    )
+    app.update_stage(line)
+    assert app.STATE["stage"] == "Stage 1 · Single-rule GPU sweep"
+    assert app.STATE["progress"] == 11
+    assert app.STATE["progress_completed"] == 1602667
+    assert app.STATE["progress_total"] == 14343719
+    assert app.STATE["progress_rate"] == "791.5M combos/s"
+    assert app.STATE["progress_rules"] == 1939
+
+
+def test_progress_counts_reset_when_stage_changes():
+    reset_stage_state()
+    app.update_stage("STAGE 0 : 100%|████| 999997/999997 [00:28<00:00] , spd=35.6K words/s")
+    app.update_stage("│ STAGE 1 — SINGLE RULE SEARCH")
+    assert app.STATE["stage"] == "Stage 1 · Single-rule GPU sweep"
+    assert app.STATE["progress"] is None
+    assert app.STATE["progress_completed"] is None
+    assert app.STATE["progress_total"] is None
+    assert app.STATE["progress_rate"] is None
+    assert app.STATE["progress_rules"] is None

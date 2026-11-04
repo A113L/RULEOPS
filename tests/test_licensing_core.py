@@ -79,6 +79,7 @@ def test_celf_soft_caps_in_demo(isolated_licensing):
 def test_license_summary_shape(isolated_licensing):
     summary = core.license_summary()
     assert summary["edition"] == "DEMO"
+    assert summary["installed"] is False
     assert summary["fully_licensed"] is False
     assert summary["demo_limit"] == 3
     assert set(summary["modules"]) == set(core.MODULES)
@@ -101,3 +102,25 @@ def test_can_start_full_run_modes(isolated_licensing):
         core.record_module_run("RULEST")
     gate = core.can_start_full_run("RULEST")
     assert gate["mode"] == "DEMO_LIMITED"
+
+
+def test_license_summary_reports_installed_file_even_when_invalid(isolated_licensing):
+    target = isolated_licensing / "license.lic"
+    target.write_text("not a valid signed license", encoding="utf-8")
+    summary = core.license_summary()
+    assert summary["installed"] is True
+    assert summary["valid"] is False
+    assert summary["fully_licensed"] is False
+
+
+def test_uninstall_license_removes_only_the_license_file(isolated_licensing):
+    target = isolated_licensing / "license.lic"
+    target.write_text("signed payload", encoding="utf-8")
+    keep = isolated_licensing / "unrelated.data"
+    keep.write_text("unrelated records", encoding="utf-8")
+
+    assert core.uninstall_license() is True
+    assert not target.exists()
+    assert keep.read_text(encoding="utf-8") == "unrelated records"
+    assert core.uninstall_license() is False
+    assert core.license_summary()["installed"] is False

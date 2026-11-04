@@ -204,7 +204,6 @@ class GPUExtractor:
         if seed_chains and self.user_max_depth<2: log_warn(f"[SEED] {len(seed_chains)} chain seed(s) ignored — requires --max-depth >= 2")
 
         worker_state.p0_worker_base_set = set()
-        worker_state.p0_worker_base_by_len = {}
 
         if not base_words or not target_words:
             log_warn("Empty wordlist(s), aborting extraction")

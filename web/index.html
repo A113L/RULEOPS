@@ -545,10 +545,10 @@
           </section>
           <section class="panel" id="license-install-panel">
             <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ACTIVATION</span><h2>Install signed license</h2></div></div>
-            <p class="license-hint">Paste the JSON contents of a signed <code>license.lic</code> file issued for this installation. Administrator only.</p>
+            <p class="license-hint" id="license-install-hint">Paste the JSON contents of a signed <code>license.lic</code> file issued for this installation. Administrator only.</p>
             <textarea id="license-json-input" class="license-textarea" rows="16" placeholder='{"payload":{...},"signature":"..."}'></textarea>
             <div class="license-actions">
-              <button id="install-license-button" class="primary-button" type="button"><span>Install license</span><b>↗</b></button>
+              <button id="install-license-button" class="primary-button" type="button" data-license-action="install"><span>Install license</span><b>↗</b></button>
             </div>
             <p class="license-feedback" id="license-feedback" hidden></p>
           </section>

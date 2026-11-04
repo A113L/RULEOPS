@@ -250,11 +250,8 @@ def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=
     base_by_len = defaultdict(set)
     for w in base_set: base_by_len[len(w)].add(w)
     base_by_len = dict(base_by_len)
-    total_bytes = sum(len(w) for w in target_words)
-    DISK_THRESHOLD_BYTES = 150 * 1024 * 1024
-    if total_bytes > DISK_THRESHOLD_BYTES:
-        log_warn(f"[S0] Target wordlist size {total_bytes/1e6:.0f}MB > {DISK_THRESHOLD_BYTES/1e6:.0f}MB — using single worker & disk buffer")
-        n_workers = 1
+    # Large wordlists use the same multi-worker chunked path as smaller ones
+    # (no forced single-worker / disk-buffer fallback).
     worker_state.p0_worker_base_set = base_set
     worker_state.p0_worker_base_by_len = base_by_len
     chunks = [target_words[i:i+chunk_size] for i in range(0,n_words,chunk_size)]

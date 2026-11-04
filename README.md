@@ -168,8 +168,4 @@ RULEOPS includes an offline Ed25519 license verifier.
 
 **With a signed PROFESSIONAL or ENTERPRISE `license.lic`:** all modules and CELF features are fully unlocked.
 
-Install the issuer's `licensing/public_key.pem` and the customer's signed `license.lic` in the RULEOPS installation root (or use the administrator **Install license** API). The private signing key must NEVER be copied to a customer installation.
-
-**Roles:** the first password created during setup is the **administrator** (full access + license management). The administrator can optionally set a separate regular **user** password with module access but without license administration.
-
 Install the added dependency with `python3 -m pip install -r requirements.txt`.

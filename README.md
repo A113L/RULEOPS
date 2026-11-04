@@ -173,20 +173,3 @@ Install the issuer's `licensing/public_key.pem` and the customer's signed `licen
 **Roles:** the first password created during setup is the **administrator** (full access + license management). The administrator can optionally set a separate regular **user** password with module access but without license administration.
 
 Install the added dependency with `python3 -m pip install -r requirements.txt`.
-
-### Private license issuer (run on the owner's headless Linux computer)
-
-Set a unique password of at least 16 characters and start the issuer:
-
-```bash
-export RULEOPS_LICENSE_ADMIN_PASSWORD='replace-with-a-long-unique-secret'
-python3 license_admin.py --host 0.0.0.0 --port 8766
-```
-
-Open `http://<issuer-LAN-IP>:8766/` from a browser on a trusted LAN. HTTP Basic authentication protects the issuer. Generate a PROFESSIONAL (one seat) or ENTERPRISE (configured concurrent-seat count) license; the browser downloads the signed `.lic` file. Issued files are also archived in `issued_licenses/`. The issuer creates its Ed25519 private key on first run in `license_issuer_private/` and publishes only `licensing/public_key.pem` for distribution. Back up `license_issuer_private/ed25519_private.pem` securely. Do not expose port 8766 to the Internet. Use SSH/VPN/TLS if the LAN is not fully trusted.
-
-### Customer activation
-
-Copy `licensing/public_key.pem` and the customer's `.lic` file to the RULEOPS installation (`licensing/public_key.pem` and `license.lic`). Restart RULEOPS. No Internet connection is used for license verification. Optional machine binding is available by entering the customer's Linux `/etc/machine-id` in the issuer; leave it blank for a transferable license. Enterprise `max_users` is recorded in the signed license, but concurrent-session enforcement is not yet implemented in this release; do not market seat limits as technically enforced until that feature is completed.
-
-The issuer is a separate owner-only tool. Do not distribute `license_admin.py`, the issuer private key directory, or the issued-license archive as part of customer packages.

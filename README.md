@@ -171,7 +171,7 @@ Install the added dependency with `python3 -m pip install -r requirements.txt`
 
 ### Customer activation
 
-Copy obtained `public_key.pem` and the customer's `.lic` file to the RULEOPS installation (`licensing/public_key.pem` and `license.lic`). Restart RULEOPS. No Internet connection is used for license verification. Optional machine binding is available by entering the customer's Linux `/etc/machine-id` in the issuer; leave it blank for a transferable license. 
+Copy obtained `public_key.pem` and the customer's `.lic` file to the RULEOPS installation (`licensing/public_key.pem` and `license.lic`). Restart RULEOPS. No Internet connection is used for license verification. Optional machine binding is available by entering the customer's Linux `/etc/machine-id` in the issuer; leave it blank for a transferable license. Enterprise `max_users` is recorded in the signed license, but concurrent-session enforcement is not yet implemented in this release; do not market seat limits as technically enforced until that feature is completed.
 
 ### Pricing
 

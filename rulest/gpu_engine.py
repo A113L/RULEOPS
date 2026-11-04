@@ -935,38 +935,89 @@ class GPUEngine:
                 pbar.update(1)
         return counter
 
-    def evaluate_chains_for_ga(self, chains, _profile=None):
-        """Stage 3 (genetic) companion to _run_chains_against_words above. Runs the
-        full chain-batch x word-sub-batch sweep for one engine's slice of chains
-        against whatever base_words were already cached via set_base_words(), and
-        returns {chain_str: set(global_word_index)} for that slice only.
+    def evaluate_chains_for_ga(self, chains, _profile=None, return_counts=False):
+        """Evaluate GA chains and return compact per-chain hit bitmaps or counts.
 
-        This is exposed as a single high-level call (rather than the parent
-        driving get_word_batch_data/_run_chain_kernel/etc one RPC at a time) so
-        that in multi-GPU mode a non-primary engine's ProcessEngineProxy only
-        needs ONE round trip per generation instead of dozens — each of those
-        would otherwise pickle numpy word/result arrays across the process
-        boundary redundantly (worker -> parent -> worker) for no reason, since
-        the parent never needed to see the intermediate word batch at all."""
-        cbs = self.params.get('CHAINS_PER_BATCH', 2000)
-        wsb = self.params.get('WORD_SUB_BATCH', 20000)
+        A Python ``set[int]`` costs many times more RAM than the word index it
+        stores.  With a large target list, retaining one set per chromosome
+        quickly consumed gigabytes and the parent process then pickled those
+        sets back from GPU workers.  A dense bitset uses exactly one bit per
+        active word (about 1.75 MiB per chain for 14 million words) and crosses
+        a worker boundary as a compact NumPy array.
+
+        Bitmap bit *i* represents local word index *i* in the active word view.
+        When return_counts=True, only scalar counts are accumulated and no
+        per-word bitmap is allocated (used by final exact verification).
+        """
+        cbs = max(1, int(self.params.get('CHAINS_PER_BATCH', 2000)))
+        wsb = max(1, int(self.params.get('WORD_SUB_BATCH', 20000)))
         n_words_total = len(self._base_words_precomputed[1]) if getattr(self, '_base_words_precomputed', None) else 0
-        hit_words = defaultdict(set)
+        bitmap_bytes = (n_words_total + 7) // 8
+        # Exact correction only needs counts. Do not allocate a bitmap for each
+        # candidate in that mode: on a large target this would reintroduce the
+        # very O(candidates × words) RAM cost that bitmaps were meant to avoid.
+        hit_words = {
+            chain: (0 if return_counts else np.zeros(bitmap_bytes, dtype=np.uint8))
+            for chain in chains
+        }
+        if not chains or n_words_total <= 0:
+            return hit_words
+
+        total_batches = ((len(chains) + cbs - 1) // cbs) * ((n_words_total + wsb - 1) // wsb)
+        total_pairs = len(chains) * n_words_total
+        log_info(
+            f"[S3]    GPU scan: {len(chains):,} chain(s) × {n_words_total:,} words "
+            f"({total_batches:,} batches; "
+            f"{'count-only, no hit-map allocation' if return_counts else f'{bitmap_bytes:,} bytes/chain hit map'})"
+        )
+        started = time.monotonic()
+        last_report = started
+        completed_batches = 0
+        processed_pairs = 0
         for ci in range(0, len(chains), cbs):
             cb = chains[ci:ci+cbs]
             seqs, depths = self._compute_chain_seqs(cb)
             for wi in range(0, n_words_total, wsb):
                 end = min(wi + wsb, n_words_total)
                 bd = self.get_word_batch_data(wi, end)
-                if bd['num_words'] == 0: continue
-                found = self._run_chain_kernel(bd, cb, (seqs, depths), return_word_idx=True, _profile=_profile)
-                if found:
-                    for local_idx, rule_str in found:
-                        hit_words[rule_str].add(wi + local_idx)
-            # _run_chain_kernel() above already calls _safe_queue_finish()
-            # internally for every sub-batch it launches, so an extra call
-            # here was pure redundant synchronization overhead.
-        return dict(hit_words)
+                if bd['num_words']:
+                    found = self._run_chain_kernel(
+                        bd, cb, (seqs, depths), return_word_idx=True, _profile=_profile
+                    )
+                    if found:
+                        if return_counts:
+                            # Every returned row is one (chain, word) hit.
+                            # Count immediately; retain no per-word IDs.
+                            for _local_idx, rule_str in found:
+                                if rule_str in hit_words:
+                                    hit_words[rule_str] += 1
+                        else:
+                            # Group only this small (kernel-capped) batch, then
+                            # set bits in-place. np.bitwise_or.at correctly
+                            # handles multiple hits landing in the same byte.
+                            grouped = defaultdict(list)
+                            for local_idx, rule_str in found:
+                                if rule_str in hit_words and 0 <= int(local_idx) < (end - wi):
+                                    grouped[rule_str].append(wi + int(local_idx))
+                            for rule_str, indices in grouped.items():
+                                idx = np.asarray(indices, dtype=np.uint32)
+                                byte_idx = idx >> 3
+                                masks = np.left_shift(np.uint8(1), (idx & 7).astype(np.uint8))
+                                np.bitwise_or.at(hit_words[rule_str], byte_idx, masks)
+                processed_pairs += len(cb) * (end - wi)
+                completed_batches += 1
+                now = time.monotonic()
+                if now - last_report >= 3.0 or completed_batches == total_batches:
+                    pct = 100.0 * processed_pairs / max(1, total_pairs)
+                    elapsed = max(0.001, now - started)
+                    log_info(
+                        f"[S3]    GPU scan progress: {processed_pairs:,}/{total_pairs:,} "
+                        f"chain-word pairs ({pct:.1f}%) | batches={completed_batches:,}/{total_batches:,} "
+                        f"| {completed_batches / elapsed:.1f} batches/s"
+                    )
+                    last_report = now
+            # _run_chain_kernel() already synchronizes each word sub-batch.
+        return hit_words
 
     def _compute_chain_seqs(self, chains):
         maxd = self.params['MAX_CHAIN_DEPTH']

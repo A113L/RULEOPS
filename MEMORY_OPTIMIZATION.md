@@ -46,3 +46,20 @@ second joined copy.
 
 The OpenCL word-offset ABI remains `int32`, so a single flattened word byte
 buffer is limited to less than 2 GiB, consistent with the existing GPU path.
+
+## Stage 3 genetic search on large targets
+
+Large target wordlists use bounded samples during GA generations. Generation 0
+is sampled too, so the first progress update does not wait for a full-target
+scan. Periodic full sweeps remain enabled only below the configured size
+threshold; very large targets use bounded samples throughout evolution.
+
+Stage 3 retains each chromosome's covered-word signature as a dense `uint8`
+bitmap (one bit per sampled word), not a Python `set[int]`. The cross-generation
+cache is capped by both entry count and an estimated 256 MiB of retained hit
+maps. GPU scans report chain-word-pair progress while a generation is running.
+
+After the GA generation budget ends, candidate hit counts are corrected against
+the full target in bounded candidate batches. This exact-verification phase is
+separate from the GA budget and has its own progress bar. It uses count-only
+aggregation: no per-candidate full-word bitmap or Python hit set is allocated.

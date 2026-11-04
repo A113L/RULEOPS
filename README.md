@@ -164,7 +164,6 @@ RULEOPS includes an offline Ed25519 license verifier.
 - Each module (RULEST, Rule Ranker, Concentrator) allows **3 full runs** independently.
 - After the third full run of a module, that module enters **DEMO LIMITED**.
 - In DEMO LIMITED, advanced CELF features are strongly restricted (no greedy/advanced CELF; tight candidate/budget caps). A basic demonstration path remains available.
-- Counters are stored in `license_usage.sqlite3`, survive restarts and re-logins, and are independent per module.
 
 **With a signed PROFESSIONAL or ENTERPRISE `license.lic`:** all modules and CELF features are fully unlocked.
 

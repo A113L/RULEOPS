@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Private, LAN-accessible offline license issuer. Run only on the owner's machine.
 
-Authentication is password-only (no username). Set:
+Authentication is password-only (no username). The issuer password is verified
+against a PBKDF2-HMAC-SHA256 hash embedded in this file; the plaintext password
+is never stored in the source. Run:
 
-    export RULEOPS_LICENSE_ADMIN_PASSWORD='at-least-16-chars-secret'
     python3 license_admin.py --host 0.0.0.0 --port 8766
 """
 from __future__ import annotations
@@ -38,6 +39,12 @@ SESSIONS: dict[str, float] = {}
 SESSION_TTL = 12 * 60 * 60
 SESSION_COOKIE = "ruleops_issuer_session"
 
+# Built-in issuer credential verifier. This is a salted PBKDF2-HMAC-SHA256
+# digest, not an encrypted/reversible password. Keep the plaintext out of source.
+ISSUER_PASSWORD_ITERATIONS = 600_000
+ISSUER_PASSWORD_SALT = base64.b64decode("05w7dO9w55cWfd0JDZ5pGQ==")
+ISSUER_PASSWORD_HASH = base64.b64decode("R/Ef7H9riS0vYErQ87mBN9h3i+roKaltIYDlTPnbkzc=")
+
 
 def ensure_keys() -> None:
     if PRIV.exists() and PUB.exists():
@@ -69,18 +76,18 @@ def canonical(payload: dict) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def expected_password() -> str:
-    return os.environ.get("RULEOPS_LICENSE_ADMIN_PASSWORD", "") or ""
-
-
 def password_ok(supplied: str) -> bool:
-    expected = expected_password()
-    if not expected or not isinstance(supplied, str):
+    """Verify the built-in issuer password without storing it in plaintext."""
+    if not isinstance(supplied, str) or not supplied or len(supplied) > 1024:
         return False
-    # Constant-time compare; reject absurdly long inputs.
-    if len(supplied) > 1024:
-        return False
-    return hmac.compare_digest(supplied, expected)
+    actual = hashlib.pbkdf2_hmac(
+        "sha256",
+        supplied.encode("utf-8"),
+        ISSUER_PASSWORD_SALT,
+        ISSUER_PASSWORD_ITERATIONS,
+        dklen=len(ISSUER_PASSWORD_HASH),
+    )
+    return hmac.compare_digest(actual, ISSUER_PASSWORD_HASH)
 
 
 def purge_sessions() -> None:
@@ -142,7 +149,7 @@ def login_page(error: str = "") -> str:
   <form method="post" action="/login" autocomplete="current-password">
     <label for="password">Issuer password</label>
     <input id="password" name="password" type="password" required minlength="16" autofocus
-           autocomplete="current-password" placeholder="RULEOPS_LICENSE_ADMIN_PASSWORD">
+           autocomplete="current-password" placeholder="Enter issuer password">
     {err}
     <button type="submit">Sign in</button>
   </form>
@@ -334,14 +341,9 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
-    password = expected_password()
-    if not password or len(password) < 16:
-        raise SystemExit(
-            "Set RULEOPS_LICENSE_ADMIN_PASSWORD to a unique password of at least 16 characters."
-        )
     ensure_keys()
     print(f"RULEOPS License Manager: http://<this-LAN-IP>:{args.port}/")
-    print("Password-only login (no username). Trusted LAN only. Ctrl+C to stop.")
+    print("Password-only login (no username). Built-in PBKDF2 verifier; trusted LAN only. Ctrl+C to stop.")
     ThreadingHTTPServer((args.host, args.port), H).serve_forever()
 
 

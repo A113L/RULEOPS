@@ -845,3 +845,25 @@
 .contact-value:hover{color:#b8f36b;text-decoration:underline}
 
 .license-textarea:disabled{opacity:.48;cursor:not-allowed;filter:saturate(.45)}
+
+/* Let the activation panel use the remaining height of the desktop license layout. */
+@media (min-width: 981px) {
+  #license-admin-grid {
+    align-items: stretch;
+  }
+
+  #license-admin-grid > .primary-column,
+  #license-admin-grid > .secondary-column {
+    min-height: 100%;
+  }
+
+  #license-admin-grid #license-install-panel {
+    flex: 1 1 auto;
+  }
+
+  #license-admin-grid #license-install-panel .license-textarea {
+    min-height: 320px;
+    height: auto;
+    flex: 1 1 auto;
+  }
+}

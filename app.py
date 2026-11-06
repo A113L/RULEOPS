@@ -520,6 +520,18 @@ def _safe_library_filename(name: str) -> bool:
     )
 
 
+# NumPy and JSON files in the input library are treated as internal/metadata
+# artifacts, never as selectable wordlists or rule files. Ranker's fingerprint
+# cache names vary with source names and max_len, so filter by final extension
+# instead of depending on one exact cache filename pattern.
+LIBRARY_NON_INPUT_EXTENSIONS = {".npy", ".json"}
+
+
+def _is_library_derived_cache(name: str) -> bool:
+    """Return True for Ranker caches and other non-input NumPy/JSON artifacts."""
+    return Path(str(name)).suffix.lower() in LIBRARY_NON_INPUT_EXTENSIONS
+
+
 def list_library_assets() -> dict:
     """List reusable wordlists and rules without following symlinks.
 
@@ -537,7 +549,7 @@ def list_library_assets() -> dict:
             continue
         for item in entries:
             try:
-                if not _safe_library_filename(item.name):
+                if not _safe_library_filename(item.name) or _is_library_derived_cache(item.name):
                     continue
                 # Path.stat(follow_symlinks=False) is not available on Python 3.8.
                 # os.lstat accepts path-like objects on all supported Python versions
@@ -561,7 +573,11 @@ def list_library_assets() -> dict:
 
 def resolve_library_asset(category: str, asset_id: str) -> Path:
     """Resolve a library ID/name to a regular file strictly inside its folder."""
-    if category not in {"wordlists", "rules"} or not _safe_library_filename(asset_id):
+    if (
+        category not in {"wordlists", "rules"}
+        or not _safe_library_filename(asset_id)
+        or _is_library_derived_cache(asset_id)
+    ):
         raise ValueError("The selected library item is invalid.")
     folder = library_category_dir(category)
     try:

@@ -268,3 +268,82 @@ def test_legacy_plain_named_rule_assets_are_visible_and_selectable(tmp_path, mon
         assert app.UPLOADS_META["seed"]["path"] == rules_dir / "legacy_custom_rules.rule"
     finally:
         _stop_server(server, thread)
+
+
+def test_ranker_fingerprint_cache_files_are_hidden_and_not_selectable(tmp_path, monkeypatch):
+    """Derived .npy/.json hash caches must never appear as reusable inputs."""
+    server, thread, base, headers, data_dir, _uploads_dir = _setup_server(tmp_path, monkeypatch)
+    try:
+        wordlist_dir = data_dir / "library" / "wordlists"
+        wordlist_dir.mkdir(parents=True)
+        source_id = "d" * 32 + "_large_dictionary.txt"
+        source = wordlist_dir / source_id
+        source.write_text("alpha\nbeta\n", encoding="utf-8")
+
+        # These are created by rule_ranker.hashing.cache_paths() next to source.
+        cache_npy = wordlist_dir / (source_id + ".fnv1a64.max256.npy")
+        cache_json = wordlist_dir / (source_id + ".fnv1a64.max256.json")
+        cache_npy.write_bytes(b"not a real numpy payload; listing must not open it")
+        cache_json.write_text('{"algorithm":"fnv1a64"}', encoding="utf-8")
+
+        status, listed = _request_json(base + "/api/library", headers, method="GET")
+        assert status == 200
+        assert [item["id"] for item in listed["wordlists"]] == [source_id]
+
+        # Hiding is enforced by the selection API too, not only by the dropdown.
+        for cache_id in (cache_npy.name, cache_json.name):
+            status, result = _request_json(
+                base + "/api/library/select", headers,
+                payload={"field": "target", "asset_id": cache_id}, method="POST",
+            )
+            assert status == 404
+            assert "invalid" in result["error"].lower()
+
+        # The source wordlist remains selectable as usual.
+        status, selected = _request_json(
+            base + "/api/library/select", headers,
+            payload={"field": "target", "asset_id": source_id}, method="POST",
+        )
+        assert status == 200 and selected["ok"] is True
+        assert app.UPLOADS_META["target"]["path"] == source
+    finally:
+        _stop_server(server, thread)
+
+
+
+def test_all_npy_and_json_assets_are_hidden_even_without_ranker_cache_name(tmp_path, monkeypatch):
+    """Library menus must never offer .npy/.json artifacts, regardless of basename."""
+    server, thread, base, headers, data_dir, _uploads_dir = _setup_server(tmp_path, monkeypatch)
+    try:
+        wordlist_dir = data_dir / "library" / "wordlists"
+        wordlist_dir.mkdir(parents=True)
+        source_id = "e" * 32 + "_plain_dictionary.txt"
+        (wordlist_dir / source_id).write_text("alpha\nbeta\n", encoding="utf-8")
+
+        # Exercise generic names too: cache files from older versions or custom
+        # names may not carry the current .fnv1a64.maxNNN marker.
+        hidden_ids = (
+            "fingerprints.npy",
+            "fingerprints.json",
+            "dictionary-cache.npy",
+            "dictionary-cache.json",
+            "legacy_" + "f" * 32 + "_opaque.npy",
+            "legacy_" + "a" * 32 + "_opaque.json",
+        )
+        for name in hidden_ids:
+            path = wordlist_dir / name
+            path.write_bytes(b"internal cache") if name.endswith(".npy") else path.write_text("{}", encoding="utf-8")
+
+        status, listed = _request_json(base + "/api/library", headers, method="GET")
+        assert status == 200
+        assert [item["id"] for item in listed["wordlists"]] == [source_id]
+
+        for asset_id in hidden_ids:
+            status, result = _request_json(
+                base + "/api/library/select", headers,
+                payload={"field": "target", "asset_id": asset_id}, method="POST",
+            )
+            assert status == 404
+            assert "invalid" in result["error"].lower()
+    finally:
+        _stop_server(server, thread)

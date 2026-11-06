@@ -930,3 +930,24 @@
   .library-pick { align-items: stretch; flex-direction: column; gap: 5px; }
   .seed-library-pick { margin-left: 0; }
 }
+.library-refresh {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #303b4c;
+  border-radius: 6px;
+  background: #101722;
+  color: #9baaBD;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.library-refresh:hover:not(:disabled) {
+  border-color: #8dbb5c;
+  color: #c7e99a;
+}
+.library-refresh:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}

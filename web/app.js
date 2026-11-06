@@ -129,37 +129,53 @@ function libraryPlaceholder(field) {
   if (field === 'concentrator_files') return 'Add saved rule file…';
   return LIBRARY_FIELD_CATEGORIES[field] === 'wordlists' ? 'Choose saved wordlist…' : 'Choose saved rule file…';
 }
-async function refreshLibraryMenus() {
+let libraryRefreshPromise = null;
+async function refreshLibraryMenus(showToast = false) {
   const selectors = Array.from(document.querySelectorAll('[data-library-field]'));
-  if (!selectors.length) return;
-  try {
-    const response = await fetch('/api/library', { cache: 'no-store' });
-    if (response.status === 401) { window.location.replace('/'); return; }
-    const library = await response.json();
-    if (!response.ok) throw new Error(library.error || 'Could not load saved inputs.');
-    selectors.forEach((select) => {
-      const field = select.dataset.libraryField;
-      const category = LIBRARY_FIELD_CATEGORIES[field];
-      const items = Array.isArray(library[category]) ? library[category] : [];
-      const placeholder = document.createElement('option');
-      placeholder.value = '';
-      placeholder.textContent = items.length ? libraryPlaceholder(field) : `No saved ${category === 'wordlists' ? 'wordlists' : 'rule files'}`;
-      select.replaceChildren(placeholder);
-      items.forEach((item) => {
-        const option = document.createElement('option');
-        option.value = item.id;
-        option.textContent = `${item.name} · ${humanSize(Number(item.size))}`;
-        select.append(option);
+  if (!selectors.length) return false;
+  if (libraryRefreshPromise) return libraryRefreshPromise;
+  libraryRefreshPromise = (async () => {
+    try {
+      // Explicit no-cache headers keep saved-file menus fresh behind local proxies.
+      const response = await fetch('/api/library', { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
+      if (response.status === 401) { window.location.replace('/'); return false; }
+      const library = await response.json();
+      if (!response.ok) throw new Error(library.error || 'Could not load saved inputs.');
+      selectors.forEach((select) => {
+        const field = select.dataset.libraryField;
+        const category = LIBRARY_FIELD_CATEGORIES[field];
+        const items = Array.isArray(library[category]) ? library[category] : [];
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = items.length ? libraryPlaceholder(field) : `No saved ${category === 'wordlists' ? 'wordlists' : 'rule files'}`;
+        select.replaceChildren(placeholder);
+        items.forEach((item) => {
+          const option = document.createElement('option');
+          option.value = item.id;
+          option.textContent = `${item.name} · ${humanSize(Number(item.size))}`;
+          select.append(option);
+        });
+        // Keep an empty menu openable so it can display its empty-state text.
+        select.disabled = currentStatus === 'running' || currentStatus === 'stopping';
       });
-      select.disabled = items.length === 0 || currentStatus === 'running' || currentStatus === 'stopping';
-    });
-  } catch (error) {
-    selectors.forEach((select) => {
-      const option = document.createElement('option'); option.value = ''; option.textContent = 'Saved inputs unavailable';
-      select.replaceChildren(option); select.disabled = true;
-    });
-    console.warn('Could not refresh saved input library:', error);
-  }
+      if (showToast) {
+        const count = (library.rules || []).length;
+        toast(`Saved input library refreshed · ${count} rule file(s).`);
+      }
+      return true;
+    } catch (error) {
+      selectors.forEach((select) => {
+        const option = document.createElement('option'); option.value = ''; option.textContent = 'Saved inputs unavailable';
+        select.replaceChildren(option); select.disabled = currentStatus === 'running' || currentStatus === 'stopping';
+      });
+      console.warn('Could not refresh saved input library:', error);
+      if (showToast) toast(`Could not refresh saved inputs: ${error.message}`, true);
+      return false;
+    } finally {
+      libraryRefreshPromise = null;
+    }
+  })();
+  return libraryRefreshPromise;
 }
 async function selectLibraryAsset(field, assetId, select) {
   if (!assetId) return;
@@ -186,6 +202,17 @@ async function selectLibraryAsset(field, assetId, select) {
 function configureLibrarySelectors() {
   document.querySelectorAll('[data-library-field]').forEach((select) => {
     select.addEventListener('change', () => selectLibraryAsset(select.dataset.libraryField, select.value, select));
+    const wrapper = select.closest('.library-pick');
+    if (wrapper && !wrapper.querySelector('.library-refresh')) {
+      const refresh = document.createElement('button');
+      refresh.type = 'button';
+      refresh.className = 'library-refresh';
+      refresh.textContent = '↻';
+      refresh.title = 'Refresh saved files';
+      refresh.setAttribute('aria-label', 'Refresh saved wordlists and rules');
+      refresh.addEventListener('click', () => refreshLibraryMenus(true));
+      wrapper.append(refresh);
+    }
   });
   refreshLibraryMenus();
 }
@@ -296,7 +323,7 @@ function uploadFile(field, file) {
   xhr.upload.onprogress = (event) => {
     if (event.lengthComputable && progress) progress.style.width = `${Math.round(event.loaded / event.total * 100)}%`;
   };
-  xhr.onload = () => {
+  xhr.onload = async () => {
     uploadInProgress[field] = false;
     let result;
     try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
@@ -309,7 +336,7 @@ function uploadFile(field, file) {
       if (progress) progress.style.width = '100%';
       const uploadLabels = { base: 'BASE', target: 'TARGET', seed: 'Seed rules', ranker_wordlist: 'Base wordlist', ranker_cracked: 'Cracked-password list', ranker_rules: 'Candidate rules', ranker_source_csv: 'Ranking CSV', ranker_source_rules: 'Optimization ruleset', ranker_analysis_csv: 'Analysis CSV' };
       toast(`${uploadLabels[field] || field} uploaded successfully.`);
-      if (result.library) refreshLibraryMenus();
+      if (result.library) await refreshLibraryMenus();
     } else {
       setUploadError(field, result.error || 'Upload failed.');
       if (progress) progress.style.width = '0%';
@@ -349,7 +376,7 @@ function uploadConcentratorFile(file) {
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('X-CSRF-Token', csrfToken);
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) progress.style.width = `${Math.round(event.loaded / event.total * 100)}%`; };
-    xhr.onload = () => {
+    xhr.onload = async () => {
       let result;
       try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
       if (xhr.status === 401) { window.location.replace('/'); reject(new Error('Authentication required.')); return; }
@@ -357,7 +384,7 @@ function uploadConcentratorFile(file) {
         uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category }];
         progress.style.width = '100%';
         renderConcentratorFileState();
-        if (result.library) refreshLibraryMenus();
+        if (result.library) await refreshLibraryMenus();
         resolve(result);
       } else {
         stateEl.classList.add('error'); stateEl.textContent = result.error || 'Upload failed.'; progress.style.width = '0%';
@@ -586,7 +613,7 @@ function renderStatus(data) {
   $('phase-progress').style.width = pct == null ? '0%' : `${pct}%`;
   $('phase-progress').classList.toggle('indeterminate', running && pct == null);
   $('start-run').disabled = running;
-  document.querySelectorAll('[data-library-field]').forEach((select) => { select.disabled = running || !select.options || select.options.length <= 1; });
+  document.querySelectorAll('[data-library-field]').forEach((select) => { select.disabled = running; });
   $('pause-run').disabled = !running || paused || !!data.pause_requested || data.status === 'stopping';
   $('resume-run').disabled = !running || (!paused && !data.pause_requested) || data.status === 'stopping';
   $('stop-run').disabled = !running || data.status === 'stopping' || data.tool !== 'rulest';

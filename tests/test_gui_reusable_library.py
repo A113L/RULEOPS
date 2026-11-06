@@ -140,6 +140,29 @@ def test_saved_assets_can_be_listed_selected_and_survive_run_cleanup(tmp_path, m
         _stop_server(server, thread)
 
 
+def test_library_listing_uses_python38_compatible_lstat_and_skips_symlinks(tmp_path, monkeypatch):
+    data_dir = tmp_path / "runs"
+    monkeypatch.setattr(app, "DATA", data_dir)
+    wordlist_dir = data_dir / "library" / "wordlists"
+    rules_dir = data_dir / "library" / "rules"
+    wordlist_dir.mkdir(parents=True)
+    rules_dir.mkdir(parents=True)
+
+    saved_wordlist = wordlist_dir / "saved_words.txt"
+    saved_wordlist.write_text("alpha\nbeta\n", encoding="utf-8")
+    outside_target = tmp_path / "outside.rule"
+    outside_target.write_text(":\n", encoding="utf-8")
+    try:
+        (rules_dir / "external.rule").symlink_to(outside_target)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic links are not available in this environment")
+
+    listed = app.list_library_assets()
+    assert [item["id"] for item in listed["wordlists"]] == ["saved_words.txt"]
+    assert listed["wordlists"][0]["size"] == saved_wordlist.stat().st_size
+    assert listed["rules"] == []
+
+
 def test_library_selection_rejects_traversal_and_wrong_input_category(tmp_path, monkeypatch):
     server, thread, base, headers, data_dir, _uploads_dir = _setup_server(tmp_path, monkeypatch)
     try:
@@ -195,5 +218,53 @@ def test_concentrator_can_select_multiple_saved_rule_files_and_deduplicates(tmp_
         )
         assert status == 200 and duplicate["already_selected"] is True
         assert len(app.UPLOADS_META["concentrator_files"]) == 2
+    finally:
+        _stop_server(server, thread)
+
+
+def test_rule_upload_routes_publish_assets_to_rules_dropdown(tmp_path, monkeypatch):
+    """Every rule upload entry point must immediately populate the shared rules library."""
+    server, thread, base, headers, data_dir, _uploads_dir = _setup_server(tmp_path, monkeypatch)
+    uploads = [
+        ("/api/upload/seed?filename=seed_rules.rule", "seed rules"),
+        ("/api/ranker/upload/ranker_rules?filename=candidate_rules.rule", "candidate rules"),
+        ("/api/ranker/upload/ranker_source_rules?filename=source_rules.rule", "source rules"),
+        ("/api/concentrator/upload/concentrator_files?filename=concentrator_rules.rule", "concentrator rules"),
+    ]
+    try:
+        expected_ids = []
+        for index, (endpoint, content) in enumerate(uploads):
+            status, result = _request_json(base + endpoint, headers, raw=f":\n${index}\n".encode(), method="POST")
+            assert status == 200 and result["ok"] is True
+            assert result["library"] is True
+            assert result["category"] == "rules"
+            expected_ids.append(result["asset_id"])
+
+        status, listed = _request_json(base + "/api/library?refresh=1", headers, method="GET")
+        assert status == 200
+        assert {item["id"] for item in listed["rules"]} == set(expected_ids)
+        for asset_id in expected_ids:
+            assert (data_dir / "library" / "rules" / asset_id).is_file()
+    finally:
+        _stop_server(server, thread)
+
+
+def test_legacy_plain_named_rule_assets_are_visible_and_selectable(tmp_path, monkeypatch):
+    server, thread, base, headers, data_dir, _uploads_dir = _setup_server(tmp_path, monkeypatch)
+    try:
+        rules_dir = data_dir / "library" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "legacy_custom_rules.rule").write_text(":\n$1\n", encoding="utf-8")
+
+        status, listed = _request_json(base + "/api/library", headers, method="GET")
+        assert status == 200
+        assert any(item["id"] == "legacy_custom_rules.rule" and item["name"] == "legacy_custom_rules.rule" for item in listed["rules"])
+
+        status, selected = _request_json(
+            base + "/api/library/select", headers,
+            payload={"field": "seed", "asset_id": "legacy_custom_rules.rule"}, method="POST",
+        )
+        assert status == 200 and selected["ok"] is True
+        assert app.UPLOADS_META["seed"]["path"] == rules_dir / "legacy_custom_rules.rule"
     finally:
         _stop_server(server, thread)

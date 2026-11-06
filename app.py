@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import base64
 import sqlite3
+import stat as stat_module
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -507,8 +508,24 @@ def library_category_dir(category: str) -> Path:
     return folder
 
 
+def _safe_library_filename(name: str) -> bool:
+    """Accept generated asset IDs and safe legacy names, never path components."""
+    return (
+        isinstance(name, str)
+        and 1 <= len(name) <= 220
+        and name not in {".", ".."}
+        and Path(name).name == name
+        and "\\" not in name
+        and bool(re.fullmatch(r"[A-Za-z0-9._ -]{1,220}", name))
+    )
+
+
 def list_library_assets() -> dict:
-    """List reusable wordlists and rules without following symlinks."""
+    """List reusable wordlists and rules without following symlinks.
+
+    Generated UUID-prefixed names are preferred, but older files copied into the
+    library before this version (plain safe filenames) remain discoverable too.
+    """
     result = {"wordlists": [], "rules": []}
     for category in result:
         folder = library_category_dir(category)
@@ -520,13 +537,21 @@ def list_library_assets() -> dict:
             continue
         for item in entries:
             try:
-                if item.is_symlink() or not item.is_file() or not LIBRARY_ASSET_ID_RE.fullmatch(item.name):
+                if not _safe_library_filename(item.name):
                     continue
-                stat = item.stat(follow_symlinks=False)
-                asset_id, display_name = item.name.split("_", 1)
+                # Path.stat(follow_symlinks=False) is not available on Python 3.8.
+                # os.lstat accepts path-like objects on all supported Python versions
+                # and gives us metadata for the link itself, never its target.
+                metadata = os.lstat(str(item))
+                if not stat_module.S_ISREG(metadata.st_mode):
+                    continue
+                if LIBRARY_ASSET_ID_RE.fullmatch(item.name):
+                    _asset_prefix, display_name = item.name.split("_", 1)
+                else:
+                    display_name = item.name
                 result[category].append({
-                    "id": item.name, "name": display_name, "size": stat.st_size,
-                    "modified": int(stat.st_mtime),
+                    "id": item.name, "name": display_name, "size": metadata.st_size,
+                    "modified": int(metadata.st_mtime),
                 })
             except OSError:
                 continue
@@ -535,8 +560,8 @@ def list_library_assets() -> dict:
 
 
 def resolve_library_asset(category: str, asset_id: str) -> Path:
-    """Resolve an opaque library ID to a regular file strictly inside its folder."""
-    if category not in {"wordlists", "rules"} or not isinstance(asset_id, str) or not LIBRARY_ASSET_ID_RE.fullmatch(asset_id):
+    """Resolve a library ID/name to a regular file strictly inside its folder."""
+    if category not in {"wordlists", "rules"} or not _safe_library_filename(asset_id):
         raise ValueError("The selected library item is invalid.")
     folder = library_category_dir(category)
     try:

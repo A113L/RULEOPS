@@ -27,6 +27,15 @@ let pollTimer = null;
 let toastTimer = null;
 let currentStatus = 'idle';
 let lastStorageSummaryAt = 0;
+let completionAudioContext = null;
+let completionSoundEnabled = true;
+const pendingCompletionJobIds = new Set();
+let latestStatusJobId = null;
+const LIBRARY_FIELD_CATEGORIES = {
+  base: 'wordlists', target: 'wordlists', ranker_wordlist: 'wordlists', ranker_cracked: 'wordlists',
+  seed: 'rules', ranker_rules: 'rules', ranker_source_rules: 'rules', concentrator_files: 'rules',
+};
+try { completionSoundEnabled = localStorage.getItem('ruleops-completion-sound') !== 'off'; } catch {}
 
 const defaults = {
   max_depth: 2, target_hours: 0.5, max_chains: 0, rng_seed: '', bloom_mb: 0, device: '', output_name: 'rulest_output.txt',
@@ -54,6 +63,131 @@ function humanSize(bytes) {
   let val = bytes / 1024, index = 0;
   while (val >= 1024 && index < units.length - 1) { val /= 1024; index++; }
   return `${val.toFixed(val >= 100 ? 0 : 1)} ${units[index]}`;
+}
+
+function unlockCompletionAudio() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  try {
+    if (!completionAudioContext) completionAudioContext = new AudioContextClass();
+    if (completionAudioContext.state === 'suspended') completionAudioContext.resume().catch(() => {});
+  } catch { /* Audio is optional; the task itself must never depend on it. */ }
+}
+document.addEventListener('pointerdown', unlockCompletionAudio, { once: true, capture: true });
+document.addEventListener('keydown', unlockCompletionAudio, { once: true, capture: true });
+
+function playCompletionSound() {
+  if (!completionSoundEnabled || !completionAudioContext) return;
+  const context = completionAudioContext;
+  const schedule = () => {
+    const startAt = context.currentTime + 0.025;
+    [659.25, 880, 1174.66].forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const noteStart = startAt + index * 0.16;
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(frequency, noteStart);
+      gain.gain.setValueAtTime(0.0001, noteStart);
+      gain.gain.linearRampToValueAtTime(0.11, noteStart + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, noteStart + 0.22);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(noteStart);
+      oscillator.stop(noteStart + 0.23);
+    });
+  };
+  if (context.state === 'suspended') context.resume().then(schedule).catch(() => {});
+  else schedule();
+}
+
+function trackStartedJob(result) {
+  if (!result || !result.job_id) return;
+  const jobId = String(result.job_id);
+  // Cover a very short job that might finish before the launch POST response
+  // has returned and registered its ID in the pending set.
+  if (latestStatusJobId === jobId && currentStatus === 'completed') {
+    playCompletionSound();
+    toast('Task completed successfully.');
+    return;
+  }
+  pendingCompletionJobIds.add(jobId);
+}
+function handleTaskCompletionSound(data) {
+  const jobId = data && data.job_id ? String(data.job_id) : '';
+  if (jobId) latestStatusJobId = jobId;
+  if (!jobId || !pendingCompletionJobIds.has(jobId)) return;
+  if (data.status === 'completed') {
+    pendingCompletionJobIds.delete(jobId);
+    playCompletionSound();
+    toast('Task completed successfully.');
+  } else if (['failed', 'stopped'].includes(data.status)) {
+    pendingCompletionJobIds.delete(jobId);
+  }
+}
+
+function libraryPlaceholder(field) {
+  if (field === 'concentrator_files') return 'Add saved rule file…';
+  return LIBRARY_FIELD_CATEGORIES[field] === 'wordlists' ? 'Choose saved wordlist…' : 'Choose saved rule file…';
+}
+async function refreshLibraryMenus() {
+  const selectors = Array.from(document.querySelectorAll('[data-library-field]'));
+  if (!selectors.length) return;
+  try {
+    const response = await fetch('/api/library', { cache: 'no-store' });
+    if (response.status === 401) { window.location.replace('/'); return; }
+    const library = await response.json();
+    if (!response.ok) throw new Error(library.error || 'Could not load saved inputs.');
+    selectors.forEach((select) => {
+      const field = select.dataset.libraryField;
+      const category = LIBRARY_FIELD_CATEGORIES[field];
+      const items = Array.isArray(library[category]) ? library[category] : [];
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = items.length ? libraryPlaceholder(field) : `No saved ${category === 'wordlists' ? 'wordlists' : 'rule files'}`;
+      select.replaceChildren(placeholder);
+      items.forEach((item) => {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = `${item.name} · ${humanSize(Number(item.size))}`;
+        select.append(option);
+      });
+      select.disabled = items.length === 0 || currentStatus === 'running' || currentStatus === 'stopping';
+    });
+  } catch (error) {
+    selectors.forEach((select) => {
+      const option = document.createElement('option'); option.value = ''; option.textContent = 'Saved inputs unavailable';
+      select.replaceChildren(option); select.disabled = true;
+    });
+    console.warn('Could not refresh saved input library:', error);
+  }
+}
+async function selectLibraryAsset(field, assetId, select) {
+  if (!assetId) return;
+  try {
+    const result = await apiPost('/api/library/select', { field, asset_id: assetId });
+    const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category };
+    if (field === 'concentrator_files') {
+      if (!result.already_selected) uploadState[field] = [...(uploadState[field] || []), meta];
+      renderConcentratorFileState();
+    } else {
+      uploadState[field] = meta;
+      if (field === 'seed') $('seed-state').textContent = `✓ ${result.name} · ${humanSize(result.size)} · saved`;
+      else setUploadCard(field, meta);
+    }
+    toast(`Loaded saved ${result.category === 'wordlists' ? 'wordlist' : 'rules'}: ${result.name}`);
+    await pollStatus();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (select) select.value = '';
+    if (select) select.blur();
+  }
+}
+function configureLibrarySelectors() {
+  document.querySelectorAll('[data-library-field]').forEach((select) => {
+    select.addEventListener('change', () => selectLibraryAsset(select.dataset.libraryField, select.value, select));
+  });
+  refreshLibraryMenus();
 }
 function fmtTime(seconds) {
   if (seconds == null || !Number.isFinite(seconds)) return '00:00';
@@ -168,13 +302,14 @@ function uploadFile(field, file) {
     try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
     if (xhr.status === 401) { window.location.replace('/'); return; }
     if (xhr.status >= 200 && xhr.status < 300 && result.ok) {
-      uploadState[field] = { name: result.name, size: result.size };
+      uploadState[field] = { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category };
       if (field === 'seed') {
         stateEl.classList.remove('error'); stateEl.textContent = `✓ ${result.name} · ${humanSize(result.size)}`;
       } else setUploadCard(field, file);
       if (progress) progress.style.width = '100%';
       const uploadLabels = { base: 'BASE', target: 'TARGET', seed: 'Seed rules', ranker_wordlist: 'Base wordlist', ranker_cracked: 'Cracked-password list', ranker_rules: 'Candidate rules', ranker_source_csv: 'Ranking CSV', ranker_source_rules: 'Optimization ruleset', ranker_analysis_csv: 'Analysis CSV' };
       toast(`${uploadLabels[field] || field} uploaded successfully.`);
+      if (result.library) refreshLibraryMenus();
     } else {
       setUploadError(field, result.error || 'Upload failed.');
       if (progress) progress.style.width = '0%';
@@ -219,9 +354,10 @@ function uploadConcentratorFile(file) {
       try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
       if (xhr.status === 401) { window.location.replace('/'); reject(new Error('Authentication required.')); return; }
       if (xhr.status >= 200 && xhr.status < 300 && result.ok) {
-        uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size }];
+        uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category }];
         progress.style.width = '100%';
         renderConcentratorFileState();
+        if (result.library) refreshLibraryMenus();
         resolve(result);
       } else {
         stateEl.classList.add('error'); stateEl.textContent = result.error || 'Upload failed.'; progress.style.width = '0%';
@@ -380,7 +516,7 @@ async function loadRunStorageSummary() {
     $('storage-engine-note').textContent = active ? 'Cleanup is locked while a job is active' : 'No active run detected';
     $('storage-cleanup-summary').textContent = `${Number(data.run_directories || 0).toLocaleString()} run folder(s) · ${Number(data.files || 0).toLocaleString()} file(s) · ${formatStorageBytes(data.bytes)}`;
     if (button) button.disabled = active || Number(data.run_directories || 0) === 0;
-    if (feedback && !feedback.textContent) feedback.textContent = data.uploads_preserved ? 'Temporary uploaded inputs in runs/uploads/ are excluded and will be preserved.' : '';
+    if (feedback && !feedback.textContent) feedback.textContent = data.uploads_preserved ? 'Temporary uploads and the reusable runs/library/ wordlist/rules folders are preserved.' : '';
   } catch (error) {
     if (feedback) feedback.textContent = `Storage summary unavailable: ${error.message}`;
     if (button) button.disabled = true;
@@ -450,6 +586,7 @@ function renderStatus(data) {
   $('phase-progress').style.width = pct == null ? '0%' : `${pct}%`;
   $('phase-progress').classList.toggle('indeterminate', running && pct == null);
   $('start-run').disabled = running;
+  document.querySelectorAll('[data-library-field]').forEach((select) => { select.disabled = running || !select.options || select.options.length <= 1; });
   $('pause-run').disabled = !running || paused || !!data.pause_requested || data.status === 'stopping';
   $('resume-run').disabled = !running || (!paused && !data.pause_requested) || data.status === 'stopping';
   $('stop-run').disabled = !running || data.status === 'stopping' || data.tool !== 'rulest';
@@ -503,6 +640,7 @@ async function pollStatus() {
     const response = await fetch(`/api/status?since=${lastLogId}&generation=${generationParam}`, { cache: 'no-store' });
     if (response.status === 401) { window.location.replace('/'); return; }
     const data = await response.json();
+    handleTaskCompletionSound(data);
     if (typeof data.log_generation === 'number') {
       if (logGeneration !== null && data.log_generation < logGeneration) return; // Ignore stale in-flight polls.
       if (logGeneration === null) {
@@ -605,7 +743,8 @@ async function startRun() {
   resetLogView('Starting a new run', 'Engine output will appear here as soon as processing begins.');
   lastLogId = 0;
   try {
-    await apiPost('/api/run', config);
+    const started = await apiPost('/api/run', config);
+    trackStartedJob(started);
     toast('Rulest engine launched.');
     await pollStatus();
   } catch (error) {
@@ -987,7 +1126,8 @@ async function startConcentratorRun() {
     setActiveTool('concentrator');
     resetLogView('Starting Concentrator', 'Original Concentrator processing output will appear here.');
     lastLogId = 0;
-    await apiPost('/api/concentrator/run', { mode: activeConcentratorMode, options });
+    const started = await apiPost('/api/concentrator/run', { mode: activeConcentratorMode, options });
+    trackStartedJob(started);
     toast(`Concentrator ${activeConcentratorMode} workflow launched.`);
     await pollStatus();
   } catch (error) {
@@ -1009,7 +1149,8 @@ async function startRankerRun() {
     setActiveTool('ranker');
     resetLogView('Starting Rule Ranker', 'Ranker output will appear here as the process begins.');
     lastLogId = 0;
-    await apiPost('/api/ranker/run', { mode: activeRankerWorkflow, options });
+    const started = await apiPost('/api/ranker/run', { mode: activeRankerWorkflow, options });
+    trackStartedJob(started);
     toast(`Rule Ranker ${activeRankerWorkflow} workflow launched.`);
     await pollStatus();
   } catch (error) {
@@ -1025,7 +1166,17 @@ async function cancelRankerRun() {
 }
 
 function initializeApp() {
-  initDepthOverrides(); setDefaults(); configureFileInputs();
+  initDepthOverrides(); setDefaults(); configureFileInputs(); configureLibrarySelectors();
+  const soundToggle = $('completion-sound');
+  if (soundToggle) {
+    soundToggle.checked = completionSoundEnabled;
+    soundToggle.addEventListener('change', () => {
+      completionSoundEnabled = soundToggle.checked;
+      try { localStorage.setItem('ruleops-completion-sound', completionSoundEnabled ? 'on' : 'off'); } catch {}
+      if (completionSoundEnabled) unlockCompletionAudio();
+      toast(completionSoundEnabled ? 'Completion sound enabled.' : 'Completion sound muted.');
+    });
+  }
   $('token_strip').addEventListener('change', e => toggleStage('token', e.target.checked));
   $('genetic').addEventListener('change', e => toggleStage('genetic', e.target.checked));
   $('reset-defaults').addEventListener('click', () => { setDefaults(); toast('All configuration values reset to defaults.'); });

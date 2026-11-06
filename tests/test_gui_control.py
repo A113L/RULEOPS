@@ -216,7 +216,8 @@ def test_upload_ui_clears_cards_when_server_reports_temporary_files_removed():
 
     assert "function clearUploadField(field)" in js
     assert "!upload && !uploadInProgress[field] && uploadState[field]" in js
-    assert "Temporary server copies are automatically deleted" in html
+    assert "saved in separate server folders" in html
+    assert "reusable rules library" in html
 
 
 def test_run_worker_cleans_uploaded_files_after_normal_completion(tmp_path, monkeypatch):

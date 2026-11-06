@@ -82,6 +82,15 @@ RANKER_UPLOAD_FIELDS = {
     "ranker_source_csv", "ranker_source_rules", "ranker_analysis_csv",
 }
 CONCENTRATOR_UPLOAD_FIELDS = {"concentrator_files"}
+# Wordlists and rule files are retained in a reusable library. CSV uploads remain
+# temporary because they are workflow-specific and can be re-created cheaply.
+LIBRARY_FIELD_CATEGORIES = {
+    "base": "wordlists", "target": "wordlists",
+    "ranker_wordlist": "wordlists", "ranker_cracked": "wordlists",
+    "seed": "rules", "ranker_rules": "rules",
+    "ranker_source_rules": "rules", "concentrator_files": "rules",
+}
+LIBRARY_ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}_[A-Za-z0-9._ -]{1,180}$")
 MAX_CONCENTRATOR_FILES = 32
 MAX_CONCENTRATOR_TOTAL_BYTES = 40 * 1024 * 1024 * 1024
 UPLOADS_ACTIVE = set()
@@ -485,6 +494,87 @@ def safe_name(value: str, fallback="output.txt") -> str:
     return value or fallback
 
 
+def library_category_dir(category: str) -> Path:
+    """Return a non-symlink persistent folder for a validated asset category."""
+    if category not in {"wordlists", "rules"}:
+        raise ValueError("Unsupported library category.")
+    library_root = DATA / "library"
+    folder = library_root / category
+    # Do not let a pre-created symlink redirect uploads or library browsing outside
+    # RULEOPS data storage.
+    if library_root.is_symlink() or folder.is_symlink():
+        raise ValueError("The reusable input library path must not be a symbolic link.")
+    return folder
+
+
+def list_library_assets() -> dict:
+    """List reusable wordlists and rules without following symlinks."""
+    result = {"wordlists": [], "rules": []}
+    for category in result:
+        folder = library_category_dir(category)
+        try:
+            entries = list(folder.iterdir())
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            continue
+        for item in entries:
+            try:
+                if item.is_symlink() or not item.is_file() or not LIBRARY_ASSET_ID_RE.fullmatch(item.name):
+                    continue
+                stat = item.stat(follow_symlinks=False)
+                asset_id, display_name = item.name.split("_", 1)
+                result[category].append({
+                    "id": item.name, "name": display_name, "size": stat.st_size,
+                    "modified": int(stat.st_mtime),
+                })
+            except OSError:
+                continue
+        result[category].sort(key=lambda entry: (entry["name"].casefold(), entry["id"]))
+    return result
+
+
+def resolve_library_asset(category: str, asset_id: str) -> Path:
+    """Resolve an opaque library ID to a regular file strictly inside its folder."""
+    if category not in {"wordlists", "rules"} or not isinstance(asset_id, str) or not LIBRARY_ASSET_ID_RE.fullmatch(asset_id):
+        raise ValueError("The selected library item is invalid.")
+    folder = library_category_dir(category)
+    try:
+        root = folder.resolve(strict=True)
+        candidate = folder / asset_id
+        if candidate.is_symlink() or candidate.parent.resolve(strict=True) != root or not candidate.is_file():
+            raise ValueError("The selected library item no longer exists.")
+        return candidate
+    except FileNotFoundError as exc:
+        raise ValueError("The selected library item no longer exists.") from exc
+
+
+def upload_meta_for_library_asset(category: str, asset_id: str) -> dict:
+    path = resolve_library_asset(category, asset_id)
+    stat = path.stat()
+    return {
+        "path": path, "name": path.name.split("_", 1)[1], "size": stat.st_size,
+        "library": True, "asset_id": path.name, "category": category,
+    }
+
+
+def remove_temporary_upload(meta):
+    """Remove only an upload-session file; never delete a reusable library asset."""
+    if not isinstance(meta, dict) or meta.get("library"):
+        return False
+    raw_path = meta.get("path")
+    if not raw_path:
+        return False
+    try:
+        path = Path(raw_path)
+        if path.is_symlink() or path.parent.resolve() != UPLOADS.resolve():
+            return False
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def cleanup_uploaded_files(log_message: bool = True):
     """Delete server-side copies of uploaded inputs and clear their metadata.
 
@@ -520,7 +610,7 @@ def cleanup_stale_uploaded_files():
 
 
 def _iter_run_directories():
-    """Yield direct child run directories, never following symlinks or uploads/."""
+    """Yield run directories only, preserving uploads/, library/ and symlinks."""
     if not DATA.exists():
         return
     try:
@@ -528,7 +618,7 @@ def _iter_run_directories():
     except OSError:
         return
     for entry in entries:
-        if entry.name == UPLOADS.name:
+        if entry.name in {UPLOADS.name, "library"}:
             continue
         try:
             if entry.is_symlink():
@@ -586,7 +676,7 @@ def storage_preflight(additional_bytes: int = 0) -> tuple[bool, str, int]:
 
 
 def run_storage_summary() -> dict:
-    """Summarize persisted run folders; uploads/ is excluded by design."""
+    """Summarize run folders; uploads/ and the reusable library are excluded."""
     with LOCK:
         directories = list(_iter_run_directories())
         file_count = 0
@@ -601,14 +691,15 @@ def run_storage_summary() -> dict:
             "bytes": total_bytes,
             "active": STATE.get("status") in ("running", "stopping"),
             "uploads_preserved": True,
+            "library_preserved": True,
         }
 
 
 def clear_run_directories() -> dict:
-    """Delete all persisted run directories, preserving uploads/ and app config.
+    """Delete persisted run directories, preserving uploads/, library/ and app config.
 
     This operation is rejected while any engine job or upload is active. It only
-    removes direct, non-symlink directories under DATA and never follows links.
+    removes direct, non-symlink run directories under DATA and never follows links.
     """
     with LOCK:
         if STATE.get("status") in ("running", "stopping"):
@@ -658,6 +749,7 @@ def run_storage_summary_unlocked() -> dict:
         "bytes": total_bytes,
         "active": STATE.get("status") in ("running", "stopping"),
         "uploads_preserved": True,
+        "library_preserved": True,
     }
 
 
@@ -1530,6 +1622,8 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": False, "devices": [], "gpu_devices": [],
                     "message": f"GPU diagnostics failed: {type(exc).__name__}: {exc}",
                 }, 500)
+        elif path == "/api/library":
+            self.send_json({"ok": True, **list_library_assets()})
         elif path == "/api/run-storage/summary":
             self.send_json({"ok": True, **run_storage_summary()})
         elif path == "/api/license":
@@ -1563,9 +1657,13 @@ class Handler(BaseHTTPRequestHandler):
                     list(STATE["logs"]) if client_generation != current_generation
                     else [entry for entry in STATE["logs"] if entry["id"] > since]
                 )
+                def _upload_status(item):
+                    if not item:
+                        return None
+                    return {key: item[key] for key in ("name", "size", "library", "asset_id", "category") if key in item}
                 data["uploads"] = {
-                    k: ([{"name": item["name"], "size": item["size"]} for item in v] if isinstance(v, list)
-                        else ({"name": v["name"], "size": v["size"]} if v else None))
+                    k: ([_upload_status(item) for item in v] if isinstance(v, list)
+                        else _upload_status(v))
                     for k, v in UPLOADS_META.items()
                 }
             self.send_json(data)
@@ -1658,6 +1756,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_license_install()
         elif parsed.path == "/api/license/uninstall":
             self.handle_license_uninstall()
+        elif parsed.path == "/api/library/select":
+            self.handle_library_select()
         elif parsed.path.startswith("/api/upload/"):
             self.handle_upload(parsed, ranker=False)
         elif parsed.path.startswith("/api/ranker/upload/"):
@@ -2026,7 +2126,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         query_params = urllib.parse.parse_qs(parsed.query)
-        requested_filename = safe_name(query_params.get("filename", [f"{field}.txt"])[0], f"{field}.txt")
+        requested_filename = safe_name(query_params.get("filename", [f"{field}.txt"])[0], f"{field}.txt")[:180].strip(" .")
+        requested_filename = requested_filename or f"{field}.txt"
         if concentrator and field == "concentrator_files":
             extension = Path(requested_filename).suffix.lower()
             if extension not in {".rule", ".rules", ".hr", ".hashcat", ".txt", ".lst"}:
@@ -2052,15 +2153,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"A {field.upper()} upload is already in progress."}, 409)
                 return
             current_meta = UPLOADS_META.get(field)
-            replaceable = int(current_meta.get("size", 0)) if isinstance(current_meta, dict) else 0
+            # Only transient files are actually replaced/deleted. Saved library
+            # assets remain reusable even when an input slot switches to a new file.
+            replaceable_temp = 0
+            replaceable_data = 0
+            candidates_to_replace = [current_meta]
             exclusive_source = {
                 "ranker_source_csv": "ranker_source_rules",
                 "ranker_source_rules": "ranker_source_csv",
             }.get(field)
             if exclusive_source:
-                other = UPLOADS_META.get(exclusive_source)
-                if isinstance(other, dict):
-                    replaceable += int(other.get("size", 0))
+                candidates_to_replace.append(UPLOADS_META.get(exclusive_source))
+            for previous in candidates_to_replace:
+                if isinstance(previous, dict) and not previous.get("library"):
+                    size = int(previous.get("size", 0))
+                    replaceable_temp += size
+                    replaceable_data += size
             try:
                 upload_bytes = _directory_usage(UPLOADS)[1]
                 data_bytes = data_storage_usage_bytes()
@@ -2069,13 +2177,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Storage check failed: {exc}"}, 507)
                 return
             reserved_bytes = sum(int(value) for value in UPLOAD_RESERVATIONS.values())
-            if upload_bytes + reserved_bytes - replaceable + length > MAX_TOTAL_UPLOAD_BYTES:
+            if upload_bytes + reserved_bytes - replaceable_temp + length > MAX_TOTAL_UPLOAD_BYTES:
                 self.send_json({
-                    "error": f"Combined temporary uploads would exceed the {MAX_TOTAL_UPLOAD_BYTES:,}-byte quota. "
-                             "Remove unused uploaded inputs or increase RULEOPS_MAX_UPLOAD_TOTAL_BYTES."
+                    "error": f"Combined temporary uploads (including in-flight requests) would exceed the {MAX_TOTAL_UPLOAD_BYTES:,}-byte quota. "
+                             "Wait for active uploads or increase RULEOPS_MAX_UPLOAD_TOTAL_BYTES."
                 }, 413)
                 return
-            if data_bytes + reserved_bytes - replaceable + length > MAX_DATA_STORAGE_BYTES:
+            if data_bytes + reserved_bytes - replaceable_data + length > MAX_DATA_STORAGE_BYTES:
                 self.send_json({
                     "error": f"RULEOPS data quota ({MAX_DATA_STORAGE_BYTES:,} bytes) would be exceeded. "
                              "Clear old run folders or increase RULEOPS_MAX_DATA_STORAGE_BYTES."
@@ -2107,7 +2215,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 raise
 
-            meta = {"path": stored, "name": filename, "size": length}
+            category = LIBRARY_FIELD_CATEGORIES.get(field)
+            asset_id = None
+            if category:
+                # Move, do not copy: very large wordlists should not be duplicated
+                # just to make them reusable. The library lives on the same DATA
+                # filesystem, so os.replace is atomic on normal installations.
+                folder = library_category_dir(category)
+                folder.mkdir(parents=True, exist_ok=True)
+                asset_id = f"{uuid.uuid4().hex}_{filename}"
+                destination = folder / asset_id
+                os.replace(stored, destination)
+                stored = destination
+                meta = {
+                    "path": stored, "name": filename, "size": length,
+                    "library": True, "asset_id": asset_id, "category": category,
+                }
+            else:
+                meta = {"path": stored, "name": filename, "size": length, "library": False}
             replaced = []
             with LOCK:
                 if concentrator and field == "concentrator_files":
@@ -2129,12 +2254,9 @@ class Handler(BaseHTTPRequestHandler):
                 UPLOADS_ACTIVE.discard(field)
                 UPLOAD_RESERVATIONS.pop(field, None)
             for previous in replaced:
-                if previous and Path(previous["path"]).exists():
-                    try:
-                        Path(previous["path"]).unlink()
-                    except OSError:
-                        pass
-            self.send_json({"ok": True, "field": field, "name": filename, "size": length})
+                remove_temporary_upload(previous)
+            self.send_json({"ok": True, "field": field, "name": filename, "size": length,
+                            "library": bool(category), "asset_id": asset_id, "category": category})
         except Exception as exc:
             with LOCK:
                 UPLOADS_ACTIVE.discard(field)
@@ -2148,6 +2270,61 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Upload failed: {exc}"}, response_status)
             except OSError:
                 self.close_connection = True
+
+    def handle_library_select(self):
+        """Mount an existing persistent library item into an input slot."""
+        data = self.read_json_body(32 * 1024)
+        if not isinstance(data, dict):
+            return
+        field = str(data.get("field", ""))
+        category = LIBRARY_FIELD_CATEGORIES.get(field)
+        if category is None:
+            self.send_json({"error": "This input does not support reusable library items."}, 400)
+            return
+        try:
+            meta = upload_meta_for_library_asset(category, data.get("asset_id"))
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 404)
+            return
+
+        replaced = []
+        with LOCK:
+            if STATE.get("status") in ("running", "stopping"):
+                self.send_json({"error": "Saved inputs cannot be changed while a job is active."}, 409)
+                return
+            if UPLOADS_ACTIVE:
+                self.send_json({"error": "Wait for active uploads to finish before selecting saved inputs."}, 409)
+                return
+            if field == "concentrator_files":
+                current = UPLOADS_META.get(field) or []
+                if any(item.get("asset_id") == meta["asset_id"] for item in current):
+                    self.send_json({"ok": True, "field": field, "name": meta["name"],
+                                    "size": meta["size"], "asset_id": meta["asset_id"], "already_selected": True})
+                    return
+                current_total = sum(int(item.get("size", 0)) for item in current)
+                if len(current) >= MAX_CONCENTRATOR_FILES:
+                    self.send_json({"error": f"Concentrator accepts at most {MAX_CONCENTRATOR_FILES} input files."}, 413)
+                    return
+                if current_total + meta["size"] > MAX_CONCENTRATOR_TOTAL_BYTES:
+                    self.send_json({"error": "Combined Concentrator inputs exceed the 40 GiB limit."}, 413)
+                    return
+                current.append(meta)
+                UPLOADS_META[field] = current
+            else:
+                replaced.append(UPLOADS_META.get(field))
+                UPLOADS_META[field] = meta
+                exclusive_source = {
+                    "ranker_source_csv": "ranker_source_rules",
+                    "ranker_source_rules": "ranker_source_csv",
+                }.get(field)
+                if exclusive_source:
+                    replaced.append(UPLOADS_META.get(exclusive_source))
+                    UPLOADS_META[exclusive_source] = None
+        for previous in replaced:
+            remove_temporary_upload(previous)
+        add_log(f"[WEB] Selected saved {category[:-1] if category.endswith('s') else category}: {meta['name']}.")
+        self.send_json({"ok": True, "field": field, "name": meta["name"],
+                        "size": meta["size"], "asset_id": meta["asset_id"], "category": category})
 
     def handle_run(self):
         global PROCESS, RUN_THREAD
@@ -2196,7 +2373,7 @@ class Handler(BaseHTTPRequestHandler):
             add_log("[WEB] Starting rulest engine…")
             if options.get("_celf_message"):
                 add_log(f"[LICENSE] {options.get('_celf_message')}")
-            add_log("[WEB] Uploaded files are mounted as BASE / TARGET inputs.")
+            add_log("[WEB] BASE / TARGET inputs are mounted from the reusable library; temporary workflow files are cleaned after the job.")
             add_log("[WEB] " + " ".join(cmd[2:]))
         thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, control_file, "rulest", storage_baseline_bytes), daemon=True)
         with LOCK:
@@ -2246,7 +2423,7 @@ class Handler(BaseHTTPRequestHandler):
                 "outputs": [], "error": None, "control_file": None, "run_dir": str(run_dir),
             })
             add_log(f"[WEB] Starting Rule Ranker workflow: {mode}.")
-            add_log("[WEB] Uploaded files are temporary and will be removed when the job finishes.")
+            add_log("[WEB] Wordlists and rules are retained in the reusable library; workflow-specific temporary files are removed after the job.")
             add_log("[WEB] " + " ".join(cmd[3:]))
         thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, None, "ranker", storage_baseline_bytes), daemon=True)
         with LOCK:
@@ -2292,7 +2469,7 @@ class Handler(BaseHTTPRequestHandler):
                 "outputs": [], "error": None, "control_file": None, "run_dir": str(run_dir),
             })
             add_log(f"[WEB] Starting Concentrator workflow: {mode}.")
-            add_log("[WEB] Uploaded rule files are temporary and will be removed when the job finishes.")
+            add_log("[WEB] Rule inputs are retained in the reusable library after the job.")
             add_log("[WEB] " + " ".join(cmd[3:]))
         thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, None, "concentrator", storage_baseline_bytes), daemon=True)
         with LOCK:

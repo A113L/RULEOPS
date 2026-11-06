@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=ruleops-2.4.8-contact&build=2.4.10">
+  <link rel="stylesheet" href="/styles.css?v=ruleops-2.4.8-contact&build=2.4.11">
 </head>
 <body>
   <div class="app-shell">
@@ -68,7 +68,7 @@
     <main class="main-content" id="top">
       <header class="topbar">
         <div class="breadcrumb"><span>RULEOPS</span><i>/</i><strong>Run workspace</strong></div>
-        <div class="topbar-right"><span class="secure-label"><span class="lock-icon">⌑</span> PASSWORD SESSION</span><button id="change-password-button" class="account-button" type="button">Change password</button><button id="logout-button" class="account-button logout-button" type="button">Log out ↗</button><span class="avatar">O</span></div>
+        <div class="topbar-right"><label class="completion-sound-control" title="Play a short sound when a task completes successfully"><input id="completion-sound" type="checkbox" checked><span>♪ Completion sound</span></label><span class="secure-label"><span class="lock-icon">⌑</span> PASSWORD SESSION</span><button id="change-password-button" class="account-button" type="button">Change password</button><button id="logout-button" class="account-button logout-button" type="button">Log out ↗</button><span class="avatar">O</span></div>
       </header>
 
       <div id="rulest-view">
@@ -94,12 +94,14 @@
                 <label class="drop-zone" for="base-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT, wordlist or plain text</small><input id="base-file" type="file"></label>
                 <div class="file-state" id="base-state"><span class="file-state-dot"></span><span>No file selected</span></div>
                 <div class="upload-progress"><span id="base-progress"></span></div>
+                <div class="library-pick"><label for="library-base">Or reuse saved wordlist</label><select id="library-base" data-library-field="base"><option value="">Choose saved wordlist…</option></select></div>
               </div>
               <div class="upload-card" data-upload="target">
                 <div class="upload-head"><div class="file-icon target-icon">T</div><div><h3>Target wordlist</h3><small>Target words · TARGET</small></div><span class="required-star">*</span></div>
                 <label class="drop-zone" for="target-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT, wordlist or plain text</small><input id="target-file" type="file"></label>
                 <div class="file-state" id="target-state"><span class="file-state-dot"></span><span>No file selected</span></div>
                 <div class="upload-progress"><span id="target-progress"></span></div>
+                <div class="library-pick"><label for="library-target">Or reuse saved wordlist</label><select id="library-target" data-library-field="target"><option value="">Choose saved wordlist…</option></select></div>
               </div>
             </div>
             <div class="optional-upload-row">
@@ -107,6 +109,7 @@
               <label class="secondary-upload" for="seed-file">＋ Add rules file<input id="seed-file" type="file"></label>
             </div>
             <div class="seed-file-state" id="seed-state">No custom seed rules uploaded</div>
+            <div class="library-pick seed-library-pick"><label for="library-seed">Or reuse saved rules</label><select id="library-seed" data-library-field="seed"><option value="">Choose saved rule file…</option></select></div>
           </section>
 
           <section class="panel" id="tuning">
@@ -204,7 +207,7 @@
             <div class="notes-icon">✦</div><h3>Quick notes</h3>
             <div class="note-row"><span>01</span><p>Leave Bloom filter size at <b>0</b> to let the engine estimate GPU memory automatically.</p></div>
             <div class="note-row"><span>02</span><p>Use <b>Greedy</b> selection when coverage matters more than raw hit frequency.</p></div>
-            <div class="note-row"><span>03</span><p>Temporary server copies are automatically deleted when the run completes or is stopped. Generated results and logs are kept.</p></div>
+            <div class="note-row"><span>03</span><p>Uploaded wordlists and rules are retained in reusable libraries. Only workflow-specific temporary files are removed after a run; generated results and logs are kept.</p></div>
           </section>
         </aside>
       </div>
@@ -236,14 +239,16 @@
               <div class="upload-head"><div class="file-icon base-icon">W</div><div><h3>Base wordlist</h3><small>Source words · WORDLIST</small></div></div>
               <label class="drop-zone" for="ranker_wordlist-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT or plain text</small><input id="ranker_wordlist-file" type="file" accept=".txt,.lst,.dict,text/plain"></label>
               <div class="file-state" id="ranker_wordlist-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_wordlist-progress"></span></div>
+                <div class="library-pick"><label for="library-ranker_wordlist">Or reuse saved wordlist</label><select id="library-ranker_wordlist" data-library-field="ranker_wordlist"><option value="">Choose saved wordlist…</option></select></div>
             </div>
             <div class="upload-card" data-upload="ranker_cracked">
               <div class="upload-head"><div class="file-icon target-icon">C</div><div><h3>Cracked-password list</h3><small>Coverage universe · CRACKED</small></div></div>
               <label class="drop-zone" for="ranker_cracked-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>TXT or plain text</small><input id="ranker_cracked-file" type="file" accept=".txt,.lst,text/plain"></label>
               <div class="file-state" id="ranker_cracked-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_cracked-progress"></span></div>
+                <div class="library-pick"><label for="library-ranker_cracked">Or reuse saved wordlist</label><select id="library-ranker_cracked" data-library-field="ranker_cracked"><option value="">Choose saved wordlist…</option></select></div>
             </div>
           </div>
-          <div class="ranker-input-note">Temporary server-side copies are removed after each job. Re-upload inputs before starting another workflow.</div>
+          <div class="ranker-input-note">Uploaded wordlists and rules are saved in separate server folders and can be reused from the menus above. Workflow-specific CSV uploads remain temporary.</div>
         </section>
 
         <div class="ranker-layout">
@@ -260,6 +265,7 @@
                 <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Candidate ruleset</h3><small>Hashcat-compatible rules · RULES</small></div><span class="required-star">*</span></div>
                 <label class="drop-zone" for="ranker_rules-file"><span class="upload-cloud">↑</span><strong>Choose a .rule file <em>or drop it here</em></strong><small>Plain text Hashcat rules</small><input id="ranker_rules-file" type="file" accept=".rule,.txt,text/plain"></label>
                 <div class="file-state" id="ranker_rules-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_rules-progress"></span></div>
+                <div class="library-pick"><label for="library-ranker_rules">Or reuse saved rule file</label><select id="library-ranker_rules" data-library-field="ranker_rules"><option value="">Choose saved rule file…</option></select></div>
               </div>
               <div class="form-grid three-col ranker-fields">
                 <label class="field"><span>Ranking CSV output</span><input id="rank_output_name" type="text" value="ranker_output.csv"><small>Main ranking result.</small></label>
@@ -288,6 +294,7 @@
                 <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Existing ruleset</h3><small>Plain Hashcat .rule file</small></div><span class="required-star">*</span></div>
                 <label class="drop-zone" for="ranker_source_rules-file"><span class="upload-cloud">↑</span><strong>Choose a .rule file</strong><small>Existing rules to optimize</small><input id="ranker_source_rules-file" type="file" accept=".rule,.txt,text/plain"></label>
                 <div class="file-state" id="ranker_source_rules-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="ranker_source_rules-progress"></span></div>
+                <div class="library-pick"><label for="library-ranker_source_rules">Or reuse saved rule file</label><select id="library-ranker_source_rules" data-library-field="ranker_source_rules"><option value="">Choose saved rule file…</option></select></div>
               </div>
               <div class="upload-card ranker-source-upload" id="opt-csv-upload" data-upload="ranker_source_csv" hidden>
                 <div class="upload-head"><div class="file-icon target-icon">CSV</div><div><h3>Ranking CSV</h3><small>Ranker output · CSV</small></div><span class="required-star">*</span></div>
@@ -368,8 +375,9 @@
             <label class="drop-zone" for="concentrator_files-file"><span class="upload-cloud">↑</span><strong>Choose files <em>or drop them here</em></strong><small>Select multiple rules files · 40 GiB combined upload limit</small><input id="concentrator_files-file" type="file" multiple accept=".rule,.rules,.hr,.hashcat,.txt,.lst,text/plain"></label>
             <div class="file-state" id="concentrator_files-state"><span class="file-state-dot"></span><span>No rules files selected</span></div>
             <div class="upload-progress"><span id="concentrator_files-progress"></span></div>
+                <div class="library-pick"><label for="library-concentrator_files">Reuse saved rules</label><select id="library-concentrator_files" data-library-field="concentrator_files"><option value="">Add saved rule file…</option></select></div>
           </div>
-          <div class="ranker-input-note">Server-side upload copies are removed when the job completes, fails or is cancelled. Your original local files are never modified.</div>
+          <div class="ranker-input-note">Uploaded rule files are saved in the reusable rules library. You can add saved files from the menu above; original local files are never modified.</div>
         </section>
 
         <div class="concentrator-layout">
@@ -470,7 +478,7 @@
         <section class="panel storage-cleanup-panel">
           <div class="panel-heading"><div class="panel-heading-copy storage-panel-heading-copy"><span class="side-panel-kicker">GLOBAL CLEANUP</span><h2>Delete run directories</h2><p>Remove saved run folders from all three tools in one operation.</p></div><span class="subtle-tag storage-destructive-tag">DESTRUCTIVE ACTION</span></div>
           <div class="storage-warning"><span class="storage-warning-icon">!</span><div><b>This permanently removes saved run data</b><p>All folders directly inside <code>runs/</code> will be deleted except <code>runs/uploads/</code>. This includes generated outputs, engine logs, partial results and historical run files. The action cannot be undone.</p></div></div>
-          <div class="storage-cleanup-footer"><div><b id="storage-cleanup-summary">Loading run storage summary…</b><small>Authentication settings, application files and temporary uploaded inputs are not deleted.</small></div><button id="delete-run-directories" class="danger-action-button" type="button" disabled><span aria-hidden="true">⌫</span> Delete all run folders</button></div>
+          <div class="storage-cleanup-footer"><div><b id="storage-cleanup-summary">Loading run storage summary…</b><small>Authentication settings, application files, temporary inputs and the reusable runs/library/ wordlist/rules folders are not deleted.</small></div><button id="delete-run-directories" class="danger-action-button" type="button" disabled><span aria-hidden="true">⌫</span> Delete all run folders</button></div>
           <div class="storage-feedback" id="storage-feedback" role="status" aria-live="polite"></div>
         </section>
       
@@ -631,6 +639,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   
-      <script src="/app.js?v=ruleops-2.4.8-contact&build=2.4.10"></script>
+      <script src="/app.js?v=ruleops-2.4.8-contact&build=2.4.11"></script>
 </body>
 </html>

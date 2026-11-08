@@ -48,3 +48,20 @@ if __name__ == "__main__":
     import pytest
     print(f"Running {__file__} directly — use `pytest {__file__}` for full output.\n")
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_shutdown_releases_run_references_before_terminating_workers():
+    events = []
+
+    class LifecycleEngine:
+        def release_run_references(self):
+            events.append("release")
+
+        def terminate(self):
+            events.append("terminate")
+
+    multi = MultiGPUEngine({})
+    multi.engines = [LifecycleEngine(), LifecycleEngine()]
+    multi.shutdown()
+
+    assert events == ["release", "release", "terminate", "terminate"]

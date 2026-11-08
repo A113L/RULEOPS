@@ -18,7 +18,8 @@ import numpy as np
 from tqdm import tqdm
 
 from .common import (
-    log_info, log_warn, bold, green, cyan, yellow, _fmt_speed, _kb,
+    log_info, log_warn, bold, green, cyan, _fmt_speed, _kb,
+    STANDARD_PROGRESS_BAR_FORMAT,
     HashcatRuleValidator, BUILTIN_PROBES,
 )
 from .minimize import compute_rule_signature_hash
@@ -27,13 +28,11 @@ from .gpu_worker import ProcessEngineProxy
 from .profiling import GpuPhaseProfile
 
 # Lookup table for fast population counts on compact Stage 3 hit bitmaps.
-# Build it using basic integer operations instead of int.bit_count(): the latter
-# is unavailable in some embedded/stripped Python runtimes used to launch RULEOPS.
+# Portable 8-bit population-count lookup. Avoid int.bit_count(), which is not
+# available on older Python runtimes used by some RULEOPS deployments.
 _POPCOUNT8 = np.zeros(256, dtype=np.uint8)
-for _popcount_index in range(1, 256):
-    _POPCOUNT8[_popcount_index] = (
-        _POPCOUNT8[_popcount_index >> 1] + (_popcount_index & 1)
-    )
+for _popcount_i in range(1, 256):
+    _POPCOUNT8[_popcount_i] = _POPCOUNT8[_popcount_i >> 1] + (_popcount_i & 1)
 _GA_DEFAULT_MAX_SAMPLE_WORDS = 1_000_000
 _GA_DEFAULT_MAX_FULL_SWEEP_WORDS = 2_000_000
 
@@ -47,6 +46,16 @@ def _hit_count(value):
     if _is_hit_bitmap(value):
         return int(_POPCOUNT8[value].sum(dtype=np.uint64))
     return len(value)
+
+
+def _ga_progress_fields(rules, hits, speed, budget_left):
+    """Build the common Stage-style GA postfix without losing hit metrics."""
+    return {
+        "rules": cyan(f"{int(rules):,}"),
+        "hits": cyan(f"{int(hits):,}"),
+        "spd": green(str(speed)),
+        "budget": f"{max(0.0, float(budget_left)):.0f}s",
+    }
 
 
 def _ga_uses_full_sweep(generation, do_subsample, full_sweeps_enabled, every):
@@ -570,6 +579,7 @@ class GeneticRuleEvolver:
         if time_budget<=0: log_warn("[S3] no time budget"); return Counter()
         start = time.time()
         all_new = Counter()
+        all_new_hits_total = 0
         n_elite = max(1, int(self.pop_size*self.elite_frac))
         stagnation = 0
         best_ever = 0
@@ -608,17 +618,36 @@ class GeneticRuleEvolver:
         self._start_prefetch()
         try:
             with tqdm(total=generations, desc=green("  STAGE 3 "), unit="gen", ncols=ncols,
-                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}] {postfix}") as pbar:
+                      bar_format=STANDARD_PROGRESS_BAR_FORMAT) as pbar:
                 budget_stop = threading.Event()
+                progress_lock = threading.Lock()
+                progress_state = {
+                    "rules": 0,
+                    "hits": 0,
+                    "spd": _fmt_speed(0),
+                }
+
+                def _render_ga_postfix(refresh=False):
+                    # The heartbeat preserves the latest metrics; tqdm's
+                    # set_postfix replaces the entire postfix rather than
+                    # merging fields supplied by another thread.
+                    with progress_lock:
+                        snapshot = dict(progress_state)
+                    left = max(0.0, time_budget - (time.time() - start))
+                    fields = _ga_progress_fields(
+                        snapshot["rules"], snapshot["hits"], snapshot["spd"], left
+                    )
+                    pbar.set_postfix(fields, refresh=refresh)
+
                 def _budget_heartbeat():
                     while not budget_stop.wait(1.0):
-                        left = max(0.0, time_budget - (time.time() - start))
-                        pbar.set_postfix({"budget": f"{left:.0f}s"}, refresh=True)
+                        _render_ga_postfix(refresh=True)
+
                 budget_thread = threading.Thread(
                     target=_budget_heartbeat, name="ga-budget-heartbeat", daemon=True
                 )
                 budget_thread.start()
-                pbar.set_postfix({"budget": f"{time_budget:.0f}s"}, refresh=True)
+                _render_ga_postfix(refresh=True)
                 for gen in range(generations):
                     last_gen=gen
                     if _kb.poll(): break
@@ -656,8 +685,8 @@ class GeneticRuleEvolver:
                         scale = base_word_count / max(1, len(self.active_words))
                         phase_label = "sample"
 
+                    _render_ga_postfix(refresh=True)
                     budget_left = max(0.0, time_budget - (time.time() - start))
-                    pbar.set_postfix({"budget": f"{budget_left:.0f}s", "scan": phase_label}, refresh=True)
                     log_info(
                         f"[S3]    Generation {gen + 1}/{generations}: {phase_label} scan "
                         f"of {len(self.active_words):,}/{base_word_count:,} words; "
@@ -668,8 +697,11 @@ class GeneticRuleEvolver:
                     raw_scaled = raw if scale==1.0 else {c: int(round(h*scale)) for c,h in raw.items()}
                     self._update_sig_registry(raw_scaled)
                     for cs, hits in raw_scaled.items():
-                        if hits>0 and HashcatRuleValidator.validate_rule_for_gpu(cs):
-                            if hits > all_new[cs]: all_new[cs]=hits
+                        if hits > 0 and HashcatRuleValidator.validate_rule_for_gpu(cs):
+                            previous_hits = all_new[cs]
+                            if hits > previous_hits:
+                                all_new[cs] = hits
+                                all_new_hits_total += int(hits - previous_hits)
 
                     # --- Marginal coverage gain (submodular greedy) ---
                     # Process individuals in descending order of raw hit count and credit each
@@ -761,6 +793,14 @@ class GeneticRuleEvolver:
                     spd = _fmt_speed(total_combos / elapsed if elapsed>0 else 0)
                     if best>best_ever: best_ever=best; stagnation=0
                     else: stagnation+=1
+                    # ``hits`` is the aggregate per-chain hit count across the
+                    # unique GA candidates seen so far. It intentionally mirrors
+                    # Stage 1/2's sum of rule hits, so overlapping chains count
+                    # separately rather than pretending to be distinct words.
+                    with progress_lock:
+                        progress_state["rules"] = len(all_new)
+                        progress_state["hits"] = all_new_hits_total
+                        progress_state["spd"] = spd
                     if stagnation>=5:
                         stagnation=0
                         n_ref = max(1, int(self.pop_size*0.3))
@@ -775,7 +815,7 @@ class GeneticRuleEvolver:
                         keep = [list(ind) for ind,_ in fitness[:self.pop_size-n_ref]]
                         pop = keep+refresh
                         pbar.update(1)
-                        pbar.set_postfix({"budget": f"{max(0.0, time_budget - (time.time()-start)):.0f}s", "best":cyan(str(best)), "new":cyan(str(len(all_new))), "sigs":cyan(str(len(self._sig_to_best))), "spd":green(spd), "stag":yellow("REFRESH")}, refresh=False)
+                        _render_ga_postfix(refresh=False)
                         continue
                     elites = [list(ind) for ind,_ in fitness[:n_elite]]
                     next_pop = elites[:]
@@ -805,7 +845,7 @@ class GeneticRuleEvolver:
                             next_pop.append(list(ind)); next_set.add(ind)
                     pop = next_pop[:self.pop_size]
                     pbar.update(1)
-                    pbar.set_postfix({"budget": f"{max(0.0, time_budget - (time.time()-start)):.0f}s", "best":cyan(str(best)), "new":cyan(str(len(all_new))), "sigs":cyan(str(len(self._sig_to_best))), "spd":green(spd)}, refresh=False)
+                    _render_ga_postfix(refresh=False)
         finally:
             try:
                 budget_stop.set()
@@ -830,11 +870,14 @@ class GeneticRuleEvolver:
             engines = self.gpu_engine.engines if isinstance(self.gpu_engine, MultiGPUEngine) else [self.gpu_engine]
             engines = [e for e in engines if not getattr(e, 'disabled', False)]
             exact_counts = Counter()
+            verify_hits_total = 0
             if engines:
                 for eng in engines:
                     self._ensure_base_words_cached(eng)
+                verify_started = time.time()
                 with tqdm(total=len(verify_chains), desc=green("  S3 VERIFY "), unit="chain",
-                          ncols=ncols, leave=False) as verify_bar:
+                          ncols=ncols, leave=False,
+                          bar_format=STANDARD_PROGRESS_BAR_FORMAT) as verify_bar:
                     for offset in range(0, len(verify_chains), verify_batch_size):
                         if _kb.poll():
                             break
@@ -857,13 +900,17 @@ class GeneticRuleEvolver:
                         for chain, count in batch_counts.items():
                             if count:
                                 exact_counts[chain] = int(count)
+                                verify_hits_total += int(count)
                         verify_bar.update(len(batch))
+                        verify_elapsed = max(0.001, time.time() - verify_started)
                         verify_bar.set_postfix({
-                            "batch": f"{min(offset + len(batch), len(verify_chains)):,}/{len(verify_chains):,}",
-                            "kept": len(exact_counts),
+                            "rules": cyan(f"{len(exact_counts):,}"),
+                            "hits": cyan(f"{verify_hits_total:,}"),
+                            "spd": green(_fmt_speed(verify_bar.n / verify_elapsed, "chains")),
                         }, refresh=False)
             all_new = exact_counts
+            all_new_hits_total = verify_hits_total
 
         elapsed = time.time()-start
-        log_info(f"[S3]    Evolution complete — {bold(green(str(len(all_new))))} unique chains passed bloom filter  ({bold(cyan(str(len(self._sig_to_best))))} distinct functional signatures)  ({elapsed:.1f}s, {last_gen+1} generation(s))")
+        log_info(f"[S3]    Evolution complete — {bold(green(str(len(all_new))))} unique chains passed bloom filter  ({bold(cyan(f'{all_new_hits_total:,}'))} aggregate hits; {bold(cyan(str(len(self._sig_to_best))))} distinct functional signatures)  ({elapsed:.1f}s, {last_gen+1} generation(s))")
         return all_new

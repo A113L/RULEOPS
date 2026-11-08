@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 from .common import (
     log_info, log_warn, log_error, log_debug, bold, green, cyan, _kb,
+    STANDARD_PROGRESS_BAR_FORMAT,
     fnv1a_32, HashcatRuleValidator, _fmt_speed, set_global_seed,
     MAX_WORD_LEN, MAX_RULE_LEN, MAX_OUTPUT_LEN, MAX_CHAIN_STRING_LEN,
     MAX_HASHCAT_CHAIN, BLOOM_HASH_FUNCTIONS, HOT_RULE_RATIO,
@@ -79,8 +80,10 @@ class GPUEngine:
         self._rules_lengths_buf = None
         self._rules_buf_key = None
         self._bloom_recovery_fn = None
+        self._bloom_target_owner = None  # pins attached TARGET while recovery callback exists
         self._compiled_depth = None   # track compiled MAX_CHAIN_DEPTH
         self._base_words_precomputed = None  # (wf, wo, wl)
+        self._base_words_owner = None  # pins SharedWordList while wf exports its mmap
         self._celf_target_hashes_buf = None
         self._celf_slot_target_ids_buf = None
         self._celf_occupied_buf = None
@@ -467,6 +470,15 @@ class GPUEngine:
             bufs.remove(bf_buf)  # hand ownership to self.bloom_buf; don't release in finally
             self.bloom_buf = bf_buf
             self.bloom_np = None
+            # The recovery callback closes over TARGET. Keep its SharedWordList
+            # owner explicitly so worker teardown can close the attached handles
+            # in a deterministic order (callback first, then owner.close()).
+            target_owner = target_words
+            while hasattr(target_owner, "_words"):
+                target_owner = target_owner._words
+            self._bloom_target_owner = (
+                target_owner if callable(getattr(target_owner, "close", None)) else None
+            )
             self._bloom_recovery_fn = lambda: self.generate_bloom_filter(target_words)
             return _BLOOM_ALREADY_ON_GPU
         except Exception as exc:
@@ -541,7 +553,77 @@ class GPUEngine:
         return self._rules_buf, self._rules_offsets_buf, self._rules_lengths_buf
 
     def set_base_words(self, words):
-        self._base_words_precomputed = self._flatten(words)
+        # Resolve the root owner of a lazy WordListView before replacing a cache.
+        new_owner = words
+        while hasattr(new_owner, "_words"):
+            new_owner = new_owner._words
+        previous_owner = self._base_words_owner
+
+        # Drop exported NumPy arrays before closing an old worker-side attachment.
+        self._base_words_precomputed = None
+        self._base_words_owner = None
+        if (previous_owner is not None and previous_owner is not new_owner
+                and callable(getattr(previous_owner, "close", None))):
+            try:
+                previous_owner.close()
+            except Exception as exc:
+                log_warn(f"[RAM] Could not close replaced wordlist attachment: {exc}")
+
+        # _flatten() may return a zero-copy ndarray view over SharedWordList's
+        # mmap. Keep the owning sequence on the engine (not on the ndarray)
+        # until the view is released. WordListView is lazy and refers to its
+        # parent via _words, so retain the underlying closeable owner.
+        owner = new_owner
+        if callable(getattr(owner, "close", None)):
+            self._base_words_owner = owner
+
+        try:
+            self._base_words_precomputed = self._flatten(words)
+        except Exception:
+            self._base_words_owner = None
+            raise
+
+    def release_word_cache(self):
+        """Release cached base-word views before releasing their SharedMemory owner.
+
+        These arrays can directly export a SharedWordList mmap. The order is
+        important: first drop all cached NumPy arrays, then drop the strong
+        reference to the SharedWordList. In a spawned GPU worker this also
+        ensures the worker's attached SharedMemory handles close deterministically.
+        GPU buffers are separate and remain valid until their normal engine shutdown.
+        """
+        self._base_words_precomputed = None
+        self._base_words_owner = None
+
+    def release_run_references(self):
+        """Release run-scoped SharedMemory views and attached wordlist owners.
+
+        Drop exported NumPy arrays first, then clear the target-recovery closure,
+        and only then close the attached/owned SharedWordList handles. The parent
+        CLI may call close() again; SharedWordList.close() is idempotent.
+        """
+        base_owner = self._base_words_owner
+        target_owner = self._bloom_target_owner
+
+        # Order matters: NumPy's frombuffer() array exports the SharedMemory mmap.
+        self._base_words_precomputed = None
+        self._base_words_owner = None
+
+        # The callback retains TARGET even after the caller drops its reference.
+        self._bloom_recovery_fn = None
+        self._bloom_target_owner = None
+
+        seen = set()
+        for owner in (base_owner, target_owner):
+            if owner is None or id(owner) in seen:
+                continue
+            seen.add(id(owner))
+            close = getattr(owner, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:
+                    log_warn(f"[RAM] Could not close attached wordlist owner: {exc}")
 
     def get_word_batch_data(self, start, end):
         if self._base_words_precomputed is None:
@@ -572,7 +654,7 @@ class GPUEngine:
         counter = Counter()
         bs = self.params['WORDS_PER_BATCH']
         ncols = shutil.get_terminal_size((80,24)).columns
-        t0 = time.time(); words_done = 0; nr = len(self.gpu_rules)
+        t0 = time.time(); words_done = 0; hits_total = 0; nr = len(self.gpu_rules)
         desc = f"  STAGE 1 [{_label}] " if _label else "  STAGE 1 "
         # Only built when --profile is on (RULEST_CELF_PROFILE=1): the same
         # host/GPU-event breakdown CELF already reports, now for STAGE 1 too.
@@ -581,7 +663,7 @@ class GPUEngine:
         _profile = GpuPhaseProfile() if os.environ.get("RULEST_CELF_PROFILE") == "1" else None
         self._last_gpu_phase_profile = _profile
         with tqdm(total=len(base_words), desc=green(desc), unit="word", ncols=ncols,
-                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
+                  bar_format=STANDARD_PROGRESS_BAR_FORMAT,
                   disable=_silent, position=_position, leave=True) as pbar:
             for i in range(0, len(base_words), bs):
                 if _kb.poll(): break
@@ -591,6 +673,7 @@ class GPUEngine:
                     if found:
                         self._consecutive_errors = 0
                         counter.update(found)
+                        hits_total += len(found)
                     elif self.queue is None:
                         self._consecutive_errors += 1
                         if self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS: break
@@ -604,7 +687,11 @@ class GPUEngine:
                     else:
                         combos_for_speed = words_done * nr
                     spd = _fmt_speed(combos_for_speed / elapsed if elapsed>0 else 0)
-                    pbar.set_postfix({"rules": cyan(str(len(counter))), "spd": green(spd)}, refresh=False)
+                    pbar.set_postfix({
+                        "rules": cyan(f"{len(counter):,}"),
+                        "hits": cyan(f"{hits_total:,}"),
+                        "spd": green(spd),
+                    }, refresh=False)
                 pbar.update(len(batch))
         log_info(f"[S1]    {bold(green(str(len(counter))))} unique rules passed bloom filter")
         return counter
@@ -898,10 +985,11 @@ class GPUEngine:
         ncols = shutil.get_terminal_size((80, 24)).columns
         t0 = time.time()
         total_combos = 0
+        hits_total = 0
         self.set_base_words(base_words)
         bar_desc = f"{desc}[{_label}] " if _label else desc
         with tqdm(total=n_batches, desc=green(bar_desc), unit="batch", ncols=ncols,
-                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
+                  bar_format=STANDARD_PROGRESS_BAR_FORMAT,
                   disable=_silent, position=_position, leave=True) as pbar:
             for ci in range(0, len(chains), cbs):
                 if _kb.poll(): break
@@ -920,6 +1008,7 @@ class GPUEngine:
                     elif found:
                         self._consecutive_errors = 0
                         counter.update(found)
+                        hits_total += len(found)
                 if self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS: break
                 delta = len(cb) * len(base_words)
                 total_combos += delta
@@ -931,7 +1020,11 @@ class GPUEngine:
                     combos_for_speed = total_combos
                 elapsed = time.time() - t0
                 spd = _fmt_speed(combos_for_speed / elapsed if elapsed > 0 else 0)
-                pbar.set_postfix({"rules": cyan(str(len(counter))), "spd": green(spd)}, refresh=False)
+                pbar.set_postfix({
+                    "rules": cyan(f"{len(counter):,}"),
+                    "hits": cyan(f"{hits_total:,}"),
+                    "spd": green(spd),
+                }, refresh=False)
                 pbar.update(1)
         return counter
 

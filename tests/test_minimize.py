@@ -79,3 +79,123 @@ if __name__ == "__main__":
     import pytest
     print(f"Running {__file__} directly — use `pytest {__file__}` for full output.\n")
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def _reference_minimize(counter, probes):
+    """Historic full-probe implementation used as a semantic reference."""
+    import hashlib
+    from collections import defaultdict
+    from rulest.common import py_apply_chain
+    groups = defaultdict(list)
+    for rule, count in counter.items():
+        outputs = []
+        for word in probes:
+            output = py_apply_chain(rule, word)
+            if output is None:
+                signature = '__UNSUPPORTED__::' + rule
+                break
+            outputs.append(output)
+        else:
+            combined = '\x00'.join(outputs).encode('utf-8', errors='replace')
+            signature = hashlib.blake2b(combined, digest_size=16).hexdigest()
+        groups[signature].append((rule, count))
+    result = Counter()
+    for group in groups.values():
+        rule, count = min(group, key=lambda item: (-item[1], len(item[0].split()), item[0]))
+        result[rule] = count
+    return result
+
+
+def test_progressive_minimization_refines_late_probe_collisions(monkeypatch):
+    import rulest.minimize as minimize_module
+
+    probes = ['abc', '!#', 'Hello', 'Password']
+    counter = Counter({'@!': 5, '@#': 7, 'l': 6, 'l l': 8, 'u': 2})
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 1)
+
+    result = minimize_module.minimize_by_signature(counter, probes)
+
+    assert result == _reference_minimize(counter, probes)
+    # '@!' and '@#' are identical on the first probe but differ on the next.
+    assert '@!' in result and '@#' in result
+
+
+def test_disk_backed_progressive_minimization_matches_full_reference(monkeypatch):
+    import rulest.minimize as minimize_module
+
+    probes = ['abc', '!#', 'Hello', 'Password']
+    counter = Counter({'@!': 5, '@#': 7, 'l': 6, 'l l': 8, 'u': 2, 'u u': 3})
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 1)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_SQLITE_BATCH_SIZE', 2)
+
+    result = minimize_module.minimize_by_signature(counter, probes)
+
+    assert result == _reference_minimize(counter, probes)
+
+
+def test_disk_backed_worker_pool_streams_and_refines_rows(monkeypatch):
+    import rulest.minimize as minimize_module
+
+    # 500 syntactically distinct rules split into two functional classes.
+    # All produce the same output on probe 1; probe 2 separates the classes.
+    counter = Counter()
+    for depth in range(1, 251):
+        counter[' '.join(['@!'] * depth)] = depth
+        counter[' '.join(['@#'] * depth)] = depth
+    probes = ['abc', '!#']
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 1)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_SQLITE_BATCH_SIZE', 64)
+
+    result = minimize_module.minimize_by_signature(counter, probes)
+
+    expected = _reference_minimize(counter, probes)
+    assert result == expected
+    assert len(result) == 2
+
+
+def test_compiled_chain_probe_signatures_match_shared_rule_applicator():
+    import rulest.minimize as minimize_module
+    from rulest.common import py_apply_chain
+
+    probes = ['abc', 'Password', '!@#', 'a b', 'test123']
+    rules = ['l', 'u u', 'c', '$1 ^!', 's a@ @#', 'Q', '']
+    for rule in rules:
+        expected = [py_apply_chain(rule, word) for word in probes]
+        actual = [minimize_module._apply_compiled_chain(rule.split(), word)
+                  for word in probes]
+        assert actual == expected
+        assert minimize_module.compute_rule_signature_hash(rule, probes) == \
+            minimize_module._probe_chunk_signature(rule, probes, 0, len(probes))
+
+
+def test_progressive_minimizer_avoids_full_probe_pass_for_unique_rules(monkeypatch):
+    import rulest.minimize as minimize_module
+
+    # Most substitutions are distinguishable on the first, deliberately
+    # high-entropy alphabet probe.  Only no-op substitutions need later probes.
+    replacements = '!@#$%^&*()-_=+[]{}|;:,.<>?/~0123456789'
+    counter = Counter()
+    for original in 'abcdefghijklmnopqrstuvwxyz':
+        for replacement in replacements:
+            rule = 's' + original + replacement
+            counter[rule] = 1
+
+    monkeypatch.setattr(minimize_module.mp, 'cpu_count', lambda: 1)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 8)
+
+    calls = [0]
+    original_apply = minimize_module._py_apply_single_rule
+
+    def counted_apply(operation, word):
+        calls[0] += 1
+        return original_apply(operation, word)
+
+    monkeypatch.setattr(minimize_module, '_py_apply_single_rule', counted_apply)
+    from rulest.common import BUILTIN_PROBES
+    result = minimize_module.minimize_by_signature(counter, BUILTIN_PROBES)
+
+    full_scan_calls = len(counter) * len(BUILTIN_PROBES)
+    assert result
+    assert calls[0] < full_scan_calls * 0.4

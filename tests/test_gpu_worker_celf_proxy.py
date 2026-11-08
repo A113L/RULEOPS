@@ -82,3 +82,78 @@ def test_strict_rpc_surfaces_worker_errors_instead_of_swallowing_them():
     proxy._last_heartbeat = 1e20  # prevent heartbeat timeout during this unit test
     with pytest.raises(RuntimeError, match="simulated CELF setup failure"):
         proxy._call("celf_initialize_target_table", [], _raise_on_error=True)
+
+
+def test_proxy_terminate_waits_for_graceful_worker_shutdown(monkeypatch):
+    proxy = ProcessEngineProxy({}, "0")
+
+    class FakeQueue:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            self.items.append(item)
+
+    class FakeProcess:
+        def __init__(self):
+            self.join_timeout = None
+
+        def join(self, timeout=None):
+            self.join_timeout = timeout
+
+        def is_alive(self):
+            return False
+
+    proc = FakeProcess()
+    cmd_q = FakeQueue()
+    proxy._proc = proc
+    proxy._cmd_q = cmd_q
+    killed = []
+    monkeypatch.setattr(proxy, "_kill", lambda: killed.append(True))
+
+    proxy.terminate()
+
+    assert cmd_q.items == [(None, "__shutdown__", (), {})]
+    assert proc.join_timeout == 5.0
+    assert killed == [True]
+
+
+def test_gpu_worker_entry_releases_engine_references_on_shutdown(monkeypatch):
+    from types import SimpleNamespace
+    from rulest import gpu_worker
+
+    events = []
+
+    class FakeEngine:
+        def __init__(self, _params):
+            self.device = SimpleNamespace(name="test-gpu")
+
+        def initialize_gpu(self, _device_spec):
+            return True
+
+        def release_run_references(self):
+            events.append("release")
+
+    class CommandQueue:
+        def get(self):
+            return (None, "__shutdown__", (), {})
+
+    class ResultQueue:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            self.items.append(item)
+
+    class HeartbeatQueue:
+        def put(self, _item):
+            pass
+
+    result_queue = ResultQueue()
+    monkeypatch.setattr(gpu_worker, "GPUEngine", FakeEngine)
+    gpu_worker._gpu_worker_entry(
+        "0", {}, CommandQueue(), result_queue, HeartbeatQueue()
+    )
+
+    assert events == ["release"]
+    assert result_queue.items[0] == ("__init__", "ok", "test-gpu")

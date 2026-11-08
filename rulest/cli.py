@@ -258,26 +258,54 @@ def main():
     # local-search so [p]/[r]/[q] work on every stage, not only STAGE 0–3.
 
     if args.select_mode != 'greedy':
-        # Only the greedy selector needs the real target wordlist post-hoc;
-        # frequency mode never touches it again, so free it as before.
+        # Frequency mode never touches either corpus after extraction/minimize
+        # input collection. Release engine caches/callbacks before closing the
+        # shared segments, then free both wordlists before the expensive
+        # minimization pass (important for 400MB+ TARGET files).
+        gpu_engine = getattr(extractor, "gpu_engine", None)
+        if gpu_engine is not None:
+            try:
+                release = getattr(gpu_engine, "release_run_references", None)
+                if callable(release):
+                    release()
+            except Exception as exc:
+                log_warn(f"[RAM] Could not release GPU word references: {exc}")
+        for _wordlist_name, _wordlist in (("base_words", base_words), ("target_words", target_words)):
+            close_wordlist = getattr(_wordlist, "close", None)
+            if callable(close_wordlist):
+                try:
+                    close_wordlist()
+                except Exception as exc:
+                    log_warn(f"[RAM] Could not close {_wordlist_name}: {exc}")
         del target_words
         gc.collect()
     if _kb.quit_requested: log_warn("[QUIT]  Early exit — saving partial results")
-    log_info(f"\n[GPU]  Raw bloom-filter candidates: {bold(cyan(str(len(raw_counts))))}"); print()
+    raw_candidate_count = len(raw_counts)
+    log_info(f"\n[GPU]  Raw bloom-filter candidates: {bold(cyan(str(raw_candidate_count)))}"); print()
 
     with stage_profiler.track("Minimization (dedup)", unit="rule") as _mint:
         final_counts = minimize_by_signature(raw_counts, BUILTIN_PROBES)
-        _mint.set_count(len(raw_counts))
+        _mint.set_count(raw_candidate_count)
     if ':' not in final_counts: final_counts[':'] = 0
+
+    # The raw Counter can contain millions of Python dict entries.  It is no
+    # longer needed once minimization has returned; keeping it alive through
+    # CELF unnecessarily doubles a large part of the rule-count memory.
+    del raw_counts
+    gc.collect()
 
     depth_dist = defaultdict(int)
     for r in final_counts:
         if r != ':': depth_dist[len(r.split())] += 1
     ds = '  '.join(f"d{d}:{depth_dist[d]:,}" for d in sorted(depth_dist))
     final_rules = len(final_counts) - (1 if ':' in final_counts else 0)
-    removed = len(raw_counts) - len(final_counts)
+    removed = raw_candidate_count - len(final_counts)
 
-    si = sorted(final_counts.items(), key=lambda kv: (-kv[1], len(kv[0].split()), kv[0]))
+    # Greedy CELF consumes the rule pool directly; sorting millions of rules
+    # by frequency here was unused work and an avoidable large temporary list.
+    si = None
+    if args.select_mode != 'greedy':
+        si = sorted(final_counts.items(), key=lambda kv: (-kv[1], len(kv[0].split()), kv[0]))
     def _write_ruleset_file(path, ordered_rules, sort_desc, extra_header=None):
         with open(path, 'w', encoding='utf-8') as f:
             f.write("# rulest — GPU-Compatible Hashcat Rules Engine (optimized)\n")
@@ -291,8 +319,8 @@ def main():
             if args.genetic:
                 f.write(f"# STAGE 3 GA     : pop={args.genetic_pop}  gen={args.genetic_generations}  elite={args.genetic_elite:.0%}\n")
             f.write("#\n")
-            f.write(f"# GPU raw candidates      : {len(raw_counts):,}\n")
-            mp2 = 'disk-backed SQLite' if len(raw_counts) > MINIMIZE_DISK_THRESHOLD else 'in-memory'
+            f.write(f"# GPU raw candidates      : {raw_candidate_count:,}\n")
+            mp2 = 'disk-backed SQLite' if raw_candidate_count > MINIMIZE_DISK_THRESHOLD else 'in-memory'
             f.write(f"# Minimization            : {mp2}  (threshold {MINIMIZE_DISK_THRESHOLD:,})\n")
             f.write(f"#   Probe words           : {len(BUILTIN_PROBES)}  (built-in)\n")
             f.write(f"#   Equiv. rules removed  : {removed:,}\n")
@@ -431,7 +459,7 @@ def main():
     log_info(cyan(sep))
     log_info(f"  {bold('DONE')}  rulest finished in {bold(f'{elapsed:.1f}s')}")
     log_info(cyan(sep))
-    log_info(f"  GPU raw candidates : {bold(str(len(raw_counts)))}")
+    log_info(f"  GPU raw candidates : {bold(str(raw_candidate_count))}")
     log_info(f"  Rules kept         : {bold(green(str(final_rules)))}  {dim('('+ds+')')}")
     log_info(f"  Rules removed      : {bold(red(str(removed)))}")
     log_info(f"  Output file        : {bold(args.output)}")
@@ -470,5 +498,34 @@ def main():
                     f"{r:<42s}  {cyan(str(c))}"
                 )
     print()
+
+    # Explicitly release GPU-side NumPy views before closing the shared
+    # wordlist mappings. Stage 2/3 and CELF can cache a zero-copy flattened
+    # BASE view in GPUEngine._base_words_precomputed.
+    gpu_engine = getattr(extractor, "gpu_engine", None)
+    if gpu_engine is not None:
+        try:
+            release_run_references = getattr(gpu_engine, "release_run_references", None)
+            if release_run_references is not None:
+                release_run_references()
+            else:
+                release_word_cache = getattr(gpu_engine, "release_word_cache", None)
+                if release_word_cache is not None:
+                    release_word_cache()
+        except Exception as exc:
+            log_warn(f"[RAM] Could not release cached GPU word views: {exc}")
+
+    # Both wordlists are no longer needed. Close them deterministically
+    # instead of relying on interpreter-shutdown destructors. target_words
+    # may already have been deleted in frequency mode / after CELF selection.
+    for _name in ("base_words", "target_words"):
+        _wordlist = locals().get(_name)
+        if _wordlist is not None:
+            close_wordlist = getattr(_wordlist, "close", None)
+            if close_wordlist is not None:
+                try:
+                    close_wordlist()
+                except Exception as exc:
+                    log_warn(f"[RAM] Could not close {_name}: {exc}")
 
     _kb.stop()

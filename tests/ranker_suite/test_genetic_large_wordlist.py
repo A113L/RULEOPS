@@ -3,9 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from rulest.genetic import (
-    GeneticRuleEvolver, _POPCOUNT8, _ga_uses_full_sweep, _hit_count,
-)
+from rulest.genetic import GeneticRuleEvolver, _ga_uses_full_sweep, _hit_count
 from rulest.gpu_engine import GPUEngine
 
 
@@ -17,18 +15,6 @@ def test_large_wordlist_does_not_force_generation_zero_or_periodic_full_sweeps()
     assert _ga_uses_full_sweep(0, True, True, 4) is False
     assert _ga_uses_full_sweep(4, True, True, 4) is True
     assert _ga_uses_full_sweep(1, False, False, 4) is True
-
-
-def test_popcount_lookup_table_is_portable_and_correct_for_all_bytes():
-    # Do not rely on int.bit_count(), which is missing in some embedded Python
-    # runtimes despite reporting a modern interpreter version.
-    expected = np.asarray(
-        [sum((value >> bit) & 1 for bit in range(8)) for value in range(256)],
-        dtype=np.uint8,
-    )
-    np.testing.assert_array_equal(_POPCOUNT8, expected)
-    assert int(_POPCOUNT8[0xFF]) == 8
-    assert int(_POPCOUNT8[0x55]) == 4
 
 
 def test_hit_bitmap_population_count_matches_set_count():
@@ -111,3 +97,95 @@ def test_gpu_ga_count_only_verification_does_not_allocate_hit_bitmaps():
 
     assert result == {"a b": 3, "c d": 2}
     assert all(not isinstance(value, np.ndarray) for value in result.values())
+
+
+def test_popcount_lookup_is_portable_and_covers_all_byte_values():
+    # This lookup must not depend on int.bit_count(), which is unavailable on
+    # older Python runtimes used by some RULEOPS installations.
+    from rulest.genetic import _POPCOUNT8
+
+    expected = [bin(value).count("1") for value in range(256)]
+    assert _POPCOUNT8.tolist() == expected
+
+
+def test_gpu_engine_run_cleanup_closes_shared_base_and_target_owners(tmp_path):
+    from rulest.io_utils import load_wordlist
+
+    base_path = tmp_path / "base.txt"
+    target_path = tmp_path / "target.txt"
+    base_path.write_bytes(b"alpha\nbeta\n")
+    target_path.write_bytes(b"alpha!\nbeta!\n")
+
+    base_words = load_wordlist(base_path)
+    target_words = load_wordlist(target_path)
+    base_data_mmap = base_words._data_shm._mmap
+    base_offsets_mmap = base_words._offsets_shm._mmap
+    target_data_mmap = target_words._data_shm._mmap
+    target_offsets_mmap = target_words._offsets_shm._mmap
+
+    engine = GPUEngine({})
+    engine.set_base_words(base_words)
+    engine._bloom_target_owner = target_words
+    engine._bloom_recovery_fn = lambda: target_words
+
+    engine.release_run_references()
+
+    assert engine._base_words_precomputed is None
+    assert engine._base_words_owner is None
+    assert engine._bloom_recovery_fn is None
+    assert engine._bloom_target_owner is None
+    assert base_data_mmap.closed
+    assert base_offsets_mmap.closed
+    assert target_data_mmap.closed
+    assert target_offsets_mmap.closed
+
+    # The CLI also closes its owning references; this must be idempotent.
+    base_words.close()
+    target_words.close()
+
+
+def test_replacing_worker_wordlist_closes_old_attachment_not_parent(tmp_path):
+    import pickle
+    from rulest.io_utils import load_wordlist
+
+    path = tmp_path / "shared.txt"
+    path.write_bytes(b"alpha\nbeta\ngamma\n")
+    parent_words = load_wordlist(path)
+    parent_mmap = parent_words._data_shm._mmap
+    first_attachment = pickle.loads(pickle.dumps(parent_words))
+    second_attachment = pickle.loads(pickle.dumps(parent_words))
+    first_mmap = first_attachment._data_shm._mmap
+    second_mmap = second_attachment._data_shm._mmap
+
+    engine = GPUEngine({})
+    engine.set_base_words(first_attachment)
+    engine.set_base_words(second_attachment)
+
+    assert first_mmap.closed
+    assert not second_mmap.closed
+    assert not parent_mmap.closed
+    assert engine._base_words_owner is second_attachment
+
+    engine.release_run_references()
+    assert second_mmap.closed
+    assert not parent_mmap.closed
+    parent_words.close()
+    assert parent_mmap.closed
+
+
+def test_reusing_same_parent_wordlist_does_not_close_it_early(tmp_path):
+    from rulest.io_utils import load_wordlist
+
+    path = tmp_path / "same.txt"
+    path.write_bytes(b"one\ntwo\n")
+    words = load_wordlist(path)
+    data_mmap = words._data_shm._mmap
+
+    engine = GPUEngine({})
+    engine.set_base_words(words)
+    engine.set_base_words(words)
+
+    assert not data_mmap.closed
+    assert engine._base_words_owner is words
+    engine.release_run_references()
+    assert data_mmap.closed

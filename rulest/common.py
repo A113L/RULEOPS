@@ -18,6 +18,9 @@ from collections import defaultdict
 
 from . import state
 
+# One shared tqdm format for word/rule search, GA, and minimization.
+STANDARD_PROGRESS_BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}"
+
 os.environ.setdefault('PYOPENCL_COMPILER_OUTPUT', '0')
 
 

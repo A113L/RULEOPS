@@ -24,6 +24,7 @@ from tqdm import tqdm
 from . import worker_state
 from .common import (
     log_info, log_warn, bold, green, cyan, yellow, dim, _fmt_speed,
+    STANDARD_PROGRESS_BAR_FORMAT,
     safe_worker_count, HashcatRuleValidator, py_apply_chain,
     MAX_WORD_LEN, MAX_HASHCAT_CHAIN,
     _TOKEN_STRIP_LEET_BY_CHAR,
@@ -692,7 +693,7 @@ def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=
                 desc=green("  STAGE 0 "),
                 unit="word",
                 ncols=ncols,
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
+                bar_format=STANDARD_PROGRESS_BAR_FORMAT,
             ) as pbar:
                 t0 = time.time()
                 words_done = 0

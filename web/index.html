@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=ruleops-2.4.9-discord&build=2.4.12">
+  <link rel="stylesheet" href="/styles.css?v=ruleops-2.4.9-discord&build=2.5.0-about">
 </head>
 <body>
   <div class="app-shell">
@@ -26,7 +26,7 @@
       <nav class="sidebar-nav" aria-label="Programs">
         <div class="nav-group" id="rulest-nav-group">
           <button class="nav-item nav-group-toggle active" id="nav-rulest" type="button" aria-expanded="true" aria-controls="rulest-subnav" title="RULEST — rule generation engine">
-            <span class="nav-icon">#</span><span class="nav-main-copy"><b>RULEST</b><small>Rule generation engine</small></span><span class="license-badge" id="badge-RULEST" data-mode="FULL" hidden></span><span class="nav-chevron" aria-hidden="true">⌄</span>
+            <span class="nav-icon">#</span><span class="nav-main-copy"><b>RULEST</b><small>Rule generation engine</small></span><span class="nav-chevron" aria-hidden="true">⌄</span>
           </button>
           <div class="nav-submenu" id="rulest-subnav">
             <a class="nav-subitem active" href="#workspace" data-nav-section="workspace"><span></span>Run workspace</a>
@@ -35,10 +35,10 @@
           </div>
         </div>
         <a class="nav-item nav-program-link" href="#ranker" data-nav-tool="ranker" title="Rule Ranker — score and optimize rulesets">
-          <span class="nav-icon">⇧</span><span class="nav-main-copy"><b>Rule Ranker</b><small>Score &amp; optimize rulesets</small></span><span class="license-badge" id="badge-RULE_RANKER" data-mode="FULL" hidden></span>
+          <span class="nav-icon">⇧</span><span class="nav-main-copy"><b>Rule Ranker</b><small>Score &amp; optimize rulesets</small></span>
         </a>
         <a class="nav-item nav-program-link" href="#concentrator" data-nav-tool="concentrator" title="Concentrator — extract, generate and clean rules">
-          <span class="nav-icon">⌘</span><span class="nav-main-copy"><b>Concentrator</b><small>Extract, generate &amp; clean</small></span><span class="license-badge" id="badge-CONCENTRATOR" data-mode="FULL" hidden></span>
+          <span class="nav-icon">⌘</span><span class="nav-main-copy"><b>Concentrator</b><small>Extract, generate &amp; clean</small></span>
         </a>
       </nav>
       <div class="sidebar-utility">
@@ -48,7 +48,7 @@
       <div class="sidebar-utility system-utility">
         <div class="side-label">SYSTEM</div>
         <a class="nav-item nav-utility-link" href="#run-storage" data-nav-section="run-storage" title="Manage saved run directories"><span class="nav-icon">▤</span><span class="nav-main-copy"><b>Run storage</b><small>History &amp; cleanup</small></span></a>
-        <a class="nav-item nav-utility-link" href="#license-admin" data-nav-section="license-admin" id="nav-license-admin" hidden title="License and DEMO status"><span class="nav-icon">⚿</span><span class="nav-main-copy"><b>License</b><small>DEMO status &amp; activation</small></span></a>
+        <a class="nav-item nav-utility-link" href="#about" data-nav-section="about" id="nav-about" title="About RULEOPS, donations and support"><span class="nav-icon">ⓘ</span><span class="nav-main-copy"><b>About</b><small>Project, donations &amp; support</small></span></a>
       </div>
       <div class="sidebar-bottom">
         <div class="gpu-card" id="local-engine-card" data-engine-state="ready" aria-label="Local engine status: ready">
@@ -56,12 +56,11 @@
           <p>Runs on your machine</p>
           <small>OpenCL · GPU accelerated</small>
         </div>
-        <div class="license-card" id="license-card" data-edition="DEMO">
-          <div class="license-card-top"><span class="license-edition" id="license-edition-label">DEMO</span><span class="license-valid" id="license-valid-label">unlicensed</span></div>
-          <p id="license-card-detail">3 full runs per module, then DEMO LIMITED</p>
-          <small id="license-card-modules">RULEST · Ranker · Concentrator</small>
+        <div class="sidebar-about-card">
+          <span>FREE TOOLCHAIN</span>
+          <p>All features available. Donations are optional and support ongoing development.</p>
         </div>
-        <div class="side-foot"><span class="version-dot"></span> RULEOPS <b>v2.4.8</b><br><span>Password protected · LAN access</span></div>
+        <div class="side-foot"><span class="version-dot"></span> RULEOPS <b>v2.5.0</b><br><span>Password protected · LAN access</span></div>
       </div>
     </aside>
 
@@ -482,36 +481,26 @@
           <div class="storage-feedback" id="storage-feedback" role="status" aria-live="polite"></div>
         </section>
       
-<section class="page-heading system-page" id="license-admin" hidden>
+<section class="page-heading system-page about-page-heading" id="about" hidden>
         <div>
-          <div class="eyebrow">SYSTEM <span class="eyebrow-line"></span> LICENSING</div>
-          <h1>License<span class="title-period">.</span></h1>
-          <p>DEMO usage per module, activation of a signed offline license, and administrator controls.</p>
+          <div class="eyebrow">RULEOPS <span class="eyebrow-line"></span> ABOUT</div>
+          <h1>About<span class="title-period">.</span></h1>
+          <p>A free, local-first Hashcat rule toolchain for generating, ranking and refining rulesets.</p>
         </div>
+        <div class="heading-badge"><span class="badge-orbit">✳</span><div><b>Free to use</b><small>All features available · no activation</small></div></div>
       </section>
-      <section class="content-grid system-page" id="license-admin-grid" hidden>
+      <section class="content-grid system-page about-grid" id="about-grid" hidden>
         <div class="primary-column">
-          <section class="panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">STATUS</span><h2>Module DEMO counters</h2></div></div>
-            <div class="license-modules-grid" id="license-modules-grid">
-              <div class="license-module-card" data-module="RULEST"><b>RULEST</b><span class="lm-mode">—</span><small class="lm-detail">—</small></div>
-              <div class="license-module-card" data-module="RULE_RANKER"><b>Rule Ranker</b><span class="lm-mode">—</span><small class="lm-detail">—</small></div>
-              <div class="license-module-card" data-module="CONCENTRATOR"><b>Concentrator</b><span class="lm-mode">—</span><small class="lm-detail">—</small></div>
-            </div>
-            <p class="license-hint" id="license-hint">Without a signed license each module allows 3 full runs, then enters DEMO LIMITED with restricted CELF.</p>
+          <section class="panel about-intro-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">THE PROJECT</span><h2>One toolchain, three workflows</h2></div></div>
+            <p class="about-copy">RULEOPS brings RULEST, Rule Ranker and Concentrator together in one authenticated local interface. Processing runs on your machine and uses your available CPU and GPU resources. All application features are available without a product license or activation.</p>
+            <div class="about-feature-tags"><span>GPU accelerated</span><span>Local processing</span><span>Open source · MIT</span></div>
           </section>
-          <section class="panel usecases-panel" id="license-usecases-panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">TOOLKIT</span><h2>What each program is for</h2></div></div>
-            <p class="license-hint">RULEOPS packages three complementary Hashcat rule tools. Use the cards below to pick the right workflow for the job.</p>
+          <section class="panel usecases-panel" id="about-usecases-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">TOOLCHAIN</span><h2>What each program does</h2></div></div>
             <div class="usecases-grid">
               <article class="usecase-card" data-tool="rulest">
-                <div class="usecase-head">
-                  <span class="usecase-icon" aria-hidden="true">#</span>
-                  <div>
-                    <b>RULEST</b>
-                    <small>Rule generation engine</small>
-                  </div>
-                </div>
+                <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">#</span><div><b>RULEST</b><small>Rule generation engine</small></div></div>
                 <ul class="usecase-list">
                   <li>Build optimized Hashcat rulesets from wordlists and cracked-password material</li>
                   <li>GPU-accelerated CELF selection for high target coverage with fewer rules</li>
@@ -520,28 +509,16 @@
                 </ul>
               </article>
               <article class="usecase-card" data-tool="ranker">
-                <div class="usecase-head">
-                  <span class="usecase-icon" aria-hidden="true">⇧</span>
-                  <div>
-                    <b>Rule Ranker</b>
-                    <small>Score &amp; optimize rulesets</small>
-                  </div>
-                </div>
+                <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">⇧</span><div><b>Rule Ranker</b><small>Score &amp; optimize rulesets</small></div></div>
                 <ul class="usecase-list">
-                  <li>Score candidate rules against hashes or cracked sets (ranking workflow)</li>
-                  <li>CELF-optimize an existing <code>.rule</code> file — shrink size while keeping coverage</li>
-                  <li>Analyze ranking CSVs: summaries, cleaned rules, re-scored exports</li>
-                  <li>GPU ranking &amp; optimization; CSV analysis stays CPU-only</li>
+                  <li>Score candidate rules against hashes or cracked sets</li>
+                  <li>CELF-optimize an existing <code>.rule</code> file while preserving coverage</li>
+                  <li>Analyze ranking CSVs and export cleaned or re-scored rules</li>
+                  <li>GPU ranking and optimization; CSV analysis stays CPU-only</li>
                 </ul>
               </article>
               <article class="usecase-card" data-tool="concentrator">
-                <div class="usecase-head">
-                  <span class="usecase-icon" aria-hidden="true">⌘</span>
-                  <div>
-                    <b>Concentrator</b>
-                    <small>Extract, generate &amp; clean</small>
-                  </div>
-                </div>
+                <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">⌘</span><div><b>Concentrator</b><small>Extract, generate &amp; clean</small></div></div>
                 <ul class="usecase-list">
                   <li>Frequency-ranked or Markov-weighted extraction from rule collections</li>
                   <li>Combinatorial token-chain generation with length and target bounds</li>
@@ -551,60 +528,34 @@
               </article>
             </div>
           </section>
-          <section class="panel" id="license-install-panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ACTIVATION</span><h2>Install signed license</h2></div></div>
-            <p class="license-hint" id="license-install-hint">Paste the JSON contents of a signed <code>license.lic</code> file issued for this installation. Administrator only.</p>
-            <textarea id="license-json-input" class="license-textarea" rows="16" placeholder='{"payload":{...},"signature":"..."}'></textarea>
-            <div class="license-actions">
-              <button id="install-license-button" class="primary-button" type="button" data-license-action="install"><span>Install license</span><b>↗</b></button>
-            </div>
-            <p class="license-feedback" id="license-feedback" hidden></p>
-          </section>
         </div>
         <div class="secondary-column">
-          <section class="panel notes-panel">
-            <div class="notes-icon">⚿</div>
-            <h3>Licensing guide</h3>
-            <div class="note-row"><span>01</span><p><b>DEMO</b> — 3 full runs per module (RULEST, Ranker, Concentrator).</p></div>
-            <div class="note-row"><span>02</span><p><b>DEMO LIMITED</b> — advanced CELF locked; basic demonstration remains.</p></div>
-            <div class="note-row"><span>03</span><p><b>PROFESSIONAL / ENTERPRISE</b> — signed offline license restores all features.</p></div>
-            <div class="note-row"><span>04</span><p>Counters survive restarts. Machine binding is optional at issue time.</p></div>
-          </section>
-          <section class="panel pricing-panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">PRICING</span><h2>License plans</h2></div></div>
-            <div class="pricing-grid">
-              <div class="price-card"><b>1 month</b><span class="price">$5</span><small>Demo user · 30 days</small></div>
-              <div class="price-card"><b>1 year</b><span class="price">$40</span><small>Full license · 365 days</small></div>
-              <div class="price-card"><b>2 years</b><span class="price">$60</span><small>Full license · 730 days</small></div>
-              <div class="price-card price-card-featured"><b>Unlimited</b><span class="price">$150</span><small>No expiry</small></div>
+          <section class="panel donations-panel">
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">OPTIONAL SUPPORT</span><h2>Donations</h2></div></div>
+            <p class="about-copy">RULEOPS is free to use. If the project is useful to you, voluntary crypto donations help support maintenance and future development.</p>
+            <div class="donation-list">
+              <div class="donation-row"><span class="donation-coin">ETH</span><code class="donation-address">0x597c06b19bc90876f6375b8d1348b34c94f223a4</code></div>
+              <div class="donation-row"><span class="donation-coin">Bitcoin</span><code class="donation-address">13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ</code></div>
+              <div class="donation-row"><span class="donation-coin">Litecoin</span><code class="donation-address">LLDEKP1L7Zs99cYHSVdxXHZPUaR5Hcpand</code></div>
+              <div class="donation-row"><span class="donation-coin">Ravencoin</span><code class="donation-address">RHXGULWc3jcgSHB9LAEmRCGnddRemnZ6hu</code></div>
+              <div class="donation-row"><span class="donation-coin">Tron</span><code class="donation-address">TWCr67GVVWYmPhDadGFzqWu5rcWuqwD8gi</code></div>
             </div>
-            <p class="license-hint">After payment, send the transaction ID and your preferred customer name. You will receive a signed <code>license.lic</code> for offline activation.</p>
-          </section>
-          <section class="panel payments-panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">PAYMENTS</span><h2>Crypto</h2></div></div>
-            <div class="payment-list">
-              <div class="payment-row"><span class="pay-coin">ETH</span><code class="pay-addr">0x597c06b19bc90876f6375b8d1348b34c94f223a4</code></div>
-              <div class="payment-row"><span class="pay-coin">Bitcoin</span><code class="pay-addr">13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ</code></div>
-              <div class="payment-row"><span class="pay-coin">Litecoin</span><code class="pay-addr">LLDEKP1L7Zs99cYHSVdxXHZPUaR5Hcpand</code></div>
-              <div class="payment-row"><span class="pay-coin">Ravencoin</span><code class="pay-addr">RHXGULWc3jcgSHB9LAEmRCGnddRemnZ6hu</code></div>
-              <div class="payment-row"><span class="pay-coin">Tron</span><code class="pay-addr">TWCr67GVVWYmPhDadGFzqWu5rcWuqwD8gi</code></div>
-            </div>
+            <p class="donation-note">Donations are entirely optional. They do not unlock features, change application behaviour or grant special access.</p>
           </section>
           <section class="panel contact-panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">CONTACT</span><h2>Support &amp; orders</h2></div></div>
-            <p class="license-hint">After payment, send the transaction ID and your preferred customer name to receive a signed <code>license.lic</code>.</p>
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">CONTACT</span><h2>Support</h2></div></div>
+            <p class="about-copy">For help, bug reports and feedback, use either support channel below.</p>
             <div class="contact-list">
               <div class="contact-row"><span class="contact-label">Email</span><a class="contact-value" href="mailto:nullpointer@i2pmail.org">nullpointer@i2pmail.org</a></div>
               <div class="contact-row"><span class="contact-label">Discord</span><a class="contact-value" href="https://discord.com/app" target="_blank" rel="noopener noreferrer" title="Open Discord and search for this username">a_1_1_3_1</a></div>
             </div>
           </section>
-          <section class="panel" id="license-user-panel">
+          <section class="panel" id="about-user-panel" hidden>
             <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ACCESS</span><h2>User password</h2></div></div>
-            <p class="license-hint">Optional regular user password (no license administration). Leave empty and save to remove.</p>
+            <p class="about-copy">Optional regular user password. Leave empty and save to remove.</p>
             <input id="user-password-input" type="password" minlength="12" placeholder="Min. 12 characters" autocomplete="new-password">
-            <div class="license-actions">
-              <button id="set-user-password-button" class="primary-button" type="button"><span>Save user password</span></button>
-            </div>
+            <div class="about-actions"><button id="set-user-password-button" class="primary-button" type="button"><span>Save user password</span></button></div>
+            <p class="about-feedback" id="user-password-feedback" role="status" aria-live="polite" hidden></p>
           </section>
         </div>
       </section>
@@ -639,6 +590,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   
-      <script src="/app.js?v=ruleops-2.4.9-discord&build=2.4.12"></script>
+      <script src="/app.js?v=ruleops-2.4.9-discord&build=2.5.0-about"></script>
 </body>
 </html>

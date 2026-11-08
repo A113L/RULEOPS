@@ -1,1 +1,0 @@
-"""RULEOPS licensing package."""

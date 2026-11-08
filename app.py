@@ -29,18 +29,6 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from gpu_diagnostics import collect_gpu_diagnostics
-from licensing.core import (
-    DEMO_LIMIT,
-    apply_celf_limits,
-    can_start_full_run,
-    celf_restrictions,
-    is_fully_licensed,
-    license_summary,
-    module_mode,
-    uninstall_license,
-    record_module_run,
-)
-
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 DATA = ROOT / "runs"
@@ -1794,8 +1782,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, **list_library_assets()})
         elif path == "/api/run-storage/summary":
             self.send_json({"ok": True, **run_storage_summary()})
-        elif path == "/api/license":
-            self.send_json({"ok": True, "license": license_summary(), "demo_limit": DEMO_LIMIT})
         elif path == "/api/status":
             qs = urllib.parse.parse_qs(parsed.query)
             try:
@@ -1813,7 +1799,6 @@ class Handler(BaseHTTPRequestHandler):
                     elapsed = max(0, end - STATE["started_at"])
                 data = {k: v for k, v in STATE.items() if k not in ("logs", "control_file", "run_dir")}
                 data["engine_badge"] = engine_badge_for_status(STATE.get("status", "idle"), STATE.get("paused", False))
-                data["license"] = license_summary()
                 _sess = get_session(self)
                 data["role"] = session_role(_sess) if _sess else None
                 data["is_admin"] = data["role"] == "admin"
@@ -1885,45 +1870,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self.require_authenticated(api=True, csrf=True):
             return
-        if parsed.path in ("/api/run", "/api/ranker/run", "/api/concentrator/run"):
-            # Per-module DEMO counters (independent, durable). Full license bypasses limits.
-            path_to_module = {
-                "/api/run": "RULEST",
-                "/api/ranker/run": "RULE_RANKER",
-                "/api/concentrator/run": "CONCENTRATOR",
-            }
-            module = path_to_module[parsed.path]
-            try:
-                gate = can_start_full_run(module)
-                # Record a full DEMO consumption only while still in DEMO (not LIMITED, not licensed).
-                if gate.get("mode") == "DEMO" and not is_fully_licensed():
-                    status = record_module_run(module, tool_path=parsed.path)
-                    # Attach status for handlers / logs via request attribute
-                    self._demo_run_status = status
-                else:
-                    self._demo_run_status = {
-                        "module": module,
-                        "mode": gate.get("mode"),
-                        "used": gate.get("used", 0),
-                        "remaining": gate.get("remaining", -1),
-                        "recorded": False,
-                    }
-            except Exception as exc:
-                self.send_json({
-                    "error": f"License usage store unavailable; operation blocked safely. ({type(exc).__name__})",
-                    "license_required": True,
-                }, 503)
-                return
         if parsed.path == "/api/auth/logout":
             self.handle_auth_logout()
         elif parsed.path == "/api/auth/change-password":
             self.handle_auth_change_password()
         elif parsed.path == "/api/auth/set-user-password":
             self.handle_auth_set_user_password()
-        elif parsed.path == "/api/license/install":
-            self.handle_license_install()
-        elif parsed.path == "/api/license/uninstall":
-            self.handle_license_uninstall()
         elif parsed.path == "/api/library/select":
             self.handle_library_select()
         elif parsed.path.startswith("/api/upload/"):
@@ -2065,7 +2017,6 @@ class Handler(BaseHTTPRequestHandler):
             "is_admin": role == "admin",
             "csrf_token": session[1]["csrf"] if session else None,
             "session_expires_in": max(0, int(session[1]["expires"] - time.time())) if session else 0,
-            "license": license_summary(),
         })
 
     def handle_auth_setup(self):
@@ -2126,7 +2077,6 @@ class Handler(BaseHTTPRequestHandler):
             "role": role,
             "is_admin": role == "admin",
             "message": f"Signed in successfully as {role}.",
-            "license": license_summary(),
         })
 
     def handle_auth_logout(self):
@@ -2204,70 +2154,6 @@ class Handler(BaseHTTPRequestHandler):
             "ok": True,
             "user_enabled": bool(password),
             "message": "User password updated." if password else "User password removed.",
-        })
-
-    def handle_license_install(self):
-        """Administrator installs a signed license.lic payload (JSON envelope)."""
-        if not require_admin(self, api=True):
-            return
-        data = self.read_json_body(256 * 1024)
-        if self._body_read_failed:
-            return
-        if not isinstance(data, dict):
-            self.send_json({"error": "Expected JSON license envelope with payload and signature."}, 400)
-            return
-        if "payload" not in data or "signature" not in data:
-            self.send_json({"error": "License file must contain payload and signature fields."}, 400)
-            return
-        try:
-            target = ROOT / "license.lic"
-            temporary = target.with_name("license.lic.tmp")
-            payload = json.dumps(data, indent=2) + "\n"
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(target)
-            try:
-                os.chmod(target, 0o600)
-            except OSError:
-                pass
-        except OSError as exc:
-            self.send_json({"error": f"Could not write license.lic: {exc}"}, 500)
-            return
-        summary = license_summary()
-        if not summary.get("valid"):
-            self.send_json({
-                "ok": False,
-                "error": summary.get("reason") or "License installed but failed verification.",
-                "license": summary,
-            }, 400)
-            return
-        self.send_json({
-            "ok": True,
-            "message": "License installed. All modules restored to full capability.",
-            "license": summary,
-        })
-
-    def handle_license_uninstall(self):
-        """Remove the locally installed license and return the resulting status."""
-        if not require_admin(self, api=True):
-            return
-        try:
-            removed = uninstall_license()
-        except OSError as exc:
-            self.send_json({"error": f"Could not remove license.lic: {exc}"}, 500)
-            return
-        summary = license_summary()
-        self.send_json({
-            "ok": True,
-            "removed": removed,
-            "message": (
-                "License removed. RULEOPS has returned to DEMO mode."
-                if removed else "No installed license was found. RULEOPS is in DEMO mode."
-            ),
-            "license": summary,
         })
 
     def handle_clear_logs(self):
@@ -2519,12 +2405,6 @@ class Handler(BaseHTTPRequestHandler):
         options = self.read_json_body(1024 * 1024)
         if not isinstance(options, dict):
             return
-        # Enforce DEMO / DEMO LIMITED CELF caps for RULEST selection stage.
-        options = apply_celf_limits(options, module="RULEST")
-        if options.get("_license_mode") == "DEMO_LIMITED":
-            # Force frequency selection when advanced CELF is locked.
-            if str(options.get("select_mode", "")).lower() in {"greedy", "celf"}:
-                options["select_mode"] = "frequency"
         with LOCK:
             storage_ok, storage_message, storage_baseline_bytes = storage_preflight()
             if not storage_ok:
@@ -2559,8 +2439,6 @@ class Handler(BaseHTTPRequestHandler):
                 "control_file": str(control_file), "run_dir": str(run_dir),
             })
             add_log("[WEB] Starting rulest engine…")
-            if options.get("_celf_message"):
-                add_log(f"[LICENSE] {options.get('_celf_message')}")
             add_log("[WEB] BASE / TARGET inputs are mounted from the reusable library; temporary workflow files are cleaned after the job.")
             add_log("[WEB] " + " ".join(cmd[2:]))
         thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, control_file, "rulest", storage_baseline_bytes), daemon=True)
@@ -2577,10 +2455,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         mode = data.get("mode")
         options = data.get("options") if isinstance(data.get("options"), dict) else {}
-        # Enforce DEMO / DEMO LIMITED CELF caps (strong limits after 3 full runs).
-        options = apply_celf_limits(options, module="RULE_RANKER")
-        if options.get("_license_mode") == "DEMO_LIMITED":
-            add_log(f"[LICENSE] {options.get('_celf_message')}")
         with LOCK:
             storage_ok, storage_message, storage_baseline_bytes = storage_preflight()
             if not storage_ok:
@@ -2845,7 +2719,7 @@ def main():
     server = RulestHTTPServer((args.host, args.port), Handler)
     actual_port = server.server_address[1]
     print()
-    print("  RULEOPS v2.4.8  /  HASHCAT RULE TOOLCHAIN")
+    print("  RULEOPS v2.5.0  /  HASHCAT RULE TOOLCHAIN")
     print(f"  Listening on: {args.host}:{actual_port}")
     print(f"  Connection limit: {MAX_CONCURRENT_CONNECTIONS} concurrent clients")
     print(f"  Upload limits: {MAX_UPLOAD_BYTES / 1024**3:.1f} GiB/file, {MAX_TOTAL_UPLOAD_BYTES / 1024**3:.1f} GiB total")

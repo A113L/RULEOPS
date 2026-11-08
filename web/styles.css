@@ -644,228 +644,38 @@
 }
 
 
-/* --- License / DEMO badges (2.4.7) --- */
-.license-badge{
-  margin-left:auto;
-  font:700 8px/1.2 var(--mono);
-  letter-spacing:.04em;
-  padding:3px 6px;
-  border-radius:999px;
-  border:1px solid #3d4c63;
-  color:#9eb0c8;
-  background:#162033;
-  white-space:nowrap;
-  flex-shrink:0;
-}
-.license-badge[data-mode="DEMO"]{border-color:#6b5a2a;color:#e6c86a;background:#2a2412}
-.license-badge[data-mode="DEMO_LIMITED"]{border-color:#6b3a2a;color:#f0a090;background:#2a1612}
-.license-badge[data-mode="FULL"]{border-color:#3d5a3a;color:#9fd89a;background:#162416}
-.license-card{
-  margin:12px 0 10px;
-  padding:12px 12px 10px;
-  border-radius:12px;
-  border:1px solid #2a364c;
+/* --- About page, optional donations and support --- */
+.sidebar-about-card{
+  margin:12px 0 10px;padding:12px;border:1px solid #2a364c;border-radius:12px;
   background:linear-gradient(180deg,#152033,#101827);
 }
-.license-card[data-edition="DEMO"]{border-color:#5a4a22}
-.license-card[data-edition="PROFESSIONAL"],
-.license-card[data-edition="ENTERPRISE"]{border-color:#3d5a3a}
-.license-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
-.license-edition{font:800 10px/1 var(--mono);letter-spacing:.08em;color:#e6c86a}
-.license-card[data-edition="PROFESSIONAL"] .license-edition,
-.license-card[data-edition="ENTERPRISE"] .license-edition{color:#9fd89a}
-.license-valid{font:600 9px/1 var(--mono);color:#7f8ea3;letter-spacing:.04em}
-.license-card p{margin:0;font-size:11px;color:#b7c3d6;line-height:1.35}
-.license-card small{display:block;margin-top:6px;font-size:9px;color:#6f7f96}
-.license-modules-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:8px 0 14px}
-.license-module-card{
-  border:1px solid #2a364c;border-radius:12px;padding:12px;background:#121b2b;
-  display:flex;flex-direction:column;gap:6px;min-height:88px
-}
-.license-module-card b{font-size:12px;color:#e8eef8}
-.license-module-card .lm-mode{font:800 11px/1 var(--mono);letter-spacing:.04em;color:#e6c86a}
-.license-module-card[data-mode="FULL"] .lm-mode{color:#9fd89a}
-.license-module-card[data-mode="DEMO_LIMITED"] .lm-mode{color:#f0a090}
-.license-module-card .lm-detail{font-size:10px;color:#8090a8;line-height:1.3}
-.license-hint{font-size:12px;color:#8b9bb0;line-height:1.45;margin:0 0 12px}
-.license-textarea{
-  width:100%;min-height:320px;height:min(42vh,420px);resize:vertical;border-radius:10px;border:1px solid #33445f;
-  background:#0d1420;color:#dce6f5;padding:12px;font:12px/1.4 var(--mono);margin-bottom:12px;
-  flex:1 1 auto;box-sizing:border-box
-}
-#license-install-panel{
-  display:flex;flex-direction:column;min-height:0
-}
-#license-install-panel .license-textarea{
-  flex:1 1 auto
-}
-.license-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
-.license-feedback{font-size:12px;margin:8px 0 0;color:#9fd89a}
-.license-feedback.error{color:#f0a090}
-
-/* --- Use-cases (License page, visible to all roles) --- */
-.usecases-panel{margin-top:0}
-.usecases-grid{
-  display:grid;
-  grid-template-columns:1fr;
-  gap:12px;
-  margin-top:4px;
-}
-.usecase-card{
-  border:1px solid #2a364c;
-  border-radius:12px;
-  padding:14px 14px 12px;
-  background:#121b2b;
-  display:flex;
-  flex-direction:column;
-  gap:10px;
-  transition:border-color .18s ease, background .18s ease;
-}
-.usecase-card:hover{
-  border-color:#3a4a66;
-  background:#141e30;
-}
-.usecase-card[data-tool="rulest"]{border-left:3px solid #6b8cff}
-.usecase-card[data-tool="ranker"]{border-left:3px solid #e6c86a}
-.usecase-card[data-tool="concentrator"]{border-left:3px solid #9fd89a}
-.usecase-head{
-  display:flex;
-  align-items:center;
-  gap:12px;
-}
-.usecase-icon{
-  width:36px;height:36px;
-  border-radius:10px;
-  display:flex;align-items:center;justify-content:center;
-  font:800 16px/1 var(--mono);
-  background:#0d1420;
-  border:1px solid #2a364c;
-  color:#c8d4e6;
-  flex-shrink:0;
-}
-.usecase-card[data-tool="rulest"] .usecase-icon{color:#8aa4ff;border-color:#3a4a7a;background:#121828}
-.usecase-card[data-tool="ranker"] .usecase-icon{color:#e6c86a;border-color:#5a4a22;background:#1a160e}
-.usecase-card[data-tool="concentrator"] .usecase-icon{color:#9fd89a;border-color:#3d5a3a;background:#121a14}
-.usecase-head b{
-  display:block;
-  font-size:13px;
-  color:#e8eef8;
-  letter-spacing:.01em;
-}
-.usecase-head small{
-  display:block;
-  font-size:11px;
-  color:#8090a8;
-  margin-top:2px;
-}
-.usecase-list{
-  margin:0;
-  padding:0 0 0 16px;
-  list-style:disc;
-  display:flex;
-  flex-direction:column;
-  gap:5px;
-}
-.usecase-list li{
-  font-size:12px;
-  color:#a8b6ca;
-  line-height:1.45;
-}
-.usecase-list code{
-  font:11px/1.3 var(--mono);
-  color:#c8d4e6;
-  background:#0d1420;
-  padding:1px 5px;
-  border-radius:4px;
-  border:1px solid #2a364c;
-}
-@media(min-width:1100px){
-  .usecases-grid{grid-template-columns:1fr}
-}
-@media(max-width:980px){
-  .usecases-grid{grid-template-columns:1fr}
-}
-
+.sidebar-about-card>span{display:block;font:800 9px/1.2 var(--mono);letter-spacing:.09em;color:#b8f36b}
+.sidebar-about-card p{margin:6px 0 0;font-size:10px;line-height:1.4;color:#9aa9bd}
+.about-grid{align-items:start}
+.about-intro-panel{margin-bottom:14px}
+.about-copy{font-size:12px;color:#9aa9bd;line-height:1.55;margin:0 0 12px}
+.about-feature-tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+.about-feature-tags span{padding:5px 8px;border:1px solid #35445d;border-radius:999px;background:#111b2a;color:#b8c6da;font:700 9px/1.2 var(--mono);letter-spacing:.02em}
+.donation-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.donation-row{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:10px;border:1px solid #2a364c;background:#0d1420}
+.donation-coin{font:800 10px/1 var(--mono);letter-spacing:.08em;color:#9eb0c8}
+.donation-address{font:12px/1.35 var(--mono);color:#dce6f5;word-break:break-all;user-select:all}
+.donation-note{margin:12px 0 0;padding:10px 12px;border-left:2px solid #6b8f4b;background:#111b20;color:#9cad9f;font-size:11px;line-height:1.45}
+.contact-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.contact-row{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:10px;border:1px solid #2a364c;background:#0d1420}
+.contact-label{font:800 10px/1 var(--mono);letter-spacing:.08em;color:#9eb0c8}
+.contact-value{font:13px/1.35 var(--mono);color:#9fd89a;text-decoration:none;word-break:break-all}
+.contact-value:hover{color:#b8f36b;text-decoration:underline}
+.about-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
+.about-feedback{font-size:12px;margin:8px 0 0;color:#9fd89a;line-height:1.45}
+.about-feedback.error{color:#f0a090}
 #user-password-input{
   width:100%;max-width:360px;border-radius:10px;border:1px solid #33445f;
   background:#0d1420;color:#dce6f5;padding:10px 12px;font:13px/1.3 system-ui;margin-bottom:12px
 }
 @media(max-width:980px){
-  .license-badge{display:none}
-  .license-card p,.license-card small{display:none}
-  .license-modules-grid{grid-template-columns:1fr}
-}
-
-
-/* --- Pricing / payments (License page) --- */
-.pricing-grid{
-  display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:10px;
-  margin:8px 0 12px;
-}
-.price-card{
-  border:1px solid #2a364c;
-  border-radius:12px;
-  padding:14px 12px;
-  background:#121b2b;
-  display:flex;
-  flex-direction:column;
-  gap:4px;
-}
-.price-card-featured{
-  border-color:#5a7a3a;
-  background:linear-gradient(180deg,#162416,#121b2b);
-}
-.price-card b{font-size:12px;color:#c8d4e6;letter-spacing:.02em}
-.price-card .price{font:800 22px/1.1 var(--mono);color:#e8eef8;margin:4px 0}
-.price-card-featured .price{color:#b8f36b}
-.price-card small{font-size:10px;color:#7a8aa3}
-.payment-list{display:flex;flex-direction:column;gap:8px;margin-top:6px}
-.payment-row{
-  display:flex;flex-direction:column;gap:4px;
-  padding:10px 12px;border-radius:10px;border:1px solid #2a364c;background:#0d1420;
-}
-.pay-coin{font:800 10px/1 var(--mono);letter-spacing:.08em;color:#9eb0c8}
-.pay-addr{
-  font:12px/1.35 var(--mono);color:#dce6f5;word-break:break-all;
-  user-select:all;
-}
-@media(max-width:980px){
-  .pricing-grid{grid-template-columns:1fr}
-}
-
-.contact-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-.contact-row{
-  display:flex;flex-direction:column;gap:4px;
-  padding:10px 12px;border-radius:10px;border:1px solid #2a364c;background:#0d1420;
-}
-.contact-label{font:800 10px/1 var(--mono);letter-spacing:.08em;color:#9eb0c8}
-.contact-value{font:13px/1.35 var(--mono);color:#9fd89a;text-decoration:none;word-break:break-all}
-.contact-value:hover{color:#b8f36b;text-decoration:underline}
-
-.license-textarea:disabled{opacity:.48;cursor:not-allowed;filter:saturate(.45)}
-
-/* Let the activation panel use the remaining height of the desktop license layout. */
-@media (min-width: 981px) {
-  #license-admin-grid {
-    align-items: stretch;
-  }
-
-  #license-admin-grid > .primary-column,
-  #license-admin-grid > .secondary-column {
-    min-height: 100%;
-  }
-
-  #license-admin-grid #license-install-panel {
-    flex: 1 1 auto;
-  }
-
-  #license-admin-grid #license-install-panel .license-textarea {
-    min-height: 320px;
-    height: auto;
-    flex: 1 1 auto;
-  }
+  .about-grid{grid-template-columns:1fr}
+  .usecases-grid{grid-template-columns:1fr}
 }
 
 /* Reusable wordlist / rule libraries and completion notification controls. */

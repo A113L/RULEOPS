@@ -156,23 +156,23 @@ All three tools share one authenticated web server, LAN listener, live log, outp
 
 The sidebar is the primary application navigator. Select **RULEST** to expand its workspace, engine tuning and GPU diagnostics pages. Select **Rule Ranker** or **Concentrator** to open those tools. **Live activity** remains available as a shared monitor across all three programs. Under **System → Run storage**, review the number of saved run folders, files and disk usage. **Delete all run folders** removes saved RULEST, Ranker and Concentrator run directories after an explicit confirmation. It is blocked while a job is active or an upload is in progress. The cleanup deliberately preserves `runs/uploads/`, `auth.json`, application files and configuration; generated outputs, logs and partial results in run folders are permanently deleted. On narrow screens, the sidebar becomes a compact horizontal tool bar; the RULEST submenu opens as a dropdown.
 
-## Offline licensing (DEMO / PROFESSIONAL / ENTERPRISE)
+## About, donations and support
 
-RULEOPS includes an offline Ed25519 license verifier.
+RULEOPS is free to use. All features in RULEST, Rule Ranker and Concentrator are available without a product license, activation file or online entitlement check. The repository is distributed under the MIT License (see [`LICENSE`](LICENSE)); this software license is the project's open-source usage grant, not an in-app activation system.
 
-**Without a valid `license.lic`:**
-- Each module (RULEST, Rule Ranker, Concentrator) allows **3 full runs** independently.
-- After the third full run of a module, that module enters **DEMO LIMITED**.
-- In DEMO LIMITED, advanced CELF features are strongly restricted (no greedy/advanced CELF; tight candidate/budget caps). A basic demonstration path remains available.
+### Optional donations
 
-**With a signed PROFESSIONAL or ENTERPRISE `license.lic`:** all modules and CELF features are fully unlocked.
+If RULEOPS is useful to you, voluntary cryptocurrency donations can help support maintenance and future development. Donations do not unlock features, change application behaviour or grant special access. The wallet addresses are shown in the **About** page inside the application:
 
-Install the added dependency with `python3 -m pip install -r requirements.txt`
+- ETH: `0x597c06b19bc90876f6375b8d1348b34c94f223a4`
+- Bitcoin: `13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ`
+- Litecoin: `LLDEKP1L7Zs99cYHSVdxXHZPUaR5Hcpand`
+- Ravencoin: `RHXGULWc3jcgSHB9LAEmRCGnddRemnZ6hu`
+- Tron: `TWCr67GVVWYmPhDadGFzqWu5rcWuqwD8gi`
 
-### Customer activation
+### Support
 
-Copy obtained `public_key.pem` and the customer's `.lic` file to the RULEOPS installation (`licensing/public_key.pem` and `license.lic`). Restart RULEOPS. No Internet connection is used for license verification. Optional machine binding is available by entering the customer's Linux `/etc/machine-id` in the issuer; leave it blank for a transferable license.
+For help, bug reports and feedback:
 
-### Pricing
-
-https://hcrt.pages.dev/offer
+- Email: `nullpointer@i2pmail.org`
+- Discord: `a_1_1_3_1`

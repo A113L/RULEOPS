@@ -926,19 +926,11 @@ function setActiveSystemView(view = 'storage') {
   $('ranker-view').hidden = true;
   $('concentrator-view').hidden = true;
   $('system-view').hidden = false;
-  const storageHeading = document.getElementById('run-storage');
-  const licenseHeading = document.getElementById('license-admin');
-  const licenseGrid = document.getElementById('license-admin-grid');
-  // Storage page elements: everything in system-view except license panels
+  const aboutElements = new Set(['about', 'about-grid']);
   document.querySelectorAll('#system-view > section, #system-view > div').forEach((el) => {
-    if (el.id === 'license-admin' || el.id === 'license-admin-grid') return;
-    // hide storage when showing license
-    if (view === 'license') el.hidden = true;
-    else el.hidden = false;
+    const isAbout = aboutElements.has(el.id);
+    el.hidden = view === 'about' ? !isAbout : isAbout;
   });
-  if (licenseHeading) licenseHeading.hidden = view !== 'license';
-  if (licenseGrid) licenseGrid.hidden = view !== 'license';
-  if (storageHeading) storageHeading.hidden = view === 'license';
 
   const rulestButton = $('nav-rulest');
   if (rulestButton) {
@@ -946,9 +938,8 @@ function setActiveSystemView(view = 'storage') {
     rulestButton.setAttribute('aria-current', 'false');
   }
   const breadcrumb = document.querySelector('.breadcrumb strong');
-  if (breadcrumb) breadcrumb.textContent = view === 'license' ? 'License' : 'Run storage';
+  if (breadcrumb) breadcrumb.textContent = view === 'about' ? 'About' : 'Run storage';
   if (view === 'storage') loadRunStorageSummary();
-  if (view === 'license') refreshLicense();
 }
 
 function setRulestMenuExpanded(expanded) {
@@ -1220,7 +1211,7 @@ function initializeApp() {
     const target = href && href.startsWith('#') ? document.getElementById(href.slice(1)) : null;
     if (!target) return;
     if (href === '#run-storage') setActiveSystemView('storage');
-    if (href === '#license-admin') setActiveSystemView('license');
+    else if (href === '#about') setActiveSystemView('about');
     else if (href === '#ranker') setActiveTool('ranker');
     else if (href === '#concentrator') setActiveTool('concentrator');
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(href)) setActiveTool('rulest');
@@ -1229,7 +1220,7 @@ function initializeApp() {
     const breadcrumbLabels = {
       '#workspace': 'Run workspace', '#tuning': 'Engine tuning',
       '#gpu-diagnostic': 'GPU diagnostics', '#ranker': 'Rule Ranker',
-      '#concentrator': 'Concentrator', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#license-admin': 'License',
+      '#concentrator': 'Concentrator', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
     const breadcrumb = document.querySelector('.breadcrumb strong');
     if (breadcrumb) breadcrumb.textContent = breadcrumbLabels[href] || 'Workspace';
@@ -1273,7 +1264,7 @@ function initializeApp() {
   const initialTool = window.location.hash === '#ranker' ? 'ranker' : window.location.hash === '#concentrator' ? 'concentrator' : ['#workspace', '#tuning', '#gpu-diagnostic'].includes(window.location.hash) ? 'rulest' : storedTool;
   setActiveTool(initialTool);
   if (window.location.hash === '#run-storage') setActiveSystemView('storage');
-  if (window.location.hash === '#license-admin') setActiveSystemView('license');
+  if (window.location.hash === '#about') setActiveSystemView('about');
   let storedRulestMenu = 'true';
   try { storedRulestMenu = sessionStorage.getItem('ruleops-rulest-menu-expanded') || 'true'; } catch {}
   setRulestMenuExpanded(storedRulestMenu !== 'false' || initialTool === 'rulest');
@@ -1323,7 +1314,7 @@ function initializeApp() {
     }
     const labels = {
       '#workspace': 'Run workspace', '#tuning': 'Engine tuning', '#gpu-diagnostic': 'GPU diagnostics',
-      '#ranker': 'Rule Ranker', '#concentrator': 'Concentrator', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#license-admin': 'License',
+      '#ranker': 'Rule Ranker', '#concentrator': 'Concentrator', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
     const breadcrumb = document.querySelector('.breadcrumb strong');
     if (breadcrumb) breadcrumb.textContent = labels[wanted] || (activeTool === 'ranker' ? 'Rule Ranker' : activeTool === 'concentrator' ? 'Concentrator' : 'Run workspace');
@@ -1331,7 +1322,7 @@ function initializeApp() {
   const handleNavigationState = () => {
     const hash = window.location.hash;
     if (hash === '#run-storage') setActiveSystemView('storage');
-    else if (hash === '#license-admin') setActiveSystemView('license');
+    else if (hash === '#about') setActiveSystemView('about');
     else if (hash === '#ranker') setActiveTool('ranker');
     else if (hash === '#concentrator') setActiveTool('concentrator');
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(hash)) setActiveTool('rulest');
@@ -1365,15 +1356,8 @@ async function submitPasswordChange(event) {
 
 function applyAdminVisibility(auth) {
   const isAdmin = !!(auth && (auth.role === 'admin' || auth.is_admin));
-  currentRole = (auth && auth.role) || (isAdmin ? 'admin' : 'user');
-  const nav = document.getElementById('nav-license-admin');
-  // License page is available to everyone for DEMO status; admin controls stay admin-only.
-  if (nav) nav.hidden = false;
-  const installPanel = document.getElementById('license-install-panel');
-  const userPanel = document.getElementById('license-user-panel');
-  if (installPanel) installPanel.hidden = !isAdmin;
+  const userPanel = document.getElementById('about-user-panel');
   if (userPanel) userPanel.hidden = !isAdmin;
-  if (auth && auth.license) applyLicenseToUI(auth.license);
 }
 
 async function boot() {
@@ -1393,242 +1377,28 @@ document.addEventListener('DOMContentLoaded', boot);
 
 
 
-/* ===== RULEOPS 2.4.8 licensing UI ===== */
-let currentLicense = null;
-let currentRole = null;
-
-function formatModuleBadge(mod) {
-  if (!mod) return { text: '', mode: 'FULL', hide: true };
-  if (mod.mode === 'FULL') return { text: 'FULL', mode: 'FULL', hide: true };
-  if (mod.mode === 'DEMO_LIMITED') return { text: 'LIMITED', mode: 'DEMO_LIMITED', hide: false };
-  const rem = typeof mod.remaining === 'number' ? mod.remaining : 0;
-  const limit = mod.limit || 3;
-  const used = mod.used || 0;
-  return { text: `DEMO ${used}/${limit}`, mode: 'DEMO', hide: false };
-}
-
-function syncLicenseInstallControl(license) {
-  const button = document.getElementById('install-license-button');
-  const input = document.getElementById('license-json-input');
-  const hint = document.getElementById('license-install-hint');
+/* About page: retain the administrator-only regular-user password control. */
+function wireAboutAccessControls() {
+  const button = document.getElementById('set-user-password-button');
+  const input = document.getElementById('user-password-input');
+  const feedback = document.getElementById('user-password-feedback');
   if (!button) return;
 
-  // ``installed`` covers valid, expired, and machine-mismatched license files:
-  // an administrator must still be able to remove any installed file.
-  const installed = typeof license?.installed === 'boolean'
-    ? license.installed
-    : !!(license?.valid || license?.fully_licensed);
-  button.dataset.licenseAction = installed ? 'uninstall' : 'install';
-  button.className = installed ? 'danger-action-button' : 'primary-button';
-  button.innerHTML = installed
-    ? '<span>Uninstall license</span><b>×</b>'
-    : '<span>Install license</span><b>↗</b>';
-  button.setAttribute('aria-label', installed ? 'Uninstall installed license' : 'Install license');
-
-  if (input) {
-    input.disabled = installed;
-    input.setAttribute('aria-disabled', installed ? 'true' : 'false');
-  }
-  if (hint) {
-    hint.textContent = installed
-      ? 'A license file is installed. Uninstall it to return this installation to DEMO mode; you can then install a replacement license.'
-      : 'Paste the JSON contents of a signed license.lic file issued for this installation. Administrator only.';
-  }
-}
-
-function applyLicenseToUI(license) {
-  if (!license || typeof license !== 'object') return;
-  currentLicense = license;
-  syncLicenseInstallControl(license);
-  const edition = (license.edition || 'DEMO').toUpperCase();
-  const card = document.getElementById('license-card');
-  if (card) {
-    card.dataset.edition = edition;
-    const ed = document.getElementById('license-edition-label');
-    const va = document.getElementById('license-valid-label');
-    const det = document.getElementById('license-card-detail');
-    const mods = document.getElementById('license-card-modules');
-    if (ed) ed.textContent = edition;
-    if (va) va.textContent = license.fully_licensed ? 'licensed' : 'unlicensed';
-    if (det) {
-      det.textContent = license.fully_licensed
-        ? (license.customer ? `Licensed to ${license.customer}` : 'Full capability unlocked')
-        : '3 full runs per module, then DEMO LIMITED';
-    }
-    if (mods && license.modules) {
-      const parts = Object.entries(license.modules).map(([name, m]) => {
-        if (m.mode === 'FULL') return name.replace('RULE_', '');
-        if (m.mode === 'DEMO_LIMITED') return `${name.replace('RULE_', '')}:LIMITED`;
-        return `${name.replace('RULE_', '')}:${m.used || 0}/${m.limit || 3}`;
-      });
-      mods.textContent = parts.join(' · ');
-    }
-  }
-
-  const modules = license.modules || {};
-  for (const key of ['RULEST', 'RULE_RANKER', 'CONCENTRATOR']) {
-    const badge = document.getElementById(`badge-${key}`);
-    const info = formatModuleBadge(modules[key]);
-    if (badge) {
-      badge.textContent = info.text;
-      badge.dataset.mode = info.mode;
-      badge.hidden = info.hide;
-      badge.title = modules[key]?.celf?.message || info.text;
-    }
-  }
-
-  // License admin grid cards
-  document.querySelectorAll('.license-module-card').forEach((cardEl) => {
-    const key = cardEl.getAttribute('data-module');
-    const m = modules[key];
-    if (!m) return;
-    cardEl.dataset.mode = m.mode;
-    const modeEl = cardEl.querySelector('.lm-mode');
-    const detailEl = cardEl.querySelector('.lm-detail');
-    if (modeEl) modeEl.textContent = m.mode === 'FULL' ? 'FULL' : (m.mode === 'DEMO_LIMITED' ? 'DEMO LIMITED' : `DEMO ${m.used || 0}/${m.limit || 3}`);
-    if (detailEl) {
-      if (m.mode === 'FULL') detailEl.textContent = 'All features unlocked';
-      else if (m.mode === 'DEMO_LIMITED') detailEl.textContent = 'Advanced CELF restricted';
-      else detailEl.textContent = `${m.remaining} full run(s) remaining`;
+  button.addEventListener('click', async () => {
+    const password = input ? input.value : '';
+    button.disabled = true;
+    if (feedback) { feedback.hidden = true; feedback.textContent = ''; feedback.classList.remove('error'); }
+    try {
+      const data = await apiPost('/api/auth/set-user-password', { password });
+      if (feedback) { feedback.hidden = false; feedback.textContent = data.message || 'User password updated.'; }
+      if (input) input.value = '';
+    } catch (error) {
+      if (feedback) { feedback.hidden = false; feedback.textContent = error.message; feedback.classList.add('error'); }
+      else toast(error.message, true);
+    } finally {
+      button.disabled = false;
     }
   });
 }
 
-function csrfHeaders() {
-  const token = window.__csrfToken || (typeof csrfToken !== 'undefined' ? csrfToken : null);
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['X-CSRF-Token'] = token;
-  return headers;
-}
-
-async function refreshLicense() {
-  try {
-    const response = await fetch('/api/license', { cache: 'no-store' });
-    if (!response.ok) return;
-    const data = await response.json();
-    if (data && data.license) applyLicenseToUI(data.license);
-  } catch (_) { /* ignore */ }
-}
-
-function wireLicenseAdmin() {
-  const installBtn = document.getElementById('install-license-button');
-  const userBtn = document.getElementById('set-user-password-button');
-  const feedback = document.getElementById('license-feedback');
-
-  function showFeedback(msg, isError) {
-    if (!feedback) return;
-    feedback.hidden = false;
-    feedback.textContent = msg;
-    feedback.classList.toggle('error', !!isError);
-  }
-
-  if (installBtn) {
-    installBtn.addEventListener('click', async () => {
-      if (installBtn.dataset.licenseAction === 'uninstall') {
-        const confirmed = window.confirm(
-          'Remove the installed RULEOPS license? This returns all modules to DEMO mode. You will need the license file to install it again.'
-        );
-        if (!confirmed) return;
-        installBtn.disabled = true;
-        try {
-          const response = await fetch('/api/license/uninstall', {
-            method: 'POST', headers: csrfHeaders(), body: JSON.stringify({}),
-          });
-          const data = await response.json();
-          if (data.license) applyLicenseToUI(data.license);
-          if (!response.ok) {
-            showFeedback(data.error || 'License removal failed.', true);
-            return;
-          }
-          const input = document.getElementById('license-json-input');
-          if (input) input.value = '';
-          showFeedback(data.message || 'License removed. RULEOPS has returned to DEMO mode.', false);
-          return;
-        } catch (err) {
-          showFeedback(String(err), true);
-          return;
-        } finally {
-          installBtn.disabled = false;
-        }
-      }
-
-      const raw = (document.getElementById('license-json-input') || {}).value || '';
-      let payload;
-      try { payload = JSON.parse(raw); }
-      catch { showFeedback('Invalid JSON. Paste the full license.lic contents.', true); return; }
-      try {
-        const response = await fetch('/api/license/install', {
-          method: 'POST', headers: csrfHeaders(), body: JSON.stringify(payload),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          if (data.license) applyLicenseToUI(data.license);
-          showFeedback(data.error || 'Install failed', true);
-          return;
-        }
-        showFeedback(data.message || 'License installed.', false);
-        if (data.license) applyLicenseToUI(data.license);
-      } catch (err) {
-        showFeedback(String(err), true);
-      }
-    });
-  }
-
-  if (userBtn) {
-    userBtn.addEventListener('click', async () => {
-      const input = document.getElementById('user-password-input');
-      const password = input ? input.value : '';
-      try {
-        const response = await fetch('/api/auth/set-user-password', {
-          method: 'POST', headers: csrfHeaders(), body: JSON.stringify({ password }),
-        });
-        const data = await response.json();
-        if (!response.ok) { showFeedback(data.error || 'Could not update user password', true); return; }
-        showFeedback(data.message || 'User password updated.', false);
-        if (input) input.value = '';
-      } catch (err) { showFeedback(String(err), true); }
-    });
-  }
-}
-
-// Hook into status polling: patch after pollStatus definition by wrapping
-const __originalPollStatus = typeof pollStatus === 'function' ? pollStatus : null;
-if (__originalPollStatus) {
-  pollStatus = async function () {
-    await __originalPollStatus.apply(this, arguments);
-    // license is embedded in /api/status responses
-  };
-}
-
-// Observe status responses via monkeypatch of fetch is heavy; instead refresh on interval + auth/me
-document.addEventListener('DOMContentLoaded', () => {
-  wireLicenseAdmin();
-  refreshLicense();
-  setInterval(refreshLicense, 15000);
-});
-
-// Also apply license from /api/auth/me when available
-(function patchAuthMe() {
-  const originalFetch = window.fetch;
-  window.fetch = async function (input, init) {
-    const response = await originalFetch.apply(this, arguments);
-    try {
-      const url = typeof input === 'string' ? input : (input && input.url) || '';
-      if (url.includes('/api/auth/me') || url.includes('/api/status') || url.includes('/api/license')) {
-        const clone = response.clone();
-        clone.json().then((data) => {
-          if (!data) return;
-          if (data.license) applyLicenseToUI(data.license);
-          if (data.role || data.is_admin !== undefined) {
-            applyAdminVisibility(data);
-          }
-          if (data.csrf_token) {
-            window.__csrfToken = data.csrf_token;
-            if (typeof csrfToken !== 'undefined') csrfToken = data.csrf_token;
-          }
-        }).catch(() => {});
-      }
-    } catch (_) {}
-    return response;
-  };
-})();
+document.addEventListener('DOMContentLoaded', wireAboutAccessControls);

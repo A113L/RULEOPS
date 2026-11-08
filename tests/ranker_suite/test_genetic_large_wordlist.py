@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from rulest.genetic import GeneticRuleEvolver, _ga_uses_full_sweep, _hit_count
+from rulest.genetic import (
+    GeneticRuleEvolver, _POPCOUNT8, _ga_uses_full_sweep, _hit_count,
+)
 from rulest.gpu_engine import GPUEngine
 
 
@@ -15,6 +17,18 @@ def test_large_wordlist_does_not_force_generation_zero_or_periodic_full_sweeps()
     assert _ga_uses_full_sweep(0, True, True, 4) is False
     assert _ga_uses_full_sweep(4, True, True, 4) is True
     assert _ga_uses_full_sweep(1, False, False, 4) is True
+
+
+def test_popcount_lookup_table_is_portable_and_correct_for_all_bytes():
+    # Do not rely on int.bit_count(), which is missing in some embedded Python
+    # runtimes despite reporting a modern interpreter version.
+    expected = np.asarray(
+        [sum((value >> bit) & 1 for bit in range(8)) for value in range(256)],
+        dtype=np.uint8,
+    )
+    np.testing.assert_array_equal(_POPCOUNT8, expected)
+    assert int(_POPCOUNT8[0xFF]) == 8
+    assert int(_POPCOUNT8[0x55]) == 4
 
 
 def test_hit_bitmap_population_count_matches_set_count():

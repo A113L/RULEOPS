@@ -532,11 +532,115 @@ def _is_library_derived_cache(name: str) -> bool:
     return Path(str(name)).suffix.lower() in LIBRARY_NON_INPUT_EXTENSIONS
 
 
-def list_library_assets() -> dict:
-    """List reusable wordlists and rules without following symlinks.
+def _library_asset_display_name(asset_id: str) -> str:
+    """Recover the user-facing filename from a generated ID or legacy filename."""
+    if LIBRARY_ASSET_ID_RE.fullmatch(str(asset_id)):
+        return str(asset_id).split("_", 1)[1]
+    return str(asset_id)
 
-    Generated UUID-prefixed names are preferred, but older files copied into the
-    library before this version (plain safe filenames) remain discoverable too.
+
+def _library_digest_index_path() -> Path:
+    """Return the private digest-index path outside selectable asset folders."""
+    root = DATA / "library"
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink():
+        raise ValueError("The reusable input library path must not be a symbolic link.")
+    index_path = root / ".asset_hashes.sqlite3"
+    if index_path.is_symlink():
+        raise ValueError("The reusable input digest index must not be a symbolic link.")
+    if index_path.exists() and not index_path.is_file():
+        raise ValueError("The reusable input digest index must be a regular file.")
+    return index_path
+
+
+def _sha256_file(path: Path) -> str:
+    """Hash a file incrementally so duplicate detection never loads it into RAM."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _library_asset_sha256(category: str, path: Path, metadata=None, known_digest: str | None = None) -> str:
+    """Get a cached content digest, invalidating it whenever size/mtime changes."""
+    if category not in {"wordlists", "rules"}:
+        raise ValueError("Unsupported library category.")
+    metadata = metadata or os.stat(str(path), follow_symlinks=False)
+    size = int(metadata.st_size)
+    mtime_ns = int(getattr(metadata, "st_mtime_ns", int(metadata.st_mtime * 1_000_000_000)))
+    ctime_ns = int(getattr(metadata, "st_ctime_ns", int(metadata.st_ctime * 1_000_000_000)))
+    inode = int(getattr(metadata, "st_ino", 0))
+    index_path = _library_digest_index_path()
+    with sqlite3.connect(str(index_path), timeout=15) as connection:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS asset_digests (
+                   category TEXT NOT NULL,
+                   asset_id TEXT NOT NULL,
+                   size INTEGER NOT NULL,
+                   mtime_ns INTEGER NOT NULL,
+                   ctime_ns INTEGER NOT NULL,
+                   inode INTEGER NOT NULL,
+                   sha256 TEXT NOT NULL,
+                   PRIMARY KEY(category, asset_id)
+               )"""
+        )
+        row = connection.execute(
+            "SELECT size, mtime_ns, ctime_ns, inode, sha256 FROM asset_digests WHERE category=? AND asset_id=?",
+            (category, path.name),
+        ).fetchone()
+        if (row and int(row[0]) == size and int(row[1]) == mtime_ns
+                and int(row[2]) == ctime_ns and int(row[3]) == inode):
+            return str(row[4])
+        digest = known_digest or _sha256_file(path)
+        connection.execute(
+            """INSERT INTO asset_digests(category, asset_id, size, mtime_ns, ctime_ns, inode, sha256)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(category, asset_id) DO UPDATE SET
+                   size=excluded.size, mtime_ns=excluded.mtime_ns,
+                   ctime_ns=excluded.ctime_ns, inode=excluded.inode, sha256=excluded.sha256""",
+            (category, path.name, size, mtime_ns, ctime_ns, inode, digest),
+        )
+        return digest
+
+
+def _find_duplicate_library_asset(category: str, display_name: str, size: int, digest: str):
+    """Find byte-identical assets with the same visible filename and size.
+
+    Matching by digest avoids hiding two different wordlists that happen to have
+    the same name and size. Hashes for old assets are cached in SQLite, so each
+    existing large file is read at most once unless it changes.
+    """
+    folder = library_category_dir(category)
+    try:
+        entries = sorted(folder.iterdir(), key=lambda item: item.name)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    for item in entries:
+        try:
+            if not _safe_library_filename(item.name) or _is_library_derived_cache(item.name):
+                continue
+            if _library_asset_display_name(item.name).casefold() != display_name.casefold():
+                continue
+            metadata = os.lstat(str(item))
+            if not stat_module.S_ISREG(metadata.st_mode) or int(metadata.st_size) != int(size):
+                continue
+            if _library_asset_sha256(category, item, metadata) == digest:
+                return item
+        except (OSError, ValueError, sqlite3.Error):
+            continue
+    return None
+
+
+def list_library_assets() -> dict:
+    """List reusable files and collapse byte-identical duplicate uploads.
+
+    The content index is consulted only for groups sharing the same visible name
+    and size. Large unique wordlists therefore incur no extra disk reads during
+    menu refresh. Different content is always kept selectable and labelled with
+    a short ID suffix so same-name variants remain distinguishable.
     """
     result = {"wordlists": [], "rules": []}
     for category in result:
@@ -547,26 +651,49 @@ def list_library_assets() -> dict:
             continue
         except (OSError, ValueError):
             continue
+
+        groups = {}
         for item in entries:
             try:
                 if not _safe_library_filename(item.name) or _is_library_derived_cache(item.name):
                     continue
-                # Path.stat(follow_symlinks=False) is not available on Python 3.8.
-                # os.lstat accepts path-like objects on all supported Python versions
-                # and gives us metadata for the link itself, never its target.
+                # os.lstat is Python 3.8-compatible and never follows symlinks.
                 metadata = os.lstat(str(item))
                 if not stat_module.S_ISREG(metadata.st_mode):
                     continue
-                if LIBRARY_ASSET_ID_RE.fullmatch(item.name):
-                    _asset_prefix, display_name = item.name.split("_", 1)
-                else:
-                    display_name = item.name
-                result[category].append({
+                display_name = _library_asset_display_name(item.name)
+                record = {
                     "id": item.name, "name": display_name, "size": metadata.st_size,
                     "modified": int(metadata.st_mtime),
-                })
+                }
+                key = (display_name.casefold(), int(metadata.st_size))
+                groups.setdefault(key, []).append((item, metadata, record))
             except OSError:
                 continue
+
+        for group in groups.values():
+            # No comparison is needed unless entries would look duplicated in UI.
+            candidates = sorted(group, key=lambda row: (row[2]["modified"], row[2]["id"]))
+            unique = []
+            seen_digests = set()
+            if len(candidates) == 1:
+                unique.append(candidates[0][2])
+            else:
+                for item, metadata, record in candidates:
+                    try:
+                        digest = _library_asset_sha256(category, item, metadata)
+                    except (OSError, ValueError, sqlite3.Error):
+                        # If hashing fails, don't hide a potentially distinct file.
+                        unique.append(record)
+                        continue
+                    if digest not in seen_digests:
+                        seen_digests.add(digest)
+                        unique.append(record)
+            if len(unique) > 1:
+                for index, record in enumerate(unique, start=1):
+                    short_id = record["id"][:8]
+                    record["label"] = f"{record['name']} · variant {index} ({short_id})"
+            result[category].extend(unique)
         result[category].sort(key=lambda entry: (entry["name"].casefold(), entry["id"]))
     return result
 
@@ -594,7 +721,7 @@ def upload_meta_for_library_asset(category: str, asset_id: str) -> dict:
     path = resolve_library_asset(category, asset_id)
     stat = path.stat()
     return {
-        "path": path, "name": path.name.split("_", 1)[1], "size": stat.st_size,
+        "path": path, "name": _library_asset_display_name(path.name), "size": stat.st_size,
         "library": True, "asset_id": path.name, "category": category,
     }
 
@@ -1891,6 +2018,7 @@ class Handler(BaseHTTPRequestHandler):
         rate_window_start = start
         rate_window_bytes = 0
         received = 0
+        digest = hashlib.sha256()
         deadline = start + max(
             300.0,
             (length / float(UPLOAD_MIN_RATE_BYTES_PER_SECOND)) * 1.5 + 120.0,
@@ -1905,6 +2033,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not chunk:
                     raise ConnectionError("Upload ended before all bytes arrived.")
                 output.write(chunk)
+                digest.update(chunk)
                 received += len(chunk)
                 if reservation_key is not None:
                     with LOCK:
@@ -1924,6 +2053,7 @@ class Handler(BaseHTTPRequestHandler):
                     rate_window_start = now
                     rate_window_bytes = 0
         self.connection.settimeout(REQUEST_IDLE_TIMEOUT_SECONDS)
+        return digest.hexdigest()
 
     def handle_auth_me(self):
         session = get_session(self)
@@ -2249,9 +2379,10 @@ class Handler(BaseHTTPRequestHandler):
 
         filename = requested_filename
         stored = UPLOADS / f"{uuid.uuid4().hex}_{filename}"
+        reused_library_asset = False
         try:
             try:
-                self.read_upload_to_file(stored, length, reservation_key=field)
+                upload_digest = self.read_upload_to_file(stored, length, reservation_key=field)
             except (TimeoutError, ConnectionError, OSError):
                 self.close_connection = True
                 raise
@@ -2260,16 +2391,31 @@ class Handler(BaseHTTPRequestHandler):
             asset_id = None
             if category:
                 # Move, do not copy: very large wordlists should not be duplicated
-                # just to make them reusable. The library lives on the same DATA
-                # filesystem, so os.replace is atomic on normal installations.
+                # just to make them reusable. Serialize matching + publish so two
+                # concurrent identical uploads cannot create two library entries.
                 folder = library_category_dir(category)
                 folder.mkdir(parents=True, exist_ok=True)
-                asset_id = f"{uuid.uuid4().hex}_{filename}"
-                destination = folder / asset_id
-                os.replace(stored, destination)
-                stored = destination
+                with LOCK:
+                    duplicate = _find_duplicate_library_asset(category, filename, length, upload_digest)
+                    if duplicate is not None:
+                        stored.unlink(missing_ok=True)
+                        stored = duplicate
+                        reused_library_asset = True
+                        asset_id = duplicate.name
+                    else:
+                        asset_id = f"{uuid.uuid4().hex}_{filename}"
+                        destination = folder / asset_id
+                        os.replace(stored, destination)
+                        stored = destination
+                        metadata = os.stat(str(destination), follow_symlinks=False)
+                        # The digest index is an optimization only. A damaged or
+                        # unavailable index must never make a valid upload fail.
+                        try:
+                            _library_asset_sha256(category, destination, metadata, known_digest=upload_digest)
+                        except (OSError, ValueError, sqlite3.Error):
+                            pass
                 meta = {
-                    "path": stored, "name": filename, "size": length,
+                    "path": stored, "name": _library_asset_display_name(asset_id), "size": length,
                     "library": True, "asset_id": asset_id, "category": category,
                 }
             else:
@@ -2302,10 +2448,11 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 UPLOADS_ACTIVE.discard(field)
                 UPLOAD_RESERVATIONS.pop(field, None)
-            try:
-                stored.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if not reused_library_asset:
+                try:
+                    stored.unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
                 response_status = 408 if isinstance(exc, TimeoutError) else 400
                 self.send_json({"error": f"Upload failed: {exc}"}, response_status)

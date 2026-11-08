@@ -152,7 +152,7 @@ async function refreshLibraryMenus(showToast = false) {
         items.forEach((item) => {
           const option = document.createElement('option');
           option.value = item.id;
-          option.textContent = `${item.name} · ${humanSize(Number(item.size))}`;
+          option.textContent = `${item.label || item.name} · ${humanSize(Number(item.size))}`;
           select.append(option);
         });
         // Keep an empty menu openable so it can display its empty-state text.

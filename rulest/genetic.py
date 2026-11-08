@@ -27,7 +27,13 @@ from .gpu_worker import ProcessEngineProxy
 from .profiling import GpuPhaseProfile
 
 # Lookup table for fast population counts on compact Stage 3 hit bitmaps.
-_POPCOUNT8 = np.fromiter((i.bit_count() for i in range(256)), dtype=np.uint8, count=256)
+# Build it using basic integer operations instead of int.bit_count(): the latter
+# is unavailable in some embedded/stripped Python runtimes used to launch RULEOPS.
+_POPCOUNT8 = np.zeros(256, dtype=np.uint8)
+for _popcount_index in range(1, 256):
+    _POPCOUNT8[_popcount_index] = (
+        _POPCOUNT8[_popcount_index >> 1] + (_popcount_index & 1)
+    )
 _GA_DEFAULT_MAX_SAMPLE_WORDS = 1_000_000
 _GA_DEFAULT_MAX_FULL_SWEEP_WORDS = 2_000_000
 

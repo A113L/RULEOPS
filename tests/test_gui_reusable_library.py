@@ -347,3 +347,87 @@ def test_all_npy_and_json_assets_are_hidden_even_without_ranker_cache_name(tmp_p
             assert "invalid" in result["error"].lower()
     finally:
         _stop_server(server, thread)
+
+
+def test_library_listing_collapses_identical_legacy_assets_but_keeps_distinct_variants(tmp_path, monkeypatch):
+    """Old repeated uploads collapse by content, not by filename/size alone."""
+    data_dir = tmp_path / "runs"
+    monkeypatch.setattr(app, "DATA", data_dir)
+    wordlist_dir = data_dir / "library" / "wordlists"
+    wordlist_dir.mkdir(parents=True)
+
+    duplicate_a = "1" * 32 + "_shared.txt"
+    duplicate_b = "2" * 32 + "_shared.txt"
+    different = "3" * 32 + "_shared.txt"
+    payload = b"alpha\nbravo\n"
+    (wordlist_dir / duplicate_a).write_bytes(payload)
+    (wordlist_dir / duplicate_b).write_bytes(payload)
+    # Same visible name and size, but different content must remain selectable.
+    (wordlist_dir / different).write_bytes(b"gamma\ndelta\n")
+
+    listed = app.list_library_assets()
+    items = listed["wordlists"]
+    assert len(items) == 2
+    assert {item["id"] for item in items} == {duplicate_a, different}
+    assert all("label" in item for item in items)
+
+    # The digest index makes subsequent refreshes metadata-only for unchanged files.
+    digest_index = data_dir / "library" / ".asset_hashes.sqlite3"
+    assert digest_index.is_file()
+    listed_again = app.list_library_assets()
+    assert [item["id"] for item in listed_again["wordlists"]] == [item["id"] for item in items]
+
+
+def test_reuploading_same_library_file_reuses_existing_asset_id(tmp_path, monkeypatch):
+    """Uploading the same file in separate input slots must not add menu duplicates."""
+    server, thread, base, headers, data_dir, uploads_dir = _setup_server(tmp_path, monkeypatch)
+    try:
+        content = b"alpha\nbeta\ngamma\n"
+        status, first = _request_json(
+            base + "/api/upload/base?filename=shared_dictionary.txt",
+            headers, raw=content, method="POST",
+        )
+        assert status == 200 and first["ok"] is True
+
+        status, second = _request_json(
+            base + "/api/upload/target?filename=shared_dictionary.txt",
+            headers, raw=content, method="POST",
+        )
+        assert status == 200 and second["ok"] is True
+        assert second["asset_id"] == first["asset_id"]
+        assert list((data_dir / "library" / "wordlists").iterdir()) == [
+            data_dir / "library" / "wordlists" / first["asset_id"]
+        ]
+        assert list(uploads_dir.iterdir()) == []
+
+        status, listed = _request_json(base + "/api/library", headers, method="GET")
+        assert status == 200
+        assert [item["id"] for item in listed["wordlists"]] == [first["asset_id"]]
+    finally:
+        _stop_server(server, thread)
+
+
+def test_reuploading_same_name_and_size_with_different_content_keeps_both_assets(tmp_path, monkeypatch):
+    server, thread, base, headers, data_dir, _uploads_dir = _setup_server(tmp_path, monkeypatch)
+    try:
+        first_content = b"alpha\nbravo\n"
+        second_content = b"gamma\ndelta\n"
+        assert len(first_content) == len(second_content)
+        status, first = _request_json(
+            base + "/api/upload/base?filename=same_name.txt",
+            headers, raw=first_content, method="POST",
+        )
+        assert status == 200
+        status, second = _request_json(
+            base + "/api/upload/target?filename=same_name.txt",
+            headers, raw=second_content, method="POST",
+        )
+        assert status == 200
+        assert first["asset_id"] != second["asset_id"]
+        status, listed = _request_json(base + "/api/library", headers, method="GET")
+        assert status == 200
+        options = listed["wordlists"]
+        assert {item["id"] for item in options} == {first["asset_id"], second["asset_id"]}
+        assert all("label" in item and "variant" in item["label"] for item in options)
+    finally:
+        _stop_server(server, thread)

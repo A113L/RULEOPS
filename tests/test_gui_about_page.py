@@ -105,3 +105,20 @@ def test_legacy_license_api_routes_are_gone(tmp_path, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_about_page_uses_shared_card_spacing_and_stacked_tool_headings():
+    root = Path(app.__file__).resolve().parent
+    css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+
+    # The tool title and subtitle must be separate flex rows, not adjacent
+    # inline text such as "RULESTRule generation engine".
+    assert ".usecase-head{\n  display:flex;" in css
+    assert ".usecase-head b{\n  display:block;" in css
+    assert ".usecase-head small{\n  display:block;" in css
+    assert "grid-template-columns:repeat(3,minmax(0,1fr))" in css
+    assert ".donation-row{\n  display:grid;" in css
+    assert ".contact-row{\n  display:grid;" in css
+    assert "@media(max-width:650px)" in css
+    assert "build=2.5.0-about-layout" in html

@@ -377,8 +377,108 @@ def _log_minimize_result(survivors, n_total, processed):
     return survivors
 
 
+def _sqlite_exec_progress(conn, sql, description, params=(), progress_ops=200_000):
+    """Execute a potentially expensive SQLite statement with a live heartbeat.
+
+    The disk-backed minimizer used to perform several multi-million-row SQL
+    operations after the first tqdm reached 100%, without emitting anything.
+    These indeterminate bars report SQLite virtual-machine work so those
+    transitions no longer look like a frozen ``probes 1-8`` pass.
+    """
+    started = time.monotonic()
+    last_postfix = [started]
+    with tqdm(
+        total=None,
+        desc=green(f"  {description}"),
+        unit="vm-op",
+        ncols=shutil.get_terminal_size((80, 24)).columns,
+        bar_format=STANDARD_PROGRESS_BAR_FORMAT,
+    ) as pbar:
+        def _progress():
+            now = time.monotonic()
+            pbar.update(progress_ops)
+            if now - last_postfix[0] >= 1.0:
+                pbar.set_postfix({"elapsed": f"{now - started:.0f}s"}, refresh=False)
+                last_postfix[0] = now
+            return 0
+
+        conn.set_progress_handler(_progress, progress_ops)
+        try:
+            cursor = conn.execute(sql, params)
+            conn.commit()
+            return cursor
+        finally:
+            conn.set_progress_handler(None, 0)
+
+
+def _sqlite_scalar_progress(conn, sql, description, params=(), progress_ops=200_000):
+    """Fetch one aggregate result while exposing long SQLite scans."""
+    started = time.monotonic()
+    last_postfix = [started]
+    with tqdm(
+        total=None,
+        desc=green(f"  {description}"),
+        unit="vm-op",
+        ncols=shutil.get_terminal_size((80, 24)).columns,
+        bar_format=STANDARD_PROGRESS_BAR_FORMAT,
+    ) as pbar:
+        def _progress():
+            now = time.monotonic()
+            pbar.update(progress_ops)
+            if now - last_postfix[0] >= 1.0:
+                pbar.set_postfix({"elapsed": f"{now - started:.0f}s"}, refresh=False)
+                last_postfix[0] = now
+            return 0
+
+        conn.set_progress_handler(_progress, progress_ops)
+        try:
+            row = conn.execute(sql, params).fetchone()
+            return row[0] if row else 0
+        finally:
+            conn.set_progress_handler(None, 0)
+
+
+def _counter_from_sql(conn, query, total, description):
+    """Materialize a partial result with a visible, hit-aware progress bar."""
+    result = Counter()
+    started = time.time()
+    done = pending_ui = hits_total = 0
+    _progress_tick.last_update = started
+    with tqdm(
+        total=total,
+        desc=green(f"  {description}"),
+        unit="rule",
+        ncols=shutil.get_terminal_size((80, 24)).columns,
+        bar_format=STANDARD_PROGRESS_BAR_FORMAT,
+    ) as pbar:
+        cursor = conn.execute(query)
+        while True:
+            rows = cursor.fetchmany(8192)
+            if not rows:
+                break
+            for rule, count in rows:
+                result[rule] = count
+                hits_total += int(count)
+            batch_size = len(rows)
+            done += batch_size
+            pending_ui += batch_size
+            pending_ui = _progress_tick(
+                pbar, pending_ui, done, started, hits_total, force=False
+            )
+        _progress_tick(pbar, pending_ui, done, started, hits_total, force=True)
+    return result
+
+
 def _minimize_disk(rule_counter, probe_words, chunks=None):
-    """Progressive minimization backed by a streaming SQLite work table."""
+    """Progressive minimization backed by SQLite, retaining only collisions.
+
+    The old implementation updated millions of candidate rows from active=1
+    to active=0 after every probe pass.  On a mostly-unique 3-6M candidate set,
+    that mass UPDATE plus the later Python loop rebuilding a Counter made the
+    completed first pass appear to hang.  This version stores only collision
+    signatures in a compact temporary table.  If all signatures are unique,
+    the original Counter can be returned directly with no 3M-row copy.
+    """
     tmp_fd, tmp_path = tempfile.mkstemp(suffix='.db', prefix='ruleops_minimize_')
     os.close(tmp_fd)
     conn = None
@@ -389,12 +489,15 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
     log_info(f"[MINIMIZE] Workers     : {bold(str(n_workers if use_mp else 1))}")
     pool = _make_pool(n_workers, use_mp, probe_words)
     early_exit = False
+    initial_done = 0
 
     try:
         conn = sqlite3.connect(tmp_path)
         conn.execute("PRAGMA journal_mode = OFF")
         conn.execute("PRAGMA synchronous = OFF")
-        conn.execute("PRAGMA temp_store = MEMORY")
+        # Keep large GROUP BY / UPDATE work tables off the Python heap.  The
+        # temporary SQLite file is disposable and bounded by the OS temp area.
+        conn.execute("PRAGMA temp_store = FILE")
         conn.execute("PRAGMA cache_size = -65536")
         conn.execute("PRAGMA locking_mode = EXCLUSIVE")
         conn.execute("""
@@ -403,14 +506,13 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
                 rule TEXT NOT NULL,
                 count INTEGER NOT NULL,
                 depth INTEGER NOT NULL,
-                sig TEXT NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1
+                sig TEXT NOT NULL
             )
         """)
         conn.commit()
 
         # Initial pass: stream Counter.items() directly to workers and insert
-        # only bounded batches.  There is no second 5.8M-entry Python list.
+        # bounded batches.  No second 3.8M-entry Python list is created.
         start, stop = chunks[0]
         insert_batch = []
         done = pending_ui = hits_total = 0
@@ -427,15 +529,15 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
                     pool, _minimize_worker_disk_initial, initial_tasks()):
                 if _kb.poll():
                     early_exit = True
-                    log_warn("[MIN] Early exit — preserving processed candidates without partial-signature deduplication")
+                    log_warn("[MIN] Early exit during initial probe pass; keeping only processed candidates")
                     break
-                insert_batch.append((row_id, rule, count, depth, signature, 1))
+                insert_batch.append((row_id, rule, count, depth, signature))
                 hits_total += int(count)
                 done += 1
                 pending_ui += 1
                 if len(insert_batch) >= MINIMIZE_SQLITE_BATCH_SIZE:
                     conn.executemany(
-                        "INSERT INTO candidates(id,rule,count,depth,sig,active) VALUES (?,?,?,?,?,?)",
+                        "INSERT INTO candidates(id,rule,count,depth,sig) VALUES (?,?,?,?,?)",
                         insert_batch,
                     )
                     conn.commit()
@@ -445,39 +547,69 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
                 )
             if insert_batch:
                 conn.executemany(
-                    "INSERT INTO candidates(id,rule,count,depth,sig,active) VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO candidates(id,rule,count,depth,sig) VALUES (?,?,?,?,?)",
                     insert_batch,
                 )
                 conn.commit()
                 insert_batch.clear()
+            initial_done = done
             _progress_tick(pbar, pending_ui, done, pass_started, hits_total, force=True)
 
-        if done == 0:
-            return _log_minimize_result(Counter(), n_total, 0)
-
-        conn.execute("CREATE INDEX idx_candidates_active_sig ON candidates(sig) WHERE active=1")
-        conn.commit()
-
         if early_exit:
-            # Partial first pass: every processed row is kept individually.
-            conn.execute("UPDATE candidates SET active=0")
-            conn.commit()
-        else:
-            _deactivate_singletons(conn)
+            partial = _counter_from_sql(
+                conn, "SELECT rule,count FROM candidates ORDER BY id",
+                initial_done, "Keep processed candidates"
+            )
+            return _log_minimize_result(partial, n_total, initial_done)
 
-        # Refine only unresolved buckets.  A bucket is finalized as soon as
-        # its signatures split into singletons; such rows are never rescanned.
+        # The index allows SQLite to classify equal signatures in index order.
+        # Its work is now visible instead of being hidden after the first bar.
+        _sqlite_exec_progress(
+            conn,
+            "CREATE INDEX idx_candidates_sig ON candidates(sig)",
+            "Index probe signatures",
+        )
+        conn.execute("""
+            CREATE TEMP TABLE pending_signatures (
+                sig TEXT PRIMARY KEY
+            ) WITHOUT ROWID
+        """)
+        conn.commit()
+        _sqlite_exec_progress(
+            conn,
+            """INSERT INTO pending_signatures(sig)
+               SELECT sig FROM candidates GROUP BY sig HAVING COUNT(*) > 1""",
+            f"Classify collisions {start + 1}-{stop}",
+        )
+
+        pending_rows = _sqlite_scalar_progress(
+            conn,
+            """SELECT COUNT(*) FROM pending_signatures AS p
+               JOIN candidates AS c INDEXED BY idx_candidates_sig ON c.sig=p.sig""",
+            "Count unresolved candidates",
+        )
+        pending_groups = _sqlite_scalar_progress(
+            conn, "SELECT COUNT(*) FROM pending_signatures", "Count collision groups"
+        )
+        unique_rows = n_total - pending_rows
+        log_info(
+            f"[MINIMIZE] Probes {start + 1}-{stop}: "
+            f"{green(f'{unique_rows:,} unique')} finalized, "
+            f"{cyan(f'{pending_rows:,}')} candidates in {pending_groups:,} collision groups"
+        )
+
+        # This is the common large-wordlist fast path: if the first 8 probes
+        # distinguish every candidate, no later probe pass or Counter rebuild
+        # is needed.  Returning the input mapping also avoids a multi-million
+        # row Python/SQLite round trip.
+        if pending_rows == 0:
+            log_info("[MINIMIZE] All candidates are unique on the first probe batch; remaining probes skipped")
+            return rule_counter
+
         for pass_number, (start, stop) in enumerate(chunks[1:], start=2):
-            active_count = conn.execute(
-                "SELECT COUNT(*) FROM candidates WHERE active=1"
-            ).fetchone()[0]
-            if not active_count or early_exit:
+            if pending_rows == 0:
                 break
 
-            log_info(
-                f"[MINIMIZE] Probe pass {pass_number}/{len(chunks)} "
-                f"({start + 1}-{stop}/{len(probe_words)}): {active_count:,} unresolved candidates"
-            )
             conn.execute("DROP TABLE IF EXISTS stage_updates")
             conn.execute("CREATE TEMP TABLE stage_updates (id INTEGER PRIMARY KEY, sig TEXT NOT NULL)")
             conn.commit()
@@ -485,16 +617,22 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
             done = pending_ui = hits_total = 0
             phase_started = time.time()
             _progress_tick.last_update = phase_started
-            with tqdm(total=active_count,
+            log_info(
+                f"[MINIMIZE] Probe pass {pass_number}/{len(chunks)} "
+                f"({start + 1}-{stop}/{len(probe_words)}): "
+                f"{pending_rows:,} unresolved candidates in {pending_groups:,} groups"
+            )
+            with tqdm(total=pending_rows,
                       desc=green(f"  Refine probes {start + 1}-{stop}"),
                       unit="rule", ncols=shutil.get_terminal_size((80, 24)).columns,
                       bar_format=STANDARD_PROGRESS_BAR_FORMAT) as pbar:
-                # sqlite3 connections are thread-affine. Pool.imap's feeder
-                # thread consumes its iterable, so fetch bounded rows on the
-                # main thread and only hand plain Python tuples to the Pool.
-                cursor = conn.execute(
-                    "SELECT id,rule,count,sig FROM candidates WHERE active=1 ORDER BY id"
-                )
+                # Fetch bounded chunks on the main thread.  The worker pool
+                # receives only these small Python tuples, never SQLite state.
+                cursor = conn.execute("""
+                    SELECT c.id,c.rule,c.count,c.sig
+                    FROM pending_signatures AS p
+                    JOIN candidates AS c INDEXED BY idx_candidates_sig ON c.sig=p.sig
+                """)
                 while True:
                     source_rows = cursor.fetchmany(8192)
                     if not source_rows:
@@ -505,14 +643,16 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
                             pool, _minimize_worker_disk_refine, tasks, chunksize=256):
                         if _kb.poll():
                             early_exit = True
-                            log_warn("[MIN] Early exit — preserving unresolved collision buckets individually")
+                            log_warn("[MIN] Early exit during refinement; unresolved candidates kept individually")
                             break
                         update_batch.append((row_id, signature))
                         hits_total += int(count)
                         done += 1
                         pending_ui += 1
                         if len(update_batch) >= MINIMIZE_SQLITE_BATCH_SIZE:
-                            conn.executemany("INSERT INTO stage_updates(id,sig) VALUES (?,?)", update_batch)
+                            conn.executemany(
+                                "INSERT INTO stage_updates(id,sig) VALUES (?,?)", update_batch
+                            )
                             conn.commit()
                             update_batch.clear()
                         pending_ui = _progress_tick(
@@ -521,56 +661,101 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
                     if early_exit:
                         break
                 if update_batch and not early_exit:
-                    conn.executemany("INSERT INTO stage_updates(id,sig) VALUES (?,?)", update_batch)
+                    conn.executemany(
+                        "INSERT INTO stage_updates(id,sig) VALUES (?,?)", update_batch
+                    )
                     conn.commit()
                     update_batch.clear()
                 _progress_tick(pbar, pending_ui, done, phase_started, hits_total, force=True)
 
             if early_exit:
-                # Do not apply an incomplete refinement pass. Keep all unresolved
-                # candidates separately so partial signatures cannot merge rules.
+                # stage_updates may be incomplete.  Do not apply partial
+                # signatures and do not merge any collision candidates.
                 conn.execute("DROP TABLE IF EXISTS stage_updates")
-                conn.execute("UPDATE candidates SET active=0 WHERE active=1")
                 conn.commit()
-                break
+                return rule_counter
 
-            conn.execute("""
+            # Apply only the candidates that were actually unresolved in the
+            # previous pass, then classify collisions only within that subset.
+            _sqlite_exec_progress(conn, """
                 UPDATE candidates
                 SET sig=(SELECT stage_updates.sig FROM stage_updates
                          WHERE stage_updates.id=candidates.id)
-                WHERE active=1 AND id IN (SELECT id FROM stage_updates)
-            """)
+                WHERE id IN (SELECT id FROM stage_updates)
+            """, f"Apply probe signatures {start + 1}-{stop}")
+            conn.execute("DELETE FROM pending_signatures")
+            conn.commit()
+            _sqlite_exec_progress(conn, """
+                INSERT INTO pending_signatures(sig)
+                SELECT sig FROM stage_updates
+                GROUP BY sig HAVING COUNT(*) > 1
+            """, f"Classify collisions {start + 1}-{stop}")
             conn.execute("DROP TABLE stage_updates")
             conn.commit()
-            _deactivate_singletons(conn)
 
-        # Inactive rows are already unique on a probe prefix and therefore
-        # cannot be equivalent to any other candidate.  Only final unresolved
-        # buckets need a tie-break query.
-        survivors = Counter()
-        for rule, count in conn.execute("SELECT rule,count FROM candidates WHERE active=0"):
-            survivors[rule] = count
+            pending_rows = _sqlite_scalar_progress(
+                conn,
+                """SELECT COUNT(*) FROM pending_signatures AS p
+                   JOIN candidates AS c INDEXED BY idx_candidates_sig ON c.sig=p.sig""",
+                "Count unresolved candidates",
+            )
+            pending_groups = _sqlite_scalar_progress(
+                conn, "SELECT COUNT(*) FROM pending_signatures", "Count collision groups"
+            )
+            unique_rows = n_total - pending_rows
+            log_info(
+                f"[MINIMIZE] Probes {start + 1}-{stop}: "
+                f"{green(f'{unique_rows:,} unique')} finalized, "
+                f"{cyan(f'{pending_rows:,}')} candidates in {pending_groups:,} collision groups"
+            )
+            if pending_rows == 0:
+                log_info("[MINIMIZE] All candidates are unique; remaining probes skipped")
+                return rule_counter
 
-        # All probes have been consumed for these rows (or they were kept
-        # individually after an early quit).  Select the historic winner:
-        # highest count, then shortest depth, then lexicographically first.
-        if not early_exit:
-            cursor = conn.execute("""
-                SELECT sig,rule,count
-                FROM candidates
-                WHERE active=1
-                ORDER BY sig ASC, count DESC, depth ASC, rule ASC
-            """)
-            last_signature = None
-            for signature, rule, count in cursor:
-                if signature != last_signature:
-                    survivors[rule] = count
-                    last_signature = signature
+        # The original Counter already contains every candidate.  Copy it once
+        # using dict's optimized copy path, then remove only losing members of
+        # the final collision groups instead of rebuilding millions of
+        # singleton entries row by row from SQLite.
+        survivors = rule_counter.copy()
+        removed = 0
+        cursor = conn.execute("""
+            SELECT c.sig,c.rule,c.count,c.depth
+            FROM pending_signatures AS p
+            JOIN candidates AS c INDEXED BY idx_candidates_sig ON c.sig=p.sig
+            ORDER BY c.sig ASC, c.count DESC, c.depth ASC, c.rule ASC
+        """)
+        last_signature = None
+        collision_rows = pending_rows
+        done = pending_ui = hits_total = 0
+        started = time.time()
+        _progress_tick.last_update = started
+        with tqdm(total=collision_rows,
+                  desc=green("  Resolve final collisions"), unit="rule",
+                  ncols=shutil.get_terminal_size((80, 24)).columns,
+                  bar_format=STANDARD_PROGRESS_BAR_FORMAT) as pbar:
+            while True:
+                rows = cursor.fetchmany(8192)
+                if not rows:
+                    break
+                for signature, rule, count, depth in rows:
+                    if signature == last_signature:
+                        survivors.pop(rule, None)
+                        removed += 1
+                    else:
+                        last_signature = signature
+                    hits_total += int(count)
+                batch_size = len(rows)
+                done += batch_size
+                pending_ui += batch_size
+                pending_ui = _progress_tick(
+                    pbar, pending_ui, done, started, hits_total, force=False
+                )
+            _progress_tick(pbar, pending_ui, done, started, hits_total, force=True)
 
-        processed = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
         conn.close()
         conn = None
-        return _log_minimize_result(survivors, n_total, processed)
+        log_info(f"[MINIMIZE] Final collision resolution removed {removed:,} duplicate rules")
+        return _log_minimize_result(survivors, n_total, n_total)
     finally:
         _pool_finish(pool, early_exit)
         if conn is not None:
@@ -582,20 +767,3 @@ def _minimize_disk(rule_counter, probe_words, chunks=None):
             os.unlink(tmp_path)
         except Exception:
             pass
-
-
-def _deactivate_singletons(conn):
-    """Mark buckets that cannot collide again as final survivors."""
-    conn.execute("""
-        UPDATE candidates
-        SET active=0
-        WHERE active=1
-          AND sig NOT IN (
-              SELECT sig
-              FROM candidates
-              WHERE active=1
-              GROUP BY sig
-              HAVING COUNT(*) > 1
-          )
-    """)
-    conn.commit()

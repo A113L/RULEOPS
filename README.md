@@ -158,11 +158,11 @@ The sidebar is the primary application navigator. Select **RULEST** to expand it
 
 ## About, donations and support
 
-RULEOPS is free to use. All features in RULEST, Rule Ranker and Concentrator are available without a product license, activation file or online entitlement check. The repository is distributed under the MIT License (see [`LICENSE`](LICENSE)); this software license is the project's open-source usage grant, not an in-app activation system.
+RULEOPS brings RULEST, Rule Ranker and Concentrator together in one local-first toolchain. Processing runs on your machine and uses the CPU and GPU resources available to the application. The **About** page inside the Control Center describes each tool and provides project support information.
 
 ### Optional donations
 
-If RULEOPS is useful to you, voluntary cryptocurrency donations can help support maintenance and future development. Donations do not unlock features, change application behaviour or grant special access. The wallet addresses are shown in the **About** page inside the application:
+If RULEOPS is useful to you, voluntary cryptocurrency donations are welcome and help support maintenance and future development. The wallet addresses are shown in the **About** page inside the application:
 
 - ETH: `0x597c06b19bc90876f6375b8d1348b34c94f223a4`
 - Bitcoin: `13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ`

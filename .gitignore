@@ -19,8 +19,8 @@ security.sqlite3
 security.sqlite3-shm
 security.sqlite3-wal
 security.sqlite3-journal
-# RULEOPS offline licensing secrets and local activation state
-license_issuer_private/
-issued_licenses/
-license_usage.sqlite3
-license.lic
+# Legacy local signing material and generated credentials; never commit these.
+*_issuer_private/
+issued_*/
+*_usage.sqlite3
+*.lic

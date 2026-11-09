@@ -199,3 +199,37 @@ def test_progressive_minimizer_avoids_full_probe_pass_for_unique_rules(monkeypat
     full_scan_calls = len(counter) * len(BUILTIN_PROBES)
     assert result
     assert calls[0] < full_scan_calls * 0.4
+
+
+def test_disk_backed_minimizer_returns_original_counter_when_first_pass_is_unique(monkeypatch):
+    import rulest.minimize as minimize_module
+
+    # The first prioritized probe distinguishes every substitution.  The disk
+    # backend should therefore skip all later passes and avoid rebuilding a
+    # multi-million-entry Counter from SQLite.
+    replacements = '!@#$%^&*()-_=+[]{}|;:,.<>?/~0123456789'
+    counter = Counter()
+    for original in 'abcdef':
+        for replacement in replacements:
+            counter['s' + original + replacement] = 1
+
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
+    monkeypatch.setattr(minimize_module.mp, 'cpu_count', lambda: 1)
+
+    result = minimize_module.minimize_by_signature(counter, minimize_module._PRIORITY_PROBES)
+
+    assert result is counter
+
+
+def test_disk_backed_minimizer_returns_original_when_late_probes_split_collision(monkeypatch):
+    import rulest.minimize as minimize_module
+
+    counter = Counter({'@!': 5, '@#': 7})
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 1)
+    monkeypatch.setattr(minimize_module.mp, 'cpu_count', lambda: 1)
+
+    result = minimize_module.minimize_by_signature(counter, ['abc', '!#', 'Hello'])
+
+    assert result is counter
+    assert result == Counter({'@!': 5, '@#': 7})

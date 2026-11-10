@@ -67,7 +67,6 @@ class GPUEngine:
         self.kernel_verify = None
         self.kernel_celf_score = None
         self.kernel_celf_clear = None
-        self.kernel_celf_compact = None
         self._consecutive_errors = 0
         self._MAX_CONSECUTIVE_ERRORS = 5
         self._cached_free_vram = None
@@ -76,7 +75,7 @@ class GPUEngine:
                                 # device's driver may be stuck holding an internal
                                 # lock, so we stop issuing further work to it rather
                                 # than risk every subsequent call blocking forever.
-        self._program_cache = {}  # MAX_CHAIN_DEPTH -> compiled program + reusable kernel handles
+        self._program_cache = {}  # MAX_CHAIN_DEPTH -> (program, kernel_single, kernel_chain, kernel_bloom, kernel_verify)
         self._rules_buf = None
         self._rules_offsets_buf = None
         self._rules_lengths_buf = None
@@ -104,22 +103,6 @@ class GPUEngine:
         self._celf_candidate_index = {}
         self._celf_candidate_count = 0
         self._celf_last_exact_indices = None
-        self._celf_last_exact_row = None
-        self._celf_last_exact_generation = 0
-        self._celf_winner_snapshot_valid = False
-        self._celf_winner_snapshot_version = None
-        self._celf_winner_snapshot_generation = 0
-        self._celf_seen_epochs_buf = None
-        self._celf_winner_seen_buf = None
-        self._celf_winner_epochs_buf = None
-        self._celf_winner_ids_buf = None
-        self._celf_winner_count_buf = None
-        self._celf_winner_count_host = np.zeros(1, dtype=np.int32)
-        self._celf_winner_ids_host = np.zeros(0, dtype=np.int32)
-        self._celf_seen_epoch = 0
-        self._celf_lazy_bitmap_init = str(
-            params.get("CELF_LAZY_BITMAP_INIT", os.environ.get("RULEST_CELF_LAZY_BITMAP_INIT", "0"))
-        ).strip().lower() in {"1", "true", "yes", "on"}
         self._celf_pending_clear_buffers = []
         self._celf_pending_clear_host_arrays = []
         self._celf_clear_slots_buf = None
@@ -129,9 +112,6 @@ class GPUEngine:
             "kernel_gpu_s": 0.0, "h2d_gpu_s": 0.0, "fill_gpu_s": 0.0,
             "readback_gpu_s": 0.0, "exact_record_s": 0.0,
             "winner_bitmap_calls": 0, "winner_bitmap_bytes": 0, "winner_bitmap_wall_s": 0.0,
-            "winner_snapshot_calls": 0, "winner_snapshot_bytes": 0, "winner_snapshot_wall_s": 0.0,
-            "winner_compaction_calls": 0, "winner_compaction_bytes": 0, "winner_compaction_wall_s": 0.0,
-            "seen_clear_calls": 0, "seen_clear_bytes": 0, "seen_clear_gpu_s": 0.0,
             "upper_calls": 0, "upper_candidates": 0, "upper_singletons": 0,
             "exact_calls": 0, "exact_candidates": 0, "exact_singletons": 0,
             "record_calls": 0, "record_candidates": 0, "record_singletons": 0,
@@ -206,8 +186,7 @@ class GPUEngine:
         cached = self._program_cache.get(current_depth)
         if cached is not None:
             (self.program, self.kernel_single, self.kernel_chain, self.kernel_bloom,
-             self.kernel_verify, self.kernel_celf_score, self.kernel_celf_clear,
-             self.kernel_celf_compact) = cached
+             self.kernel_verify, self.kernel_celf_score, self.kernel_celf_clear) = cached
             self.kernel_chain_count = getattr(self.program, 'count_rule_chains_gpu', None)
             self._compiled_depth = current_depth
             log_info(f"[GPU]  Reusing cached kernel for depth {current_depth} (skipping rebuild)")
@@ -268,7 +247,6 @@ class GPUEngine:
             self.queue = None
             self.program = self.kernel_single = self.kernel_chain = self.kernel_chain_count = self.kernel_bloom = self.kernel_verify = None
             self.kernel_celf_score = self.kernel_celf_clear = None
-            self.kernel_celf_compact = None
             return None
 
         self.program = prog
@@ -279,12 +257,10 @@ class GPUEngine:
         self.kernel_verify = prog.verify_pairs_gpu
         self.kernel_celf_score = prog.celf_score_chains_gpu
         self.kernel_celf_clear = prog.celf_clear_active_slots
-        self.kernel_celf_compact = prog.celf_compact_seen_bitmap
         self._compiled_depth = current_depth
         self._program_cache[current_depth] = (
             prog, self.kernel_single, self.kernel_chain, self.kernel_bloom,
             self.kernel_verify, self.kernel_celf_score, self.kernel_celf_clear,
-            self.kernel_celf_compact,
         )
         log_info("[GPU]  Kernel compiled successfully")
         return prog
@@ -330,7 +306,6 @@ class GPUEngine:
         self._rules_buf_key = None  # force re-upload of rules after reset
         self.program = self.kernel_single = self.kernel_chain = self.kernel_chain_count = self.kernel_bloom = self.kernel_verify = None
         self.kernel_celf_score = self.kernel_celf_clear = None
-        self.kernel_celf_compact = None
         self._program_cache = {}  # programs from the old context are invalid
         self.context = None
         self.queue = None
@@ -1806,50 +1781,15 @@ class GPUEngine:
             self.context, mf.READ_WRITE,
             max(4, self._celf_batch_capacity * self._celf_seen_words * 4),
         )
-        seen_buffer_bytes = max(4, self._celf_batch_capacity * self._celf_seen_words * 4)
-        # Lazy per-word initialization is experimental and stays opt-in until
-        # it has been benchmarked on the user's OpenCL driver. Its epoch table
-        # is initialized once and then replaces the per-call full bitmap fill.
-        if self._celf_lazy_bitmap_init:
-            self._celf_seen_epochs_buf = cl.Buffer(self.context, mf.READ_WRITE, seen_buffer_bytes)
-            cl.enqueue_fill_buffer(self.queue, self._celf_seen_epochs_buf, np.int32(0), 0, seen_buffer_bytes)
-            self._celf_winner_epochs_buf = cl.Buffer(
-                self.context, mf.READ_WRITE, max(4, self._celf_seen_words * 4)
-            )
-        else:
-            # The kernel never dereferences this argument when generation=0;
-            # keep only a tiny valid buffer rather than doubling bitmap VRAM.
-            self._celf_seen_epochs_buf = cl.Buffer(self.context, mf.READ_WRITE, 4)
-            self._celf_winner_epochs_buf = cl.Buffer(self.context, mf.READ_WRITE, 4)
-        winner_bitmap_bytes = max(4, self._celf_seen_words * 4)
-        self._celf_winner_seen_buf = cl.Buffer(self.context, mf.READ_WRITE, winner_bitmap_bytes)
-        # Reuse the existing record-mode output buffers for compacted target
-        # IDs. The two modes are mutually exclusive within one CELF round,
-        # so this avoids another target_count-sized VRAM allocation.
         self._celf_hit_count_buf = cl.Buffer(self.context, mf.READ_WRITE, 4)
         self._celf_hit_slots_buf = cl.Buffer(
             self.context, mf.READ_WRITE, max(1, self._celf_target_count) * 4
         )
-        self._celf_winner_ids_buf = self._celf_hit_slots_buf
-        self._celf_winner_count_buf = self._celf_hit_count_buf
-        self._celf_winner_count_host = np.zeros(1, dtype=np.int32)
-        self._celf_winner_ids_host = np.empty(self._celf_target_count, dtype=np.int32)
-        self._celf_seen_epoch = 0
-        self._celf_last_exact_indices = None
-        self._celf_last_exact_row = None
-        self._celf_last_exact_generation = 0
-        self._celf_winner_snapshot_valid = False
-        self._celf_winner_snapshot_version = None
-        self._celf_winner_snapshot_generation = 0
         self._celf_active_version = getattr(self, "_celf_active_version", 0) + 1
         self._celf_last_single_cache = None
         log_info(
             f"[CELF GPU] Candidate pool prepared once: {len(self.gpu_rules):,} atomic tokens, "
             f"{self._celf_candidate_count:,} chains; persistent batch workspace={self._celf_batch_capacity}"
-        )
-        log_info(
-            "[CELF GPU] Winner bitmap cache + GPU compaction enabled; "
-            f"lazy bitmap initialization={'EXPERIMENTAL' if self._celf_lazy_bitmap_init else 'disabled (standard fill)'}"
         )
         if os.environ.get("RULEST_CELF_PROFILE") == "1":
             log_info(
@@ -1891,7 +1831,6 @@ class GPUEngine:
         _wait_wall_s = 0.0
         _h2d_events = []
         _fill_events = []
-        _seen_clear_events = []
         _kernel_events = []
         _read_events = []
         if getattr(self, "_celf_active_buf", None) is None:
@@ -1943,10 +1882,6 @@ class GPUEngine:
         # Keep the candidate order until selection.py has materialized the
         # winning row; any later score call replaces this mapping.
         self._celf_last_exact_indices = tuple(indices) if exact_counts and not record_hits else None
-        self._celf_last_exact_row = (
-            {int(candidate_index): row for row, candidate_index in enumerate(indices)}
-            if exact_counts and not record_hits else None
-        )
         self._celf_last_single_cache = None
         _enqueue_t0 = time.perf_counter()
         _alloc_t0 = time.perf_counter()
@@ -1956,32 +1891,10 @@ class GPUEngine:
         if _profile_on: _h2d_events.append(event)
         event = cl.enqueue_fill_buffer(self.queue, self._celf_gains_buf, np.int32(0), 0, n_rules * 4)
         if _profile_on: _fill_events.append(event)
-        seen_generation = 0
-        if do_exact and self._celf_lazy_bitmap_init:
-            # Positive generations use first-touch clearing. Generation -1
-            # is reserved as the short-lived initialization lock.
-            if self._celf_seen_epoch >= 0x7FFFFFFE:
-                epoch_bytes = max(4, self._celf_batch_capacity * self._celf_seen_words * 4)
-                event = cl.enqueue_fill_buffer(
-                    self.queue, self._celf_seen_epochs_buf, np.int32(0), 0, epoch_bytes
-                )
-                if _profile_on:
-                    _fill_events.append(event)
-                self._celf_seen_epoch = 1
-            else:
-                self._celf_seen_epoch += 1
-            seen_generation = int(self._celf_seen_epoch)
-        elif do_exact:
+        if do_exact:
             seen_bytes = n_rules * self._celf_seen_words * 4
             event = cl.enqueue_fill_buffer(self.queue, self._celf_seen_buf, np.uint32(0), 0, max(4, seen_bytes))
-            if _profile_on:
-                _fill_events.append(event)
-                _seen_clear_events.append(event)
-            self._celf_profile["seen_clear_calls"] += 1
-            self._celf_profile["seen_clear_bytes"] += int(seen_bytes)
-        self._celf_last_exact_generation = (
-            int(seen_generation) if exact_counts and not record_hits else 0
-        )
+            if _profile_on: _fill_events.append(event)
         if record_hits:
             event = cl.enqueue_fill_buffer(self.queue, self._celf_hit_count_buf, np.int32(0), 0, 4)
             if _profile_on: _fill_events.append(event)
@@ -2021,12 +1934,12 @@ class GPUEngine:
                 self._celf_target_hashes_buf, self._celf_slot_target_ids_buf,
                 self._celf_occupied_buf, self._celf_active_buf,
                 self._celf_target_bytes_buf, self._celf_target_offsets_buf, self._celf_target_lengths_buf,
-                self._celf_seen_buf, self._celf_seen_epochs_buf, self._celf_gains_buf,
+                self._celf_seen_buf, self._celf_gains_buf,
                 self._celf_hit_slots_buf, self._celf_hit_count_buf,
                 np.int32(num_words), np.int32(n_rules), np.int32(kernel_word_start),
                 np.int32(self.params["MAX_CHAIN_DEPTH"]),
                 np.uint32(self._celf_table_mask), np.int32(self._celf_seen_words),
-                np.int32(score_mode), np.int32(seen_generation),
+                np.int32(score_mode),
             )
             event = cl.enqueue_nd_range_kernel(self.queue, self.kernel_celf_score, (global_size,), (self.local_work_size,))
             if _profile_on: _kernel_events.append(event)
@@ -2142,7 +2055,6 @@ class GPUEngine:
             stats["h2d_gpu_s"] += _event_seconds(_h2d_events)
             stats["fill_gpu_s"] += _event_seconds(_fill_events)
             stats["readback_gpu_s"] += _event_seconds(_read_events)
-            stats["seen_clear_gpu_s"] += _event_seconds(_seen_clear_events)
             if do_exact:
                 stats["exact_record_s"] += _event_seconds(_kernel_events)
             _now = time.perf_counter()
@@ -2219,136 +2131,6 @@ class GPUEngine:
         # The batch is now consumed. Clearing the mapping catches accidental
         # use after a subsequent non-exact operation or a second materialize.
         self._celf_last_exact_indices = None
-        self._celf_last_exact_row = None
-        return target_ids
-
-    def celf_capture_exact_winner_bitmap(self, candidate_index):
-        """Preserve a current exact-batch row as the round's tentative winner.
-
-        This is a device-to-device copy on the in-order CELF queue. It does
-        not wait for the copy and therefore does not add a host synchronization
-        to every temporary winner update. Later exact batches may safely reuse
-        the scratch bitmap because their work is ordered after this snapshot.
-        """
-        row_map = getattr(self, "_celf_last_exact_row", None)
-        if not row_map:
-            raise RuntimeError("No exact CELF bitmap rows are available to snapshot")
-        candidate_index = int(candidate_index)
-        if candidate_index not in row_map:
-            raise RuntimeError(
-                f"Candidate {candidate_index} is not present in the latest exact CELF batch"
-            )
-        if self._celf_winner_seen_buf is None or self._celf_seen_buf is None:
-            raise RuntimeError("CELF winner bitmap cache is not allocated")
-
-        started = time.perf_counter()
-        seen_words = int(self._celf_seen_words)
-        byte_count = max(4, seen_words * 4)
-        row = int(row_map[candidate_index])
-        cl.enqueue_copy(
-            self.queue,
-            self._celf_winner_seen_buf,
-            self._celf_seen_buf,
-            src_offset=row * byte_count,
-            dst_offset=0,
-            byte_count=byte_count,
-        )
-        snapshot_generation = int(getattr(self, "_celf_last_exact_generation", 0))
-        if snapshot_generation > 0:
-            epoch_row_offset = row * byte_count
-            cl.enqueue_copy(
-                self.queue,
-                self._celf_winner_epochs_buf,
-                self._celf_seen_epochs_buf,
-                src_offset=epoch_row_offset,
-                dst_offset=0,
-                byte_count=byte_count,
-            )
-        self._celf_winner_snapshot_valid = True
-        self._celf_winner_snapshot_version = int(self._celf_active_version)
-        self._celf_winner_snapshot_generation = snapshot_generation
-        stats = self._celf_profile
-        stats["winner_snapshot_calls"] += 1
-        stats["winner_snapshot_bytes"] += int(byte_count * (2 if snapshot_generation > 0 else 1))
-        stats["winner_snapshot_wall_s"] += time.perf_counter() - started
-        return True
-
-    def celf_materialize_winner_target_ids(self):
-        """GPU-compact the preserved winner bitmap and fetch only its IDs.
-
-        The scratch exact bitmap is never decoded on the host and the BASE
-        wordlist is not rescanned. A count readback determines the compacted
-        prefix length, after which only that prefix is transferred.
-        """
-        if not getattr(self, "_celf_winner_snapshot_valid", False):
-            raise RuntimeError("No preserved CELF winner bitmap is available")
-        if self._celf_winner_snapshot_version != int(self._celf_active_version):
-            self._celf_winner_snapshot_valid = False
-            raise RuntimeError("Preserved CELF winner bitmap belongs to a stale active-target version")
-        if not self.kernel_celf_compact:
-            raise RuntimeError("CELF GPU bitmap compaction kernel is unavailable")
-
-        started = time.perf_counter()
-        cl.enqueue_fill_buffer(self.queue, self._celf_winner_count_buf, np.int32(0), 0, 4)
-        global_size = (
-            (self._celf_seen_words + self.local_work_size - 1) // self.local_work_size
-        ) * self.local_work_size
-        self.kernel_celf_compact.set_args(
-            self._celf_winner_seen_buf,
-            self._celf_winner_epochs_buf,
-            self._celf_winner_ids_buf,
-            self._celf_winner_count_buf,
-            np.int32(self._celf_target_count),
-            np.int32(self._celf_seen_words),
-            np.int32(self._celf_winner_snapshot_generation),
-        )
-        compact_event = cl.enqueue_nd_range_kernel(
-            self.queue, self.kernel_celf_compact,
-            (max(self.local_work_size, global_size),), (self.local_work_size,),
-        )
-        count_event = cl.enqueue_copy(
-            self.queue, self._celf_winner_count_host,
-            self._celf_winner_count_buf, is_blocking=False,
-        )
-        count_event.wait()
-        n_ids = int(self._celf_winner_count_host[0])
-        if n_ids < 0 or n_ids > self._celf_target_count:
-            self._celf_winner_snapshot_valid = False
-            raise RuntimeError(
-                f"GPU CELF bitmap compaction returned invalid ID count {n_ids}"
-            )
-        if n_ids:
-            host_ids = self._celf_winner_ids_host[:n_ids]
-            # For a device-buffer -> host-array copy, PyOpenCL derives the
-            # transfer length from ``host_ids.nbytes``.  The read-buffer
-            # overload does not accept ``byte_count`` (that parameter is only
-            # valid for buffer-to-buffer copies), which otherwise forces the
-            # verified Record Mode fallback for every selected winner.
-            ids_event = cl.enqueue_copy(
-                self.queue, host_ids, self._celf_winner_ids_buf,
-                is_blocking=False,
-            )
-            ids_event.wait()
-            target_ids = {int(target_id) for target_id in host_ids}
-        else:
-            target_ids = set()
-
-        if len(target_ids) != n_ids:
-            self._celf_winner_snapshot_valid = False
-            raise RuntimeError(
-                f"GPU CELF bitmap compaction produced {n_ids} slots but {len(target_ids)} unique IDs"
-            )
-
-        self._celf_winner_snapshot_valid = False
-        self._celf_winner_snapshot_version = None
-        self._celf_winner_snapshot_generation = 0
-        stats = self._celf_profile
-        stats["winner_bitmap_calls"] += 1
-        stats["winner_bitmap_bytes"] += int(n_ids * 4)
-        stats["winner_bitmap_wall_s"] += time.perf_counter() - started
-        stats["winner_compaction_calls"] += 1
-        stats["winner_compaction_bytes"] += int(n_ids * 4)
-        stats["winner_compaction_wall_s"] += time.perf_counter() - started
         return target_ids
 
     def celf_clear_last_hit_slots(self):
@@ -2360,9 +2142,6 @@ class GPUEngine:
             cl.enqueue_nd_range_kernel(self.queue, self.kernel_celf_clear, (global_size,), (self.local_work_size,))
         self._celf_active_version = getattr(self, "_celf_active_version", 0) + 1
         self._celf_last_single_cache = None
-        self._celf_winner_snapshot_valid = False
-        self._celf_winner_snapshot_version = None
-        self._celf_winner_snapshot_generation = 0
 
     def celf_target_ids_for_slots(self, slots):
         """Translate returned active table slots into original target IDs."""
@@ -2398,9 +2177,6 @@ class GPUEngine:
         cl.enqueue_copy(self.queue, self._celf_active_buf, self._celf_occupied_host).wait()
         self._celf_active_version = getattr(self, "_celf_active_version", 0) + 1
         self._celf_last_single_cache = None
-        self._celf_winner_snapshot_valid = False
-        self._celf_winner_snapshot_version = None
-        self._celf_winner_snapshot_generation = 0
 
     def celf_clear_target_ids(self, target_ids):
         """Clear exact winner target IDs using a persistent upload buffer."""
@@ -2421,9 +2197,6 @@ class GPUEngine:
         self._celf_pending_clear_host_arrays.append(slots_np)
         self._celf_active_version = getattr(self, "_celf_active_version", 0) + 1
         self._celf_last_single_cache = None
-        self._celf_winner_snapshot_valid = False
-        self._celf_winner_snapshot_version = None
-        self._celf_winner_snapshot_generation = 0
 
     def last_gpu_phase_summary(self):
         """Format the GpuPhaseProfile from whichever GPU-heavy call most
@@ -2462,9 +2235,6 @@ class GPUEngine:
             "GPU kernel={kernel:.3f}s; H2D={h2d:.3f}s; fills={fills:.3f}s; "
             "readback={readback:.3f}s; synchronization wait={wait:.3f}s; "
             "winner bitmap fetches={bitmap_calls:,} ({bitmap_mb:.1f} MiB, {bitmap_wall:.3f}s); "
-            "snapshots={snapshot_calls:,} ({snapshot_mb:.1f} MiB, {snapshot_wall:.3f}s); "
-            "GPU compaction={compact_calls:,} ({compact_mb:.1f} MiB, {compact_wall:.3f}s); "
-            "seen bitmap clears={seen_clear_calls:,} ({seen_clear_mb:.1f} MiB, GPU={seen_clear_gpu:.3f}s); "
             "modes upper/exact/record calls={upper_calls:,}/{exact_calls:,}/{record_calls:,}, "
             "candidates={upper_candidates:,}/{exact_candidates:,}/{record_candidates:,}, "
             "singletons={upper_singletons:,}/{exact_singletons:,}/{record_singletons:,}; "
@@ -2477,15 +2247,6 @@ class GPUEngine:
                 bitmap_calls=int(p.get("winner_bitmap_calls", 0)),
                 bitmap_mb=float(p.get("winner_bitmap_bytes", 0)) / (1024 * 1024),
                 bitmap_wall=float(p.get("winner_bitmap_wall_s", 0.0)),
-                snapshot_calls=int(p.get("winner_snapshot_calls", 0)),
-                snapshot_mb=float(p.get("winner_snapshot_bytes", 0)) / (1024 * 1024),
-                snapshot_wall=float(p.get("winner_snapshot_wall_s", 0.0)),
-                compact_calls=int(p.get("winner_compaction_calls", 0)),
-                compact_mb=float(p.get("winner_compaction_bytes", 0)) / (1024 * 1024),
-                compact_wall=float(p.get("winner_compaction_wall_s", 0.0)),
-                seen_clear_calls=int(p.get("seen_clear_calls", 0)),
-                seen_clear_mb=float(p.get("seen_clear_bytes", 0)) / (1024 * 1024),
-                seen_clear_gpu=float(p.get("seen_clear_gpu_s", 0.0)),
                 upper_calls=int(p.get("upper_calls", 0)),
                 exact_calls=int(p.get("exact_calls", 0)),
                 record_calls=int(p.get("record_calls", 0)),
@@ -2536,9 +2297,7 @@ class GPUEngine:
             "_celf_base_words_buf", "_celf_base_offsets_buf", "_celf_base_lengths_buf",
             "_celf_word_flat_upload_buf", "_celf_word_offsets_upload_buf", "_celf_word_lengths_upload_buf",
             "_celf_candidate_seq_buf", "_celf_candidate_depths_buf", "_celf_candidate_indices_buf",
-            "_celf_gains_buf", "_celf_seen_buf", "_celf_seen_epochs_buf",
-            "_celf_winner_seen_buf", "_celf_winner_epochs_buf",
-            "_celf_hit_count_buf", "_celf_hit_slots_buf",
+            "_celf_gains_buf", "_celf_seen_buf", "_celf_hit_count_buf", "_celf_hit_slots_buf",
             "_celf_clear_slots_buf",
         )
         for name in names:
@@ -2549,8 +2308,6 @@ class GPUEngine:
                 except Exception:
                     pass
             setattr(self, name, None)
-        self._celf_winner_ids_buf = None
-        self._celf_winner_count_buf = None
         self._celf_target_count = 0
         self._celf_table_size = 0
         self._celf_table_mask = 0
@@ -2563,12 +2320,6 @@ class GPUEngine:
         self._celf_last_hit_count = 0
         self._celf_last_single_cache = None
         self._celf_last_exact_indices = None
-        self._celf_last_exact_row = None
-        self._celf_last_exact_generation = 0
-        self._celf_winner_snapshot_valid = False
-        self._celf_winner_snapshot_version = None
-        self._celf_winner_snapshot_generation = 0
-        self._celf_seen_epoch = 0
         self._celf_active_version = getattr(self, "_celf_active_version", 0) + 1
         self._celf_slot_target_ids_host = np.zeros(0, dtype=np.int32)
         self._celf_target_slots_host = np.zeros(0, dtype=np.int32)

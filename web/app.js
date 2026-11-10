@@ -976,14 +976,7 @@ function setActiveSystemView(view = 'storage') {
   if (view === 'storage') loadRunStorageSummary();
 }
 
-function setRulestMenuExpanded(expanded) {
-  const button = $('nav-rulest');
-  const submenu = $('rulest-subnav');
-  if (!button || !submenu) return;
-  button.setAttribute('aria-expanded', String(expanded));
-  submenu.hidden = !expanded;
-  try { sessionStorage.setItem('ruleops-rulest-menu-expanded', String(expanded)); } catch {}
-}
+
 
 
 function selectRankerWorkflow(mode) {
@@ -1316,7 +1309,6 @@ function initializeApp() {
     else if (href === '#rulestripper') setActiveTool('rulestripper');
     else if (href === '#minimizer') setActiveTool('minimizer');
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(href)) setActiveTool('rulest');
-    if (['#ranker', '#concentrator', '#rulestripper', '#minimizer', '#run-storage'].includes(href)) setRulestMenuExpanded(false);
 
     const breadcrumbLabels = {
       '#workspace': 'Run workspace', '#tuning': 'Engine tuning',
@@ -1336,13 +1328,8 @@ function initializeApp() {
   };
 
   $('nav-rulest').addEventListener('click', () => {
-    if (activeTool !== 'rulest') {
-      setActiveTool('rulest');
-      setRulestMenuExpanded(true);
-      navigateTo('#workspace');
-      return;
-    }
-    setRulestMenuExpanded($('nav-rulest').getAttribute('aria-expanded') !== 'true');
+    setActiveTool('rulest');
+    navigateTo('#workspace');
   });
 
   document.querySelectorAll('[data-nav-tool], [data-nav-section]').forEach((link) => {
@@ -1366,9 +1353,6 @@ function initializeApp() {
   setActiveTool(initialTool);
   if (window.location.hash === '#run-storage') setActiveSystemView('storage');
   if (window.location.hash === '#about') setActiveSystemView('about');
-  let storedRulestMenu = 'true';
-  try { storedRulestMenu = sessionStorage.getItem('ruleops-rulest-menu-expanded') || 'true'; } catch {}
-  setRulestMenuExpanded(storedRulestMenu !== 'false' || initialTool === 'rulest');
   $('pause-run').addEventListener('click', () => controlRun('pause'));
   $('resume-run').addEventListener('click', () => controlRun('resume'));
   $('stop-run').addEventListener('click', () => controlRun('stop'));
@@ -1411,7 +1395,6 @@ function initializeApp() {
       const button = $('nav-rulest');
       button.classList.add('active');
       button.setAttribute('aria-current', 'page');
-      setRulestMenuExpanded(true);
     }
     const labels = {
       '#workspace': 'Run workspace', '#tuning': 'Engine tuning', '#gpu-diagnostic': 'GPU diagnostics',

@@ -377,65 +377,77 @@ def _log_minimize_result(survivors, n_total, processed):
     return survivors
 
 
-def _sqlite_exec_progress(conn, sql, description, params=(), progress_ops=200_000):
-    """Execute a potentially expensive SQLite statement with a live heartbeat.
+def _sqlite_progress_run(conn, sql, description, params=(), progress_ops=200_000,
+                         fetch_scalar=False):
+    """Run a SQLite statement with an honest indeterminate activity meter.
 
-    The disk-backed minimizer used to perform several multi-million-row SQL
-    operations after the first tqdm reached 100%, without emitting anything.
-    These indeterminate bars report SQLite virtual-machine work so those
-    transitions no longer look like a frozen ``probes 1-8`` pass.
+    SQLite's progress handler reports virtual-machine instructions, not rows
+    and not a known total.  A normal tqdm bar therefore renders as ``0/?`` or
+    as a permanently empty bar.  Show the real VM-op counter instead, and
+    create the indicator lazily so very short queries do not emit a misleading
+    empty progress bar.
     """
     started = time.monotonic()
-    last_postfix = [started]
-    with tqdm(
-        total=None,
-        desc=green(f"  {description}"),
-        unit="vm-op",
-        ncols=shutil.get_terminal_size((80, 24)).columns,
-        bar_format=STANDARD_PROGRESS_BAR_FORMAT,
-    ) as pbar:
-        def _progress():
-            now = time.monotonic()
-            pbar.update(progress_ops)
-            if now - last_postfix[0] >= 1.0:
-                pbar.set_postfix({"elapsed": f"{now - started:.0f}s"}, refresh=False)
-                last_postfix[0] = now
-            return 0
+    state = {"pbar": None, "vm_ops": 0, "last_postfix": started}
 
-        conn.set_progress_handler(_progress, progress_ops)
-        try:
-            cursor = conn.execute(sql, params)
-            conn.commit()
-            return cursor
-        finally:
-            conn.set_progress_handler(None, 0)
+    def _progress():
+        now = time.monotonic()
+        state["vm_ops"] += progress_ops
+        pbar = state["pbar"]
+        if pbar is None:
+            # No percentage is shown because SQLite does not expose a reliable
+            # total VM-op count for query plans with data-dependent work.
+            pbar = tqdm(
+                total=None,
+                desc=green(f"  {description}"),
+                unit="vm-op",
+                unit_scale=True,
+                ncols=shutil.get_terminal_size((80, 24)).columns,
+                bar_format="{desc}: {n_fmt} {unit} [{elapsed}] {postfix}",
+                mininterval=0.5,
+                miniters=1,
+            )
+            state["pbar"] = pbar
+        pbar.update(progress_ops)
+        if now - state["last_postfix"] >= 1.0:
+            pbar.set_postfix({"status": "working"}, refresh=False)
+            state["last_postfix"] = now
+        return 0
+
+    conn.set_progress_handler(_progress, progress_ops)
+    try:
+        cursor = conn.execute(sql, params)
+        if fetch_scalar:
+            row = cursor.fetchone()
+            return row[0] if row else 0
+        conn.commit()
+        return cursor
+    finally:
+        conn.set_progress_handler(None, 0)
+        pbar = state["pbar"]
+        if pbar is not None:
+            pbar.close()
+            elapsed = max(0.0, time.monotonic() - started)
+            log_info(
+                f"  {dim('[SQL]')} {description}: "
+                f"{state['vm_ops']:,} VM ops in {elapsed:.2f}s"
+            )
+
+
+def _sqlite_exec_progress(conn, sql, description, params=(), progress_ops=200_000):
+    """Execute SQL and expose live VM-op activity when the query is expensive."""
+    return _sqlite_progress_run(
+        conn, sql, description, params=params, progress_ops=progress_ops,
+        fetch_scalar=False,
+    )
 
 
 def _sqlite_scalar_progress(conn, sql, description, params=(), progress_ops=200_000):
-    """Fetch one aggregate result while exposing long SQLite scans."""
-    started = time.monotonic()
-    last_postfix = [started]
-    with tqdm(
-        total=None,
-        desc=green(f"  {description}"),
-        unit="vm-op",
-        ncols=shutil.get_terminal_size((80, 24)).columns,
-        bar_format=STANDARD_PROGRESS_BAR_FORMAT,
-    ) as pbar:
-        def _progress():
-            now = time.monotonic()
-            pbar.update(progress_ops)
-            if now - last_postfix[0] >= 1.0:
-                pbar.set_postfix({"elapsed": f"{now - started:.0f}s"}, refresh=False)
-                last_postfix[0] = now
-            return 0
-
-        conn.set_progress_handler(_progress, progress_ops)
-        try:
-            row = conn.execute(sql, params).fetchone()
-            return row[0] if row else 0
-        finally:
-            conn.set_progress_handler(None, 0)
+    """Fetch a scalar SQL result with live VM-op activity for long scans."""
+    return _sqlite_progress_run(
+        conn, sql, description, params=params, progress_ops=progress_ops,
+        fetch_scalar=True,
+    )
 
 
 def _counter_from_sql(conn, query, total, description):

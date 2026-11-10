@@ -233,3 +233,68 @@ def test_disk_backed_minimizer_returns_original_when_late_probes_split_collision
 
     assert result is counter
     assert result == Counter({'@!': 5, '@#': 7})
+
+
+def test_sqlite_progress_helpers_show_vm_operation_activity(monkeypatch):
+    import sqlite3
+    import rulest.minimize as minimize_module
+
+    created = []
+
+    class FakeProgress:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.updated = 0
+            self.closed = False
+            created.append(self)
+
+        def update(self, amount):
+            self.updated += amount
+
+        def set_postfix(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(minimize_module, "tqdm", FakeProgress)
+    conn = sqlite3.connect(":memory:")
+
+    try:
+        value = minimize_module._sqlite_scalar_progress(
+            conn,
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000) "
+            "SELECT SUM(x) FROM n",
+            "Test SQLite scan",
+            progress_ops=100,
+        )
+        assert value == 500500
+        assert created
+        assert created[0].updated > 0
+        assert created[0].closed
+        # Unknown SQLite VM-op totals must not render as a permanently empty bar.
+        assert "{bar}" not in created[0].kwargs["bar_format"]
+        assert "{n_fmt}" in created[0].kwargs["bar_format"]
+    finally:
+        conn.close()
+
+
+def test_sqlite_progress_helpers_skip_empty_bar_for_fast_query(monkeypatch):
+    import sqlite3
+    import rulest.minimize as minimize_module
+
+    created = []
+
+    def fake_tqdm(**kwargs):
+        created.append(kwargs)
+        raise AssertionError("Fast SQL query must not create an empty progress bar")
+
+    monkeypatch.setattr(minimize_module, "tqdm", fake_tqdm)
+    conn = sqlite3.connect(":memory:")
+    try:
+        assert minimize_module._sqlite_scalar_progress(
+            conn, "SELECT 42", "Fast query", progress_ops=100_000
+        ) == 42
+        assert not created
+    finally:
+        conn.close()

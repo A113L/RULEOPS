@@ -362,9 +362,7 @@ label:has(input[type="checkbox"]) {
 /* Email Extractor inside the canonical RULEOPS app shell/sidebar. */
 .email-extractor-main {
   min-width: 0;
-  /* Keep the fixed sidebar's margin inside the viewport width. width:100% here
-     added a full viewport on top of the sidebar offset and caused horizontal scroll. */
-  width: auto;
+  width: 100%;
 }
 .email-extractor-main > .topbar {
   min-width: 0;
@@ -391,73 +389,4 @@ label:has(input[type="checkbox"]) {
   .email-extractor-main > .wrap { padding: 0 13px 22px; }
   .email-extractor-main > .topbar { height: 54px; }
   .email-extractor-main .topbar-right { gap: 6px; }
-}
-
-
-/* Responsive fit: prevent the integrated utility page from extending past the viewport. */
-.email-extractor-main,
-.email-extractor-main > .topbar,
-.email-extractor-main > .wrap,
-.email-extractor-main .gc3,
-.email-extractor-main .gc3 > * {
-  min-width: 0;
-  max-width: 100%;
-}
-.email-extractor-main .gc3 {
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 330px);
-}
-.email-extractor-main #results-content,
-.email-extractor-main #results-content > div {
-  min-width: 0;
-  max-width: 100%;
-}
-.email-extractor-main #results-content table {
-  width: 100%;
-  max-width: 100%;
-  table-layout: fixed;
-}
-.email-extractor-main #results-content th,
-.email-extractor-main #results-content td {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-@media (max-width: 900px) {
-  .email-extractor-main .gc3 {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-  }
-  .email-extractor-main > .topbar {
-    height: auto;
-    min-height: 54px;
-    padding: 8px 0;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .email-extractor-main .breadcrumb {
-    min-width: 0;
-    flex: 1 1 160px;
-    flex-wrap: wrap;
-  }
-  .email-extractor-main .topbar-right {
-    min-width: 0;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 6px;
-  }
-}
-
-@media (max-width: 650px) {
-  .email-extractor-main > .wrap {
-    padding: 0 13px 22px;
-  }
-  .email-extractor-main > .topbar {
-    min-height: 54px;
-    height: auto;
-  }
-  .email-extractor-main .topbar-right {
-    flex: 1 1 100%;
-    justify-content: space-between;
-  }
 }

@@ -686,31 +686,73 @@ def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=
     n_words = len(target_words)
     if n_words == 0:
         return []
+    if start_method is None:
+        start_method = "fork" if hasattr(os, "fork") else "spawn"
     if chunk_size <= 0:
         chunk_size = max(500, n_words // (n_workers * 4) + 1)
     chunk_size = max(1, int(chunk_size))
 
-    # Reuse the loader's already-built shared base index whenever available.
-    membership = getattr(base_set, "membership_index", None) if bloom_mb == 0 else None
-    membership_from_base = membership is not None
+    # The previous fast RULEST path used CPython's native set[str] for exact
+    # membership. Its hashing/probing runs in optimized C, whereas FlatHashSet64
+    # computes every FNV fingerprint in a Python character loop. On POSIX/fork,
+    # a native set is inherited copy-on-write by workers (no per-worker copy),
+    # so prefer it when there is enough headroom. Keep the compact shared table
+    # as the low-RAM and spawn-platform fallback.
+    existing_shared = getattr(base_set, "membership_index", None) if bloom_mb == 0 else None
+    membership_from_base = existing_shared is not None
     membership_owned = False
-    if membership is None and isinstance(base_set, FlatHashSet64) and bloom_mb == 0:
+    membership = None
+    native_set_budget_ok = False
+    if (bloom_mb == 0 and start_method == "fork" and os.name == "posix"
+            and not isinstance(base_set, FlatHashSet64)):
+        try:
+            available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            available_bytes = available_pages * page_size
+            # Approximate set slots + Python string objects + a safety reserve.
+            estimated_bytes = len(base_set) * 128 + 512 * 1024 * 1024
+            native_set_budget_ok = available_bytes >= estimated_bytes
+        except (AttributeError, OSError, ValueError):
+            native_set_budget_ok = False
+
+    if (bloom_mb == 0 and isinstance(base_set, (set, frozenset))
+            and (start_method == "fork" or len(base_set) <= 100_000)):
         membership = base_set
-    if membership is None:
-        membership, mode_str = _build_membership(base_set, bloom_mb=bloom_mb)
-        membership_owned = True
-        log_info(f"[S0]    Membership : {mode_str}")
+        mode_str = f"Python exact set ({len(membership):,} words)"
+    elif native_set_budget_ok:
+        try:
+            membership = set(base_set)
+            mode_str = f"Python exact set ({len(membership):,} words; fork/COW fast path)"
+        except MemoryError:
+            membership = None
+    if membership is not None:
+        # The loader's compact index is no longer needed once the native set
+        # has been built; free its shared segment before the worker pool starts.
+        if existing_shared is not None and membership is not existing_shared:
+            try:
+                existing_shared.close(unlink=True)
+            finally:
+                try:
+                    base_set.membership_index = None
+                except Exception:
+                    pass
     else:
-        if isinstance(membership, FlatHashSet64):
+        membership = existing_shared
+        if membership is None and isinstance(base_set, FlatHashSet64) and bloom_mb == 0:
+            membership = base_set
+        if membership is None:
+            membership, mode_str = _build_membership(base_set, bloom_mb=bloom_mb)
+            membership_owned = True
+        elif isinstance(membership, FlatHashSet64):
             mode_str = f"shared exact hash table ({len(membership):,} words, {membership.size_bytes / 1024 / 1024:.1f} MiB)"
-        else:
+        elif isinstance(membership, BloomFilter):
             mode_str = f"shared Bloom filter ({membership.size_bytes / 1024 / 1024:.1f} MiB)"
-        log_info(f"[S0]    Membership : {mode_str}")
+        else:
+            mode_str = f"Python exact set ({len(membership):,} words)"
+    log_info(f"[S0]    Membership : {mode_str}")
 
     worker_state.p0_worker_base_set = membership
     found = set()
-    if start_method is None:
-        start_method = "fork" if hasattr(os, "fork") else "spawn"
     ctx = mp.get_context(start_method)
     n_tasks = (n_words + chunk_size - 1) // chunk_size
     log_info(

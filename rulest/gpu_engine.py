@@ -662,14 +662,30 @@ class GPUEngine:
         # per-stage profiling table right after this call returns.
         _profile = GpuPhaseProfile() if os.environ.get("RULEST_CELF_PROFILE") == "1" else None
         self._last_gpu_phase_profile = _profile
+        # Flatten BASE once and take offset/length views for each batch. This is
+        # especially important for SharedWordList: it avoids decoding/slicing
+        # millions of Python strings and rebuilding NumPy offsets on every GPU
+        # launch. The same cache is reused by STAGE S / STAGE 2 later in the run.
+        preflattened = True
+        try:
+            self.set_base_words(base_words)
+        except OverflowError as exc:
+            # Preserve support for exceptionally large (>2 GiB packed) wordlists:
+            # process those in bounded batches rather than requiring one full
+            # int32-offset GPU view in host RAM.
+            log_warn(f"[S1]    Full BASE flatten unavailable ({exc}); using bounded batches")
+            preflattened = False
         with tqdm(total=len(base_words), desc=green(desc), unit="word", ncols=ncols,
                   bar_format=STANDARD_PROGRESS_BAR_FORMAT,
                   disable=_silent, position=_position, leave=True) as pbar:
             for i in range(0, len(base_words), bs):
                 if _kb.poll(): break
-                batch = base_words[i:i+bs]
-                if batch:
-                    found = self._run_single_kernel(self.prepare_words_data(batch), _profile=_profile)
+                end = min(i + bs, len(base_words))
+                bd = (self.get_word_batch_data(i, end) if preflattened
+                      else self.prepare_words_data(base_words[i:end]))
+                batch_len = bd["num_words"]
+                if batch_len:
+                    found = self._run_single_kernel(bd, _profile=_profile)
                     if found:
                         self._consecutive_errors = 0
                         counter.update(found)
@@ -677,9 +693,9 @@ class GPUEngine:
                     elif self.queue is None:
                         self._consecutive_errors += 1
                         if self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS: break
-                    words_done += len(batch)
+                    words_done += batch_len
                     elapsed = time.time()-t0
-                    delta = len(batch) * nr
+                    delta = batch_len * nr
                     if _shared_combos is not None and _shared_lock is not None:
                         with _shared_lock:
                             _shared_combos[0] += delta
@@ -692,7 +708,7 @@ class GPUEngine:
                         "hits": cyan(f"{hits_total:,}"),
                         "spd": green(spd),
                     }, refresh=False)
-                pbar.update(len(batch))
+                pbar.update(batch_len)
         log_info(f"[S1]    {bold(green(str(len(counter))))} unique rules passed bloom filter")
         return counter
 

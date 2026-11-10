@@ -154,3 +154,39 @@ def test_spawn_stage0_preserves_latin1_words(tmp_path):
     finally:
         targets.close()
         base.close()
+
+
+def test_shared_wordlist_prefers_native_set_on_fork_when_ram_is_available(tmp_path, monkeypatch):
+    from rulest.io_utils import load_wordlist
+
+    target_file = tmp_path / "targets_native.txt"
+    base_file = tmp_path / "base_native.txt"
+    target_file.write_bytes(b"Hello\nhello\nHELLO\n")
+    base_file.write_bytes(b"hello\n")
+    targets = load_wordlist(target_file)
+    base = load_wordlist(base_file, retain_membership_index=True)
+    real_sysconf = token_strip.os.sysconf
+
+    def generous_sysconf(name):
+        if name == "SC_AVPHYS_PAGES":
+            return 10**9
+        if name == "SC_PAGE_SIZE":
+            return 4096
+        return real_sysconf(name)
+
+    monkeypatch.setattr(token_strip.os, "sysconf", generous_sysconf)
+    try:
+        result = token_strip.extract_token_strip_rules(
+            targets,
+            base,
+            max_depth=2,
+            min_stem_len=4,
+            workers=1,
+            chunk_size=2,
+            start_method="fork",
+        )
+        assert {"c", "E", "u"}.issubset(set(result))
+        assert base.membership_index is None
+    finally:
+        targets.close()
+        base.close()

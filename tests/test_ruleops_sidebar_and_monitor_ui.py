@@ -6,15 +6,17 @@ CSS = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
 JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
 
-def test_sidebar_exposes_three_programs_and_rulest_submenu():
+def test_sidebar_exposes_standalone_rulest_button_and_program_links():
     assert 'id="nav-rulest"' in HTML
-    assert 'id="rulest-subnav"' in HTML
+    assert 'id="rulest-subnav"' not in HTML
+    assert '<button class="nav-item active" id="nav-rulest"' in HTML
     assert 'data-nav-tool="ranker"' in HTML
     assert 'data-nav-tool="concentrator"' in HTML
-    assert 'data-nav-section="tuning"' in HTML
-    assert 'data-nav-section="gpu-diagnostic"' in HTML
+    assert 'data-nav-tool="rulestripper"' in HTML
+    assert 'data-nav-tool="minimizer"' in HTML
+    assert 'data-nav-section="live-log"' in HTML
     assert 'data-nav-section="run-storage"' in HTML
-    assert 'id="system-view"' in HTML
+    assert 'id="nav-about"' in HTML
 
 
 def test_ranker_legacy_choice_is_visible_and_functionally_wired():

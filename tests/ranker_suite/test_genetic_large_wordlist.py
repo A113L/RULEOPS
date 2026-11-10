@@ -80,19 +80,19 @@ def test_gpu_ga_count_only_verification_does_not_allocate_hit_bitmaps():
         _base_words_precomputed=(None, np.zeros(8, dtype=np.int32), None),
     )
     fake._compute_chain_seqs = lambda chains: ([], [])
+    fake._ensure_ga_verify_base_buffers = lambda: False
 
     def get_batch(start, end):
         return {"num_words": end - start, "start": start}
 
     fake.get_word_batch_data = get_batch
 
-    def run_kernel(batch, chains, _precomputed, return_word_idx, _profile):
-        assert return_word_idx is True
+    def run_count_kernel(batch, chains, _precomputed, _profile):
         if batch["start"] == 0:
-            return [(0, "a b"), (1, "a b"), (3, "c d")]
-        return [(0, "c d"), (3, "a b")]
+            return {"a b": 2, "c d": 1}
+        return {"a b": 1, "c d": 1}
 
-    fake._run_chain_kernel = run_kernel
+    fake._run_chain_count_kernel = run_count_kernel
     result = GPUEngine.evaluate_chains_for_ga(fake, ["a b", "c d"], return_counts=True)
 
     assert result == {"a b": 3, "c d": 2}
@@ -189,3 +189,64 @@ def test_reusing_same_parent_wordlist_does_not_close_it_early(tmp_path):
     assert engine._base_words_owner is words
     engine.release_run_references()
     assert data_mmap.closed
+
+
+def test_ga_exact_count_mode_uses_device_count_kernel_and_accumulates(monkeypatch):
+    """Final GA verification must use scalar GPU counts, not hit-record output."""
+    engine = GPUEngine({})
+    engine.params = {'CHAINS_PER_BATCH': 8, 'WORD_SUB_BATCH': 2}
+    engine._base_words_precomputed = (
+        np.zeros(1, dtype=np.uint8),
+        np.arange(5, dtype=np.int32),
+        np.ones(5, dtype=np.int32),
+    )
+    engine._compute_chain_seqs = lambda chains: ([0] * len(chains), [1] * len(chains))
+    engine.get_word_batch_data = lambda start, end: {
+        'words_flat': np.zeros(max(1, end - start), dtype=np.uint8),
+        'word_offsets': np.zeros(end - start, dtype=np.int32),
+        'word_lengths': np.ones(end - start, dtype=np.int32),
+        'num_words': end - start,
+        'num_rules': 1,
+    }
+    calls = []
+
+    def fake_count_kernel(words, chains, _precomputed=None, _profile=None):
+        calls.append((words['num_words'], tuple(chains)))
+        n = words['num_words']
+        return {chains[0]: n, chains[1]: max(0, n - 1)}
+
+    engine._run_chain_count_kernel = fake_count_kernel
+    engine._run_chain_kernel = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError('legacy per-hit output path must not be used for return_counts')
+    )
+
+    result = engine.evaluate_chains_for_ga(['a b', 'c d'], return_counts=True)
+
+    assert result == {'a b': 5, 'c d': 2}
+    assert [n for n, _ in calls] == [2, 2, 1]
+
+
+def test_ga_exact_count_mode_prefers_resident_base_sweep():
+    engine = GPUEngine({})
+    engine.params = {'CHAINS_PER_BATCH': 8, 'WORD_SUB_BATCH': 2}
+    engine._base_words_precomputed = (
+        np.zeros(1, dtype=np.uint8),
+        np.arange(5, dtype=np.int32),
+        np.ones(5, dtype=np.int32),
+    )
+    engine._compute_chain_seqs = lambda chains: ([0] * len(chains), [1] * len(chains))
+    engine._ensure_ga_verify_base_buffers = lambda: True
+    calls = []
+
+    def fake_sweep(chains, _precomputed=None, _profile=None):
+        calls.append(tuple(chains))
+        return {chain: index + 3 for index, chain in enumerate(chains)}
+
+    engine._run_chain_count_sweep = fake_sweep
+    engine.get_word_batch_data = lambda *_a: (_ for _ in ()).throw(
+        AssertionError('resident sweep should not slice and re-upload BASE')
+    )
+
+    result = engine.evaluate_chains_for_ga(['a b', 'c d'], return_counts=True)
+    assert result == {'a b': 3, 'c d': 4}
+    assert calls == [('a b', 'c d')]

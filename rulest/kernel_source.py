@@ -385,6 +385,46 @@ __kernel void find_rule_chains_gpu(
     }}
 }}
 
+// Count-only variant for Stage 3 exact verification. It applies the same
+// chain semantics and Bloom membership test as find_rule_chains_gpu, but
+// atomically increments one counter per chain instead of emitting a string
+// and word-index record for every hit. This avoids large device->host result
+// transfers and Python-side decoding when only exact per-chain totals matter.
+__kernel void count_rule_chains_gpu(
+    __global const unsigned char *bw, __global const int *bo, __global const int *bl,
+    __global const unsigned char *rs, __global const int *ro, __global const int *rl,
+    __global const int *cseq, __global const int *cdep,
+    __global const uchar *bf, const int word_start, const int nw,
+    const int nc, const int mcd, __global volatile int *counts)
+{{
+    int gid = get_global_id(0);
+    if (gid >= nw * nc) return;
+    int wi = word_start + gid / nc, ci = gid % nc;
+    unsigned char cur[MAX_OUTPUT_LEN], tmp[MAX_OUTPUT_LEN], rr[MAX_RULE_LEN];
+    int wl = bl[wi];
+    for (int i = 0; i < wl; i++) cur[i] = bw[bo[wi] + i];
+    cur[wl] = '\0';
+    int cl_ = wl, dep = cdep[ci];
+    if (dep < 1 || dep > mcd) return;
+    __global const unsigned char *wp = bw + bo[wi];
+    for (int d = 0; d < dep; d++) {{
+        int ri = cseq[ci * mcd + d];
+        if (ri < 0) break;
+        int rlen = rl[ri];
+        for (int i = 0; i < rlen; i++) rr[i] = rs[ro[ri] + i];
+        rr[rlen] = '\0';
+        int nl;
+        apply(rr, rlen, cur, cl_, tmp, &nl);
+        if (nl == 0) return;
+        for (int i = 0; i < nl; i++) cur[i] = tmp[i];
+        cur[nl] = '\0';
+        cl_ = nl;
+    }}
+    int same = (cl_ == wl);
+    for (int i = 0; i < wl && same; i++) if (cur[i] != wp[i]) same = 0;
+    if (!same && bloom(bf, cur, cl_)) atomic_inc(counts + ci);
+}}
+
 __kernel void build_bloom_filter_gpu(
     __global const unsigned char *bw, __global const int *bo, __global const int *bl,
     const int nw, volatile __global int *bf)

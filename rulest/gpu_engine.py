@@ -62,6 +62,7 @@ class GPUEngine:
         self._rules_version = 0
         self.kernel_single = None
         self.kernel_chain = None
+        self.kernel_chain_count = None
         self.kernel_bloom = None
         self.kernel_verify = None
         self.kernel_celf_score = None
@@ -84,6 +85,8 @@ class GPUEngine:
         self._compiled_depth = None   # track compiled MAX_CHAIN_DEPTH
         self._base_words_precomputed = None  # (wf, wo, wl)
         self._base_words_owner = None  # pins SharedWordList while wf exports its mmap
+        self._ga_verify_base_buffers = None  # full BASE resident on GPU during GA exact verification
+        self._ga_verify_base_cache_key = None
         self._celf_target_hashes_buf = None
         self._celf_slot_target_ids_buf = None
         self._celf_occupied_buf = None
@@ -184,6 +187,7 @@ class GPUEngine:
         if cached is not None:
             (self.program, self.kernel_single, self.kernel_chain, self.kernel_bloom,
              self.kernel_verify, self.kernel_celf_score, self.kernel_celf_clear) = cached
+            self.kernel_chain_count = getattr(self.program, 'count_rule_chains_gpu', None)
             self._compiled_depth = current_depth
             log_info(f"[GPU]  Reusing cached kernel for depth {current_depth} (skipping rebuild)")
             return self.program
@@ -241,13 +245,14 @@ class GPUEngine:
             self.disabled = True
             self.context = None
             self.queue = None
-            self.program = self.kernel_single = self.kernel_chain = self.kernel_bloom = self.kernel_verify = None
+            self.program = self.kernel_single = self.kernel_chain = self.kernel_chain_count = self.kernel_bloom = self.kernel_verify = None
             self.kernel_celf_score = self.kernel_celf_clear = None
             return None
 
         self.program = prog
         self.kernel_single = prog.find_single_rules_gpu
         self.kernel_chain = prog.find_rule_chains_gpu
+        self.kernel_chain_count = prog.count_rule_chains_gpu
         self.kernel_bloom = prog.build_bloom_filter_gpu
         self.kernel_verify = prog.verify_pairs_gpu
         self.kernel_celf_score = prog.celf_score_chains_gpu
@@ -266,6 +271,7 @@ class GPUEngine:
         buffer/kernel state tied to the old context since it's no longer
         valid to use."""
         try:
+            self._release_ga_verify_base_buffers()
             self.context = cl.Context([self.device])
             self.queue = cl.CommandQueue(self.context, properties=(cl.command_queue_properties.PROFILING_ENABLE if os.environ.get("RULEST_CELF_PROFILE") == "1" else 0))
             for buf in [self.bloom_buf, self._rules_buf, self._rules_offsets_buf, self._rules_lengths_buf]:
@@ -276,7 +282,7 @@ class GPUEngine:
             self._rules_buf_key = None
             self.gpu_rules = []
             self.rule_index = {}
-            self.program = self.kernel_single = self.kernel_chain = self.kernel_bloom = self.kernel_verify = None
+            self.program = self.kernel_single = self.kernel_chain = self.kernel_chain_count = self.kernel_bloom = self.kernel_verify = None
             self.kernel_celf_score = self.kernel_celf_clear = None
             self._program_cache = {}  # programs from the old context are invalid
             return True
@@ -286,6 +292,7 @@ class GPUEngine:
 
     def _reset_gpu(self, error):
         log_warn(f"[GPU] Fatal kernel error: {error} — resetting context")
+        self._release_ga_verify_base_buffers()
         # Release all buffers
         for buf in [self.bloom_buf, self._rules_buf, self._rules_offsets_buf, self._rules_lengths_buf]:
             if buf is not None:
@@ -297,7 +304,7 @@ class GPUEngine:
         # Clear state
         self.bloom_buf = self._rules_buf = self._rules_offsets_buf = self._rules_lengths_buf = None
         self._rules_buf_key = None  # force re-upload of rules after reset
-        self.program = self.kernel_single = self.kernel_chain = self.kernel_bloom = self.kernel_verify = None
+        self.program = self.kernel_single = self.kernel_chain = self.kernel_chain_count = self.kernel_bloom = self.kernel_verify = None
         self.kernel_celf_score = self.kernel_celf_clear = None
         self._program_cache = {}  # programs from the old context are invalid
         self.context = None
@@ -552,12 +559,83 @@ class GPUEngine:
             self._rules_buf_key = key
         return self._rules_buf, self._rules_offsets_buf, self._rules_lengths_buf
 
+    def _release_ga_verify_base_buffers(self):
+        buffers = getattr(self, "_ga_verify_base_buffers", None)
+        self._ga_verify_base_buffers = None
+        self._ga_verify_base_cache_key = None
+        if buffers:
+            for buf in buffers:
+                try:
+                    buf.release()
+                except Exception:
+                    pass
+
+    def _ensure_ga_verify_base_buffers(self):
+        """Upload flattened BASE once for the whole final GA verification pass.
+
+        The count-only sweep runs many word slices per candidate batch. Keeping
+        BASE resident avoids re-uploading the same word bytes/offsets/lengths
+        on every slice and across every verification batch. Fall back to
+        bounded host-to-device slices when the device cannot safely fit BASE.
+        """
+        cache_key = id(self._base_words_precomputed)
+        if self._ga_verify_base_buffers and self._ga_verify_base_cache_key == cache_key:
+            return True
+        self._release_ga_verify_base_buffers()
+        if not self.context or self._base_words_precomputed is None:
+            return False
+
+        arrays = tuple(self._base_words_precomputed)
+        if not all(isinstance(arr, np.ndarray) and arr.flags.c_contiguous for arr in arrays):
+            return False
+        sizes = [int(arr.nbytes) for arr in arrays]
+        total_bytes = sum(sizes)
+        try:
+            free_vram = int(self.get_free_vram())
+            max_alloc = int(self.get_max_allocation())
+        except Exception:
+            return False
+        # Keep a substantial reserve for the Bloom filter, rules, driver
+        # workspaces and other active stages; never request a single object
+        # larger than the device's reported maximum allocation.
+        safe_budget = max(0, int(free_vram * 0.40) - 256 * 1024 * 1024)
+        if total_bytes <= 0 or total_bytes > safe_budget or any(sz <= 0 or sz > max_alloc for sz in sizes):
+            log_info(
+                f"[S3]    GA verify BASE pin skipped ({total_bytes / 1024**2:.1f} MiB; "
+                f"safe budget {safe_budget / 1024**2:.1f} MiB) — using bounded uploads"
+            )
+            return False
+
+        buffers = []
+        try:
+            for arr in arrays:
+                buffers.append(cl.Buffer(
+                    self.context, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR,
+                    hostbuf=arr,
+                ))
+            self._ga_verify_base_buffers = tuple(buffers)
+            self._ga_verify_base_cache_key = cache_key
+            log_info(
+                f"[S3]    GA verify BASE pinned on GPU: {total_bytes / 1024**2:.1f} MiB "
+                "(one upload reused across candidate batches)"
+            )
+            return True
+        except Exception as exc:
+            for buf in buffers:
+                try:
+                    buf.release()
+                except Exception:
+                    pass
+            log_warn(f"[S3]    Could not pin BASE for GA verify ({exc}); using bounded uploads")
+            return False
+
     def set_base_words(self, words):
+        self._release_ga_verify_base_buffers()
         # Resolve the root owner of a lazy WordListView before replacing a cache.
         new_owner = words
         while hasattr(new_owner, "_words"):
             new_owner = new_owner._words
-        previous_owner = self._base_words_owner
+        previous_owner = getattr(self, "_base_words_owner", None)
 
         # Drop exported NumPy arrays before closing an old worker-side attachment.
         self._base_words_precomputed = None
@@ -592,6 +670,7 @@ class GPUEngine:
         ensures the worker's attached SharedMemory handles close deterministically.
         GPU buffers are separate and remain valid until their normal engine shutdown.
         """
+        self._release_ga_verify_base_buffers()
         self._base_words_precomputed = None
         self._base_words_owner = None
 
@@ -605,7 +684,9 @@ class GPUEngine:
         base_owner = self._base_words_owner
         target_owner = self._bloom_target_owner
 
-        # Order matters: NumPy's frombuffer() array exports the SharedMemory mmap.
+        # Order matters: GPU copies and NumPy's frombuffer() array can both
+        # outlive the caller. Drop resident GPU buffers before the mmap owner.
+        self._release_ga_verify_base_buffers()
         self._base_words_precomputed = None
         self._base_words_owner = None
 
@@ -1044,6 +1125,179 @@ class GPUEngine:
                 pbar.update(1)
         return counter
 
+    def _run_chain_count_sweep(self, chains, _precomputed=None, _profile=None):
+        """Count a chain batch across full BASE using one resident upload.
+
+        One counter buffer is shared by all word slices. Kernels are enqueued
+        on the in-order queue and synchronized once at the end, so verification
+        avoids hundreds of per-slice buffer uploads, queue.finish calls and
+        count-array downloads.
+        """
+        if not chains or not self._ensure_ga_verify_base_buffers():
+            return None
+        if not self.context or not self.queue or not self.kernel_chain_count:
+            return None
+        if _precomputed is not None:
+            seqs_np = np.asarray(_precomputed[0], dtype=np.int32)
+            depths_np = np.asarray(_precomputed[1], dtype=np.int32)
+        else:
+            seqs, depths = self._compute_chain_seqs(chains)
+            seqs_np = np.asarray(seqs, dtype=np.int32)
+            depths_np = np.asarray(depths, dtype=np.int32)
+        wf_buf, wo_buf, wl_buf = self._ga_verify_base_buffers
+        n_words_total = len(self._base_words_precomputed[1])
+        if n_words_total <= 0:
+            return {chain: 0 for chain in chains}
+
+        mf = cl.mem_flags
+        bufs = []
+        alloc_t0 = time.perf_counter() if _profile is not None else None
+        try:
+            def B(arr, flags=mf.READ_ONLY):
+                buf = cl.Buffer(self.context, flags | mf.COPY_HOST_PTR, hostbuf=arr)
+                bufs.append(buf)
+                return buf
+
+            rb, rbo, rbl = self._get_rules_buffers(mf)
+            csb = B(seqs_np)
+            cdb = B(depths_np)
+            count_buf = B(np.zeros(len(chains), dtype=np.int32), mf.READ_WRITE)
+            host_alloc_s = time.perf_counter() - alloc_t0 if _profile is not None else 0.0
+            kernel_events = []
+            h2d_events = []
+            d2h_events = []
+            enqueue_t0 = time.perf_counter() if _profile is not None else None
+            word_batch = max(1, int(self.params.get('WORD_SUB_BATCH', 20000)))
+            for word_start in range(0, n_words_total, word_batch):
+                n_words = min(word_batch, n_words_total - word_start)
+                total = n_words * len(chains)
+                global_size = ((total + self.local_work_size - 1) // self.local_work_size) * self.local_work_size
+                self.kernel_chain_count.set_args(
+                    wf_buf, wo_buf, wl_buf, rb, rbo, rbl, csb, cdb, self.bloom_buf,
+                    np.int32(word_start), np.int32(n_words), np.int32(len(chains)),
+                    np.int32(self.params['MAX_CHAIN_DEPTH']), count_buf,
+                )
+                event = cl.enqueue_nd_range_kernel(
+                    self.queue, self.kernel_chain_count,
+                    (global_size,), (self.local_work_size,),
+                )
+                if _profile is not None:
+                    kernel_events.append(event)
+            if _profile is not None:
+                host_enqueue_s = time.perf_counter() - enqueue_t0
+                wait_t0 = time.perf_counter()
+            if not self._safe_queue_finish():
+                self._reset_gpu(RuntimeError("queue.finish() timed out or failed during GA count sweep"))
+                return None
+            if _profile is not None:
+                wait_wall_s = time.perf_counter() - wait_t0
+            counts = np.zeros(len(chains), dtype=np.int32)
+            copy_event = cl.enqueue_copy(self.queue, counts, count_buf)
+            if _profile is not None:
+                d2h_events.append(copy_event)
+                _profile.add_call(
+                    items=n_words_total * len(chains), host_alloc=host_alloc_s,
+                    host_enqueue=host_enqueue_s, wait=wait_wall_s,
+                    kernel_events=kernel_events, h2d_events=h2d_events,
+                    d2h_events=d2h_events,
+                )
+            return {chain: int(counts[i]) for i, chain in enumerate(chains)}
+        except Exception as exc:
+            log_warn(f"GA count-sweep kernel error: {exc}")
+            self._reset_gpu(exc)
+            return None
+        finally:
+            for buf in bufs:
+                try:
+                    buf.release()
+                except Exception:
+                    pass
+
+    def _run_chain_count_kernel(self, words, chains, _precomputed=None, _profile=None):
+        """Return exact Bloom-gated hit counts per chain without emitting hits.
+
+        Unlike _run_chain_kernel(return_word_idx=True), this path writes one
+        integer per chain on the GPU. It is intended for final GA verification,
+        where the caller needs only full-wordlist totals, not hit identities.
+        """
+        if not self.context or not self.queue or not self.kernel_chain_count:
+            return None
+        if _precomputed is not None:
+            seqs_np = np.asarray(_precomputed[0], dtype=np.int32)
+            depths_np = np.asarray(_precomputed[1], dtype=np.int32)
+        else:
+            seqs, depths = self._compute_chain_seqs(chains)
+            seqs_np = np.asarray(seqs, dtype=np.int32)
+            depths_np = np.asarray(depths, dtype=np.int32)
+        bd = words if isinstance(words, dict) else self.prepare_words_data(words)
+        n_words = int(bd['num_words'])
+        if n_words <= 0 or not chains:
+            return {chain: 0 for chain in chains}
+
+        mf = cl.mem_flags
+        bufs = []
+        alloc_t0 = time.perf_counter() if _profile is not None else None
+        try:
+            def B(arr, flags=mf.READ_ONLY):
+                buf = cl.Buffer(self.context, flags | mf.COPY_HOST_PTR, hostbuf=arr)
+                bufs.append(buf)
+                return buf
+
+            bb = B(bd['words_flat'])
+            bbo = B(bd['word_offsets'])
+            bbl = B(bd['word_lengths'])
+            rb, rbo, rbl = self._get_rules_buffers(mf)
+            csb = B(seqs_np)
+            cdb = B(depths_np)
+            zero_counts = np.zeros(len(chains), dtype=np.int32)
+            count_buf = B(zero_counts, mf.READ_WRITE)
+
+            host_alloc_s = time.perf_counter() - alloc_t0 if _profile is not None else 0.0
+            h2d_events = []
+            kernel_events = []
+            d2h_events = []
+            enqueue_t0 = time.perf_counter() if _profile is not None else None
+            total = n_words * len(chains)
+            global_size = ((total + self.local_work_size - 1) // self.local_work_size) * self.local_work_size
+            self.kernel_chain_count.set_args(
+                bb, bbo, bbl, rb, rbo, rbl, csb, cdb, self.bloom_buf,
+                np.int32(0), np.int32(n_words), np.int32(len(chains)),
+                np.int32(self.params['MAX_CHAIN_DEPTH']), count_buf,
+            )
+            kernel_event = cl.enqueue_nd_range_kernel(
+                self.queue, self.kernel_chain_count,
+                (global_size,), (self.local_work_size,),
+            )
+            if _profile is not None:
+                kernel_events.append(kernel_event)
+                host_enqueue_s = time.perf_counter() - enqueue_t0
+                wait_t0 = time.perf_counter()
+            if not self._safe_queue_finish():
+                self._reset_gpu(RuntimeError("queue.finish() timed out or failed during GA count verification"))
+                return None
+            if _profile is not None:
+                wait_wall_s = time.perf_counter() - wait_t0
+            counts = np.zeros(len(chains), dtype=np.int32)
+            copy_event = cl.enqueue_copy(self.queue, counts, count_buf)
+            if _profile is not None:
+                d2h_events.append(copy_event)
+                _profile.add_call(
+                    items=total, host_alloc=host_alloc_s, host_enqueue=host_enqueue_s,
+                    wait=wait_wall_s, kernel_events=kernel_events,
+                    h2d_events=h2d_events, d2h_events=d2h_events,
+                )
+            return {chain: int(counts[i]) for i, chain in enumerate(chains)}
+        except Exception as exc:
+            log_warn(f"GA count-verification kernel error: {exc}")
+            self._reset_gpu(exc)
+            return None
+        finally:
+            for buf in bufs:
+                try:
+                    buf.release()
+                except Exception:
+                    pass
+
     def evaluate_chains_for_ga(self, chains, _profile=None, return_counts=False):
         """Evaluate GA chains and return compact per-chain hit bitmaps or counts.
 
@@ -1072,6 +1326,49 @@ class GPUEngine:
         if not chains or n_words_total <= 0:
             return hit_words
 
+        if return_counts:
+            # Prefer a single full-BASE upload per engine and one count read per
+            # candidate batch. If VRAM cannot safely hold BASE, use the bounded
+            # per-word-slice upload path below as a compatibility fallback.
+            resident_base = self._ensure_ga_verify_base_buffers()
+            total_batches = (len(chains) + cbs - 1) // cbs
+            log_info(
+                f"[S3]    Count-only verification: {len(chains):,} chain(s) × "
+                f"{n_words_total:,} words; BASE={'GPU-resident' if resident_base else 'bounded uploads'}"
+            )
+            started = time.monotonic()
+            for ci in range(0, len(chains), cbs):
+                cb = chains[ci:ci + cbs]
+                seqs, depths = self._compute_chain_seqs(cb)
+                if resident_base:
+                    batch_counts = self._run_chain_count_sweep(
+                        cb, (seqs, depths), _profile=_profile
+                    )
+                else:
+                    batch_counts = {chain: 0 for chain in cb}
+                    for wi in range(0, n_words_total, wsb):
+                        end = min(wi + wsb, n_words_total)
+                        bd = self.get_word_batch_data(wi, end)
+                        part = self._run_chain_count_kernel(
+                            bd, cb, (seqs, depths), _profile=_profile
+                        )
+                        if part:
+                            for chain, count in part.items():
+                                if chain in batch_counts:
+                                    batch_counts[chain] += int(count)
+                if batch_counts:
+                    for chain, count in batch_counts.items():
+                        if chain in hit_words:
+                            hit_words[chain] += int(count)
+                processed = min(len(chains), ci + len(cb))
+                elapsed = max(0.001, time.monotonic() - started)
+                log_info(
+                    f"[S3]    GA verify progress: {processed:,}/{len(chains):,} chains "
+                    f"({100.0 * processed / max(1, len(chains)):.1f}%) | "
+                    f"{processed / elapsed:.1f} chains/s"
+                )
+            return hit_words
+
         total_batches = ((len(chains) + cbs - 1) // cbs) * ((n_words_total + wsb - 1) // wsb)
         total_pairs = len(chains) * n_words_total
         log_info(
@@ -1090,17 +1387,23 @@ class GPUEngine:
                 end = min(wi + wsb, n_words_total)
                 bd = self.get_word_batch_data(wi, end)
                 if bd['num_words']:
-                    found = self._run_chain_kernel(
-                        bd, cb, (seqs, depths), return_word_idx=True, _profile=_profile
-                    )
-                    if found:
-                        if return_counts:
-                            # Every returned row is one (chain, word) hit.
-                            # Count immediately; retain no per-word IDs.
-                            for _local_idx, rule_str in found:
+                    if return_counts:
+                        # Count matches on-device. The previous path copied
+                        # every (word index, chain string) hit to Python only
+                        # to increment one scalar per chain, creating large
+                        # PCIe transfers and per-hit decoding overhead.
+                        batch_counts = self._run_chain_count_kernel(
+                            bd, cb, (seqs, depths), _profile=_profile
+                        )
+                        if batch_counts:
+                            for rule_str, count in batch_counts.items():
                                 if rule_str in hit_words:
-                                    hit_words[rule_str] += 1
-                        else:
+                                    hit_words[rule_str] += int(count)
+                    else:
+                        found = self._run_chain_kernel(
+                            bd, cb, (seqs, depths), return_word_idx=True, _profile=_profile
+                        )
+                        if found:
                             # Group only this small (kernel-capped) batch, then
                             # set bits in-place. np.bitwise_or.at correctly
                             # handles multiple hits landing in the same byte.

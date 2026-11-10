@@ -95,13 +95,17 @@ def test_concentrator_command_validates_length_ranges_and_uploads(tmp_path, monk
         app.build_concentrator_command("extract", {}, run_dir)
 
 
-def test_ui_exposes_three_tools_four_concentrator_modes_and_legacy_selector():
+def test_ui_exposes_standalone_tools_four_concentrator_modes_and_legacy_selector():
     root = Path(app.__file__).resolve().parent
     html = (root / "web" / "index.html").read_text(encoding="utf-8")
     js = (root / "web" / "app.js").read_text(encoding="utf-8")
     css = (root / "web" / "styles.css").read_text(encoding="utf-8")
-    for item in ("nav-rulest", "rulest-subnav", "concentrator-view"):
+    for item in ("nav-rulest", "concentrator-view"):
         assert f'id="{item}"' in html
+    # RULEST is a standalone button; the former dropdown wrapper is gone.
+    assert 'id="rulest-subnav"' not in html
+    assert '<button class="nav-item active" id="nav-rulest"' in html
+    assert 'data-nav-tool="concentrator"' in html
     for mode in ("extract", "combo", "markov", "process"):
         assert f'data-concentrator-mode="{mode}"' in html
         assert f'data-concentrator-panel="{mode}"' in html

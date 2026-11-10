@@ -860,7 +860,15 @@ class GeneticRuleEvolver:
         # multi-million-word target list.
         if do_subsample and all_new and not _kb.quit_requested:
             verify_chains = list(all_new.keys())
-            verify_batch_size = max(16, min(64, max(16, self.pop_size // 4)))
+            # Count-only verification has no per-hit output buffer anymore,
+            # so a somewhat wider candidate batch amortizes per-launch setup
+            # without creating the old hit-record memory spike. Keep it bounded
+            # and configurable for devices with unusual memory/driver limits.
+            try:
+                configured_verify_batch = int(os.environ.get("RULEOPS_GA_VERIFY_BATCH_SIZE", "128"))
+            except (TypeError, ValueError):
+                configured_verify_batch = 128
+            verify_batch_size = max(16, min(256, configured_verify_batch))
             n_verify_batches = (len(verify_chains) + verify_batch_size - 1) // verify_batch_size
             log_info(
                 f"[S3]    Exact verification: {len(verify_chains):,} candidate chain(s) "
@@ -875,39 +883,51 @@ class GeneticRuleEvolver:
                 for eng in engines:
                     self._ensure_base_words_cached(eng)
                 verify_started = time.time()
-                with tqdm(total=len(verify_chains), desc=green("  S3 VERIFY "), unit="chain",
-                          ncols=ncols, leave=False,
-                          bar_format=STANDARD_PROGRESS_BAR_FORMAT) as verify_bar:
-                    for offset in range(0, len(verify_chains), verify_batch_size):
-                        if _kb.poll():
-                            break
-                        batch = verify_chains[offset:offset + verify_batch_size]
-                        if len(engines) == 1:
-                            batch_counts = self._eval_counts_on_engine(engines[0], batch)
-                        else:
-                            slices = self.gpu_engine.weighted_split(batch, kind='ga', engines=engines)
-                            batch_counts = {}
-                            def _verify_slice(eng, sl):
-                                return self._eval_counts_on_engine(eng, sl)
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=len(engines)) as pool:
-                                futs = [pool.submit(_verify_slice, eng, sl)
-                                        for eng, sl in zip(engines, slices) if sl]
-                                for f in futs:
-                                    try:
-                                        batch_counts.update(f.result())
-                                    except Exception as exc:
-                                        log_warn(f"[S3]    Verify worker error: {exc}")
-                        for chain, count in batch_counts.items():
-                            if count:
-                                exact_counts[chain] = int(count)
-                                verify_hits_total += int(count)
-                        verify_bar.update(len(batch))
-                        verify_elapsed = max(0.001, time.time() - verify_started)
-                        verify_bar.set_postfix({
-                            "rules": cyan(f"{len(exact_counts):,}"),
-                            "hits": cyan(f"{verify_hits_total:,}"),
-                            "spd": green(_fmt_speed(verify_bar.n / verify_elapsed, "chains")),
-                        }, refresh=False)
+                try:
+                    with tqdm(total=len(verify_chains), desc=green("  S3 VERIFY "), unit="chain",
+                              ncols=ncols, leave=False,
+                              bar_format=STANDARD_PROGRESS_BAR_FORMAT) as verify_bar:
+                        for offset in range(0, len(verify_chains), verify_batch_size):
+                            if _kb.poll():
+                                break
+                            batch = verify_chains[offset:offset + verify_batch_size]
+                            if len(engines) == 1:
+                                batch_counts = self._eval_counts_on_engine(engines[0], batch)
+                            else:
+                                slices = self.gpu_engine.weighted_split(batch, kind='ga', engines=engines)
+                                batch_counts = {}
+                                def _verify_slice(eng, sl):
+                                    return self._eval_counts_on_engine(eng, sl)
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=len(engines)) as pool:
+                                    futs = [pool.submit(_verify_slice, eng, sl)
+                                            for eng, sl in zip(engines, slices) if sl]
+                                    for f in futs:
+                                        try:
+                                            batch_counts.update(f.result())
+                                        except Exception as exc:
+                                            log_warn(f"[S3]    Verify worker error: {exc}")
+                            for chain, count in batch_counts.items():
+                                if count:
+                                    exact_counts[chain] = int(count)
+                                    verify_hits_total += int(count)
+                            verify_bar.update(len(batch))
+                            verify_elapsed = max(0.001, time.time() - verify_started)
+                            verify_bar.set_postfix({
+                                "rules": cyan(f"{len(exact_counts):,}"),
+                                "hits": cyan(f"{verify_hits_total:,}"),
+                                "spd": green(_fmt_speed(verify_bar.n / verify_elapsed, "chains")),
+                            }, refresh=False)
+                finally:
+                    # The full BASE copy is useful only during this correction
+                    # pass. Release it before CELF/other stages need the VRAM.
+                    for eng in engines:
+                        try:
+                            if isinstance(eng, ProcessEngineProxy):
+                                eng.release_ga_verify_base_buffers()
+                            else:
+                                eng._release_ga_verify_base_buffers()
+                        except Exception as exc:
+                            log_warn(f"[S3]    Could not release GA verify BASE buffer: {exc}")
             all_new = exact_counts
             all_new_hits_total = verify_hits_total
 

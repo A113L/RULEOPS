@@ -490,6 +490,10 @@ class ProcessEngineProxy:
         r = self._call('evaluate_chains_for_ga', chains, return_counts=return_counts)
         return r if r is not None else {}
 
+    def release_ga_verify_base_buffers(self):
+        """Release the worker-local full-BASE upload used only by GA verify."""
+        return self._call('_release_ga_verify_base_buffers')
+
     def _compute_chain_seqs(self, chains):
         return self._call('_compute_chain_seqs', chains) or ([], [])
 

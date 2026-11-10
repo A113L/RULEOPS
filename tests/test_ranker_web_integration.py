@@ -142,7 +142,8 @@ def test_ranker_tool_switch_respects_deep_link_and_keeps_shared_log():
     html = (root / "web" / "index.html").read_text(encoding="utf-8")
     js = (root / "web" / "app.js").read_text(encoding="utf-8")
     assert '<title>RULEOPS — Hashcat Rule Toolchain</title>' in html
-    assert 'id="rulest-subnav"' in html and 'data-nav-tool="concentrator"' in html
+    assert 'id="rulest-subnav"' not in html
+    assert 'id="nav-rulest"' in html and 'data-nav-tool="concentrator"' in html
     assert "const initialTool = window.location.hash === '#ranker' ? 'ranker'" in js
     assert "history.pushState(null, '', href)" in js
     assert 'id="live-log"' in html

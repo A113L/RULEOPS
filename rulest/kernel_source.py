@@ -528,6 +528,33 @@ inline int celf_find_target_slot(
     return -1;
 }}
 
+// Optional lazy initialization for exact-score bitmap words. The normal
+// path still uses one contiguous enqueue_fill_buffer before each batch.
+// When a positive generation is supplied, each (candidate, target-word)
+// location is cleared on first touch in that generation. A small atomic
+// lock prevents two work-items from racing the first clear.
+inline void celf_ensure_seen_word(
+    __global uint *seen, __global int *epochs,
+    const uint seen_index, const int generation)
+{{
+    volatile __global int *epoch_ptr = (volatile __global int *)(epochs + seen_index);
+    for (;;) {{
+        int observed = atomic_cmpxchg(epoch_ptr, 0, 0);
+        if (observed == generation) {{
+            mem_fence(CLK_GLOBAL_MEM_FENCE);
+            return;
+        }}
+        if (observed == -1) continue; // another work-item is initializing it
+        int previous = atomic_cmpxchg(epoch_ptr, observed, -1);
+        if (previous == observed) {{
+            seen[seen_index] = 0U;
+            mem_fence(CLK_GLOBAL_MEM_FENCE);
+            atomic_xchg(epoch_ptr, generation);
+            return;
+        }}
+    }}
+}}
+
 // Every (base word, candidate chain) work item applies the same chain DSL as
 // the main search kernel, then performs exact target-table lookup on the GPU.
 // score_mode selects raw-hit upper bounds (mode 0) or unique-target marginals
@@ -541,11 +568,11 @@ __kernel void celf_score_chains_gpu(
     __global const ulong *target_hashes, __global const int *slot_target_ids,
     __global const uint *occupied, __global const uint *active,
     __global const uchar *target_bytes, __global const ulong *target_offsets, __global const int *target_lengths,
-    __global uint *seen, __global int *gains,
+    __global uint *seen, __global int *seen_epochs, __global int *gains,
     __global int *hit_slots, __global int *hit_count,
     const int nw, const int nc, const int word_start, const int mcd,
     const uint table_mask, const int bitmap_words,
-    const int score_mode)
+    const int score_mode, const int seen_generation)
 {{
     int gid = (int)get_global_id(0);
     int total = nw * nc;
@@ -604,12 +631,49 @@ __kernel void celf_score_chains_gpu(
     __global uint *seen_rule = seen + ci * bitmap_words;
     uint seen_word = ((uint)target_id) >> 5;
     uint seen_mask = 1U << (((uint)target_id) & 31U);
+    if (seen_generation > 0) {{
+        uint seen_index = (uint)ci * (uint)bitmap_words + seen_word;
+        celf_ensure_seen_word(seen, seen_epochs, seen_index, seen_generation);
+    }}
     uint previous = (uint)atomic_or((volatile __global int *)(seen_rule + seen_word), (int)seen_mask);
     if ((previous & seen_mask) != 0U) return;
     atomic_inc((volatile __global int *)(gains + ci));
     if (score_mode == 2) {{
         int out_idx = atomic_inc((volatile __global int *)hit_count);
         if (out_idx >= 0) hit_slots[out_idx] = slot;
+    }}
+}}
+
+// Compact one preserved exact-winner bitmap into target IDs. Ordering is
+// intentionally unspecified (the consumer stores IDs as a set), and only
+// the compacted prefix is copied back to the host.
+__kernel void celf_compact_seen_bitmap(
+    __global const uint *seen,
+    __global const int *seen_epochs,
+    __global int *target_ids,
+    __global int *target_count_out,
+    const int target_count,
+    const int bitmap_words,
+    const int seen_generation)
+{{
+    int word_index = (int)get_global_id(0);
+    if (word_index >= bitmap_words) return;
+    if (seen_generation > 0 && seen_epochs[word_index] != seen_generation) return;
+    uint bits = seen[word_index];
+    uint base_id = (uint)word_index * 32U;
+    uint remaining_targets = (uint)target_count - base_id;
+    if (remaining_targets < 32U) {{
+        if (remaining_targets == 0U) return;
+        bits &= (1U << remaining_targets) - 1U;
+    }}
+    while (bits != 0U) {{
+        uint low_bit = bits & (~bits + 1U);
+        uint bit_index = 31U - (uint)clz(low_bit);
+        int output_index = atomic_inc((volatile __global int *)target_count_out);
+        if (output_index >= 0 && output_index < target_count) {{
+            target_ids[output_index] = (int)(base_id + bit_index);
+        }}
+        bits &= bits - 1U;
     }}
 }}
 

@@ -461,6 +461,21 @@ class ProcessEngineProxy:
             raise RuntimeError('GPU worker returned no CELF winner bitmap result')
         return result
 
+    def celf_capture_exact_winner_bitmap(self, candidate_index):
+        result = self._call(
+            'celf_capture_exact_winner_bitmap', int(candidate_index),
+            _raise_on_error=True,
+        )
+        if result is None:
+            raise RuntimeError('GPU worker returned no CELF winner bitmap snapshot result')
+        return bool(result)
+
+    def celf_materialize_winner_target_ids(self):
+        result = self._call('celf_materialize_winner_target_ids', _raise_on_error=True)
+        if result is None:
+            raise RuntimeError('GPU worker returned no compacted CELF winner IDs')
+        return result
+
     def celf_take_cached_single_score(self, chain):
         return self._call('celf_take_cached_single_score', chain, _raise_on_error=True)
 

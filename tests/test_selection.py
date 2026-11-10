@@ -474,9 +474,122 @@ def test_dead_seeds_use_the_cheap_exact_batch_path_not_a_recording_scan():
     assert selected == [("winner", 1)]
     assert int(covered.sum()) == 1
     assert exact_batch_calls, "dead/losing candidates must be resolved via the cheap exact-batch path"
+    # The first seed is probed singly, but once it proves dead the remaining
+    # candidates are drained and exact-scored together instead of issuing one
+    # GPU synchronization per dead seed.
+    assert exact_batch_calls[0] == (0,)
+    assert any(len(batch) == 4 for batch in exact_batch_calls[1:])
     # Exactly one recording scan: the real winner's. None of the four dead
     # seeds/contenders should ever reach the expensive singleton path.
     assert singleton_calls == [4]
+
+
+def test_dead_seed_drain_coalesces_many_exact_singletons_without_changing_winner():
+    # Model a saturated TARGET where a long run of candidates still has
+    # duplicate-inflated positive bounds but zero exact marginal gain.
+    n_dead = 64
+    winner = n_dead + 1
+    rules = [f"dead-{i}" for i in range(n_dead + 1)] + ["winner"]
+    upper_bounds = [10_000 - i for i in range(len(rules))]
+    exact_calls = []
+    singleton_record_calls = []
+
+    def score_one(index, _covered):
+        singleton_record_calls.append(index)
+        return {0} if index == winner else set()
+
+    def score_bounds(indices, _covered):
+        return [upper_bounds[index] for index in indices]
+
+    def score_exact(indices, _covered):
+        exact_calls.append(tuple(indices))
+        return [1 if index == winner else 0 for index in indices]
+
+    selected, covered = _celf_select_from_upper_bounds(
+        rules, upper_bounds, 1, score_one, budget=1,
+        score_batch_fn=score_bounds, score_exact_batch_fn=score_exact,
+        rescore_batch_size=4,
+    )
+
+    assert selected == [("winner", 1)]
+    assert int(covered.sum()) == 1
+    # One initial seed probe, then the 65 remaining candidates are handled
+    # in 4-wide exact batches. The last batch includes the live winner.
+    assert exact_calls[0] == (0,)
+    assert all(1 <= len(batch) <= 4 for batch in exact_calls[1:])
+    assert sum(len(batch) for batch in exact_calls) == len(rules)
+    assert len(exact_calls) == 1 + (len(rules) - 1 + 3) // 4
+    assert singleton_record_calls == [winner]
+
+
+def test_preserved_exact_winner_bitmap_avoids_recording_rescan():
+    """A GPU bitmap snapshot must carry exact IDs across later score batches."""
+    rules = ["A", "B", "C", "D"]
+    true_sets = [
+        {0},
+        {0, 1, 2},
+        {2, 3},
+        {4},
+    ]
+    multiplicity = [
+        {0: 10},
+        {0: 3, 1: 3, 2: 3},
+        {2: 2, 3: 2},
+        {4: 1},
+    ]
+    latest_exact = {}
+    preserved = set()
+    capture_calls = []
+
+    def score_one(_index, _covered):
+        raise AssertionError("winner bitmap path should not run a recording scan")
+
+    def score_bounds(indices, covered):
+        covered_ids = set(np.flatnonzero(covered))
+        return [sum(v for target, v in multiplicity[i].items() if target not in covered_ids)
+                for i in indices]
+
+    def score_exact(indices, covered):
+        covered_ids = set(np.flatnonzero(covered))
+        latest_exact.clear()
+        latest_exact.update({i: true_sets[i] - covered_ids for i in indices})
+        return [len(latest_exact[i]) for i in indices]
+
+    def capture(index):
+        # Models the device-to-device copy: retain the row independently of
+        # the scratch bitmap that the next exact batch is allowed to overwrite.
+        preserved.clear()
+        preserved.update(latest_exact[index])
+        capture_calls.append(index)
+        return True
+
+    def materialize():
+        return set(preserved)
+
+    selected, covered = _celf_select_from_upper_bounds(
+        rules, [10, 9, 4, 1], 5, score_one, budget=2,
+        score_batch_fn=score_bounds,
+        score_exact_batch_fn=score_exact,
+        capture_exact_winner_fn=capture,
+        materialize_winner_ids_fn=materialize,
+        rescore_batch_size=3,
+    )
+
+    expected = []
+    expected_covered = set()
+    remaining = set(range(len(rules)))
+    while remaining and len(expected) < 2:
+        best = min(remaining, key=lambda i: (-len(true_sets[i] - expected_covered), i))
+        gain_ids = true_sets[best] - expected_covered
+        if not gain_ids:
+            break
+        expected.append((rules[best], len(gain_ids)))
+        expected_covered.update(gain_ids)
+        remaining.remove(best)
+
+    assert selected == expected
+    assert set(np.flatnonzero(covered)) == expected_covered
+    assert capture_calls, "the exact winner bitmap should be snapshotted"
 
 
 def test_batched_exact_rescoring_matches_reference_on_randomized_coverage():
@@ -534,6 +647,7 @@ def test_gpu_exact_batch_mismatch_restarts_on_safe_singleton_path(monkeypatch):
             self._celf_batch_capacity = 2
             self.device = None
             self.reset_count = 0
+            self._celf_lazy_bitmap_init = True
 
         def celf_reset_active_targets(self):
             self.reset_count += 1
@@ -584,6 +698,8 @@ def test_gpu_exact_batch_mismatch_restarts_on_safe_singleton_path(monkeypatch):
     assert selected == [("A", 1)]
     assert int(covered.sum()) == 1
     assert engine.reset_count == 1
+    # A failed epoch-mode exact pass must not be reused by the fallback.
+    assert engine._celf_lazy_bitmap_init is False
 
 
 def test_gpu_scorer_keeps_compact_candidate_index_api_after_archived_celf_restore():

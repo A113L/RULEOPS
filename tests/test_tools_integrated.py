@@ -72,12 +72,36 @@ def test_utility_upload_fields_are_reusable_library_assets():
     assert app_module.LIBRARY_FIELD_CATEGORIES["minimizer_probe"] == "wordlists"
 
 
+
+
+def test_email_extractor_uses_the_shared_ruleops_sidebar():
+    html = (ROOT / "web" / "email-rule-extractor.html").read_text(encoding="utf-8")
+
+    assert '<div class="app-shell">' in html
+    assert '<aside class="sidebar" aria-label="RULEOPS navigation">' in html
+    assert '<main class="main-content email-extractor-main" id="top">' in html
+    assert 'class="nav-item nav-program-link active" href="/email-rule-extractor.html" aria-current="page"' in html
+    for label, href in (
+        ("RULEST", "/#workspace"),
+        ("Rule Ranker", "/#ranker"),
+        ("Concentrator", "/#concentrator"),
+        ("Rulestripper", "/#rulestripper"),
+        ("Rule Minimizer", "/#minimizer"),
+        ("Live activity", "/#live-log"),
+        ("Run storage", "/#run-storage"),
+        ("About", "/#about"),
+    ):
+        assert href in html, f"missing sidebar destination for {label}"
+    assert html.index('<aside class="sidebar"') < html.index('<main class="main-content')
+    assert html.count('<main ') == 1
+    assert html.count('<aside ') == 1
+
 def test_email_extractor_is_local_client_side_page():
     html = (ROOT / "web" / "email-rule-extractor.html").read_text(encoding="utf-8")
     js = (ROOT / "web" / "email-rule-extractor.js").read_text(encoding="utf-8")
     assert 'src="/email-rule-extractor.js?v=2.6.1"' in html
-    assert 'href="/email-rule-extractor.css?v=2.6.1"' in html
-    assert 'href="/styles.css?v=2.6.1-ui-polish"' in html
+    assert 'href="/email-rule-extractor.css?v=2.6.4"' in html
+    assert 'href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4"' in html
     assert "hcrt.pages.dev" not in html + js
     assert not re.search(r"<script\b(?![^>]*\bsrc=)[^>]*>", html, flags=re.I)
     assert "FileReader" in js

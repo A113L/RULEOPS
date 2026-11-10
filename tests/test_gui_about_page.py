@@ -52,4 +52,4 @@ def test_about_page_uses_shared_card_spacing_and_stacked_tool_headings():
     assert ".donation-row{\n  display:grid;" in css
     assert ".contact-row{\n  display:grid;" in css
     assert "@media(max-width:650px)" in css
-    assert "build=2.6.2" in html
+    assert "build=2.6.4" in html

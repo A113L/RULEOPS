@@ -357,3 +357,36 @@ label:has(input[type="checkbox"]) {
   .badge { font-size: 7px; }
   .btn-row .btn { flex: 1 1 auto; }
 }
+
+
+/* Email Extractor inside the canonical RULEOPS app shell/sidebar. */
+.email-extractor-main {
+  min-width: 0;
+  width: 100%;
+}
+.email-extractor-main > .topbar {
+  min-width: 0;
+}
+.email-extractor-main > .wrap {
+  width: min(100%, 1640px);
+  max-width: none;
+  margin: 0 auto;
+  padding: 0 clamp(16px, 3vw, 42px) 32px;
+}
+.email-sidebar-status {
+  margin-bottom: 12px;
+}
+.email-sidebar-status .gpu-top {
+  gap: 7px;
+}
+.email-extractor-main .site-footer {
+  margin-top: 24px;
+}
+@media (max-width: 1250px) {
+  .email-extractor-main > .wrap { padding-left: 25px; padding-right: 25px; }
+}
+@media (max-width: 650px) {
+  .email-extractor-main > .wrap { padding: 0 13px 22px; }
+  .email-extractor-main > .topbar { height: 54px; }
+  .email-extractor-main .topbar-right { gap: 6px; }
+}

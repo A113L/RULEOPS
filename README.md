@@ -65,7 +65,7 @@ The server binds to `0.0.0.0` by default so devices on the local network can con
 
 Default server limits are 16 concurrent connections, 20 GiB per upload, 40 GiB aggregate temporary uploads, 200 GiB total data under `runs/`, and a 1 GiB free-disk reserve. Uploads also have an 8-second idle timeout and a sustained minimum throughput check after a 30-second grace period. During engine execution, a watchdog stops the process if the data quota or free-space reserve is breached.
 
-For larger trusted-LAN workloads, limits can be adjusted with environment variables such as `RULEOPS_MAX_CONNECTIONS`, `RULEOPS_MAX_UPLOAD_FILE_BYTES`, `RULEOPS_MAX_UPLOAD_TOTAL_BYTES`, `RULEOPS_MAX_DATA_STORAGE_BYTES`, and `RULEOPS_MIN_FREE_DISK_BYTES`. See [`SECURITY_HARDENING.md`](SECURITY_HARDENING.md) for the full list and examples. Increase quotas only after checking free disk capacity.
+For larger trusted-LAN workloads, limits can be adjusted with environment variables such as `RULEOPS_MAX_CONNECTIONS`, `RULEOPS_MAX_UPLOAD_FILE_BYTES`, `RULEOPS_MAX_UPLOAD_TOTAL_BYTES`, `RULEOPS_MAX_DATA_STORAGE_BYTES`, and `RULEOPS_MIN_FREE_DISK_BYTES`. See [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) for the full list and examples. Increase quotas only after checking free disk capacity.
 
 ## CELF selection performance
 
@@ -124,7 +124,7 @@ Rule Ranker provides three workflows:
 
 All Ranker workflows stream their output into the shared **Live activity** panel and place generated files in the shared downloads list. Ranker supports cancellation (partial files already written are preserved); safe-checkpoint Pause/Resume is available only for the RULEST engine. Uploaded input files are temporary server-side copies and are removed after the job completes, fails or is cancelled. Re-upload wordlists and cracked-password lists before a subsequent Ranker workflow. Generated output files remain in `runs/<run-id>/`.
 
-The Ranker command-line package is also available directly through `run_ranker.py`; its original CLI options remain available. See [`RANKER_README.md`](RANKER_README.md) for standalone CLI examples.
+The Ranker command-line package is also available directly through `run_ranker.py`; its original CLI options remain available. See [`docs/RANKER_README.md`](docs/RANKER_README.md) for standalone CLI examples.
 
 ## Rulestripper integration
 
@@ -181,3 +181,24 @@ RULEST, Rule Ranker, Concentrator, Rulestripper and Rule Minimizer share one aut
 ## Sidebar navigation and run storage
 
 The sidebar is the primary application navigator. Select **RULEST** to expand its workspace, engine tuning and GPU diagnostics pages. Select **Rule Ranker**, **Concentrator**, **Rulestripper** or **Rule Minimizer** to open their integrated workspaces; **Email Extractor** opens its browser-only page. **Live activity** remains available as a shared monitor across all server-side tools. Under **System → Run storage**, review the number of saved run folders, files and disk usage. **Delete all run folders** removes saved RULEST, Ranker, Concentrator, Rulestripper and Minimizer run directories after an explicit confirmation. It is blocked while a job is active or an upload is in progress. The cleanup deliberately preserves `runs/uploads/`, `auth.json`, application files and configuration; generated outputs, logs and partial results in run folders are permanently deleted. On narrow screens, the sidebar becomes a compact horizontal tool bar; the RULEST submenu opens as a dropdown.
+
+## About, donations and support
+
+RULEOPS brings RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Email Rule Extractor together in one local-first toolchain. Processing runs on your machine and uses the CPU and GPU resources available to the application. The **About** page inside the Control Center describes each tool and provides project support information.
+
+### Optional donations
+
+If RULEOPS is useful to you, voluntary cryptocurrency donations are welcome and help support maintenance and future development. The wallet addresses are shown in the **About** page inside the application:
+
+- ETH: `0x597c06b19bc90876f6375b8d1348b34c94f223a4`
+- Bitcoin: `13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ`
+- Litecoin: `LLDEKP1L7Zs99cYHSVdxXHZPUaR5Hcpand`
+- Ravencoin: `RHXGULWc3jcgSHB9LAEmRCGnddRemnZ6hu`
+- Tron: `TWCr67GVVWYmPhDadGFzqWu5rcWuqwD8gi`
+
+### Support
+
+For help, bug reports and feedback:
+
+- Email: `nullpointer@i2pmail.org`
+- Discord: `a_1_1_3_1`

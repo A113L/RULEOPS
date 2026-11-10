@@ -29,5 +29,5 @@ def test_reusable_library_dropdowns_cover_wordlists_and_rules_for_all_workspaces
         assert f'data-library-field="{field}"' in html
     assert "fetch('/api/library'" in js
     assert "apiPost('/api/library/select'" in js
-    assert "runs/library/wordlists" in (root / "INPUT_LIBRARY.md").read_text(encoding="utf-8")
-    assert "runs/library/rules" in (root / "INPUT_LIBRARY.md").read_text(encoding="utf-8")
+    assert "runs/library/wordlists" in (root / "docs" / "INPUT_LIBRARY.md").read_text(encoding="utf-8")
+    assert "runs/library/rules" in (root / "docs" / "INPUT_LIBRARY.md").read_text(encoding="utf-8")

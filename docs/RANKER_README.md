@@ -25,9 +25,8 @@ pip install -e .
 `numpy` and `tqdm` are required by all three tools. `pyopencl` (with a
 working OpenCL ICD / GPU driver) is required by `rank` and by the GPU
 coverage pass of `postprocess`. `handler` has no GPU dependency at all.
-`postprocess`'s CELF greedy-select phase runs entirely on CPU (see
-`rule_ranker/README_ranker_postprocess.md` for how it parallelizes
-across cores).
+`postprocess`'s CELF greedy-select phase runs entirely on CPU and
+parallelizes its work across cores.
 
 ## Usage
 

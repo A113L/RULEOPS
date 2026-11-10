@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -84,6 +85,34 @@ def test_wordlist_upload_is_moved_into_persistent_library_without_duplicate_copy
         assert list(uploads_dir.iterdir()) == []
         assert app.UPLOADS_META["base"]["path"] == asset
         assert app.UPLOADS_META["base"]["library"] is True
+    finally:
+        _stop_server(server, thread)
+
+
+def test_rulestripper_upload_api_accepts_text_files_with_arbitrary_names_and_extensions(tmp_path, monkeypatch):
+    server, thread, base, headers, data_dir, uploads_dir = _setup_server(tmp_path, monkeypatch)
+    try:
+        cases = (
+            ("wordlist", b"password\nadmin\n"),
+            ("hashmob.micro.found", b"alpha\nbeta\n"),
+            ("dictionary.backup.2026", b"one\ntwo\n"),
+        )
+        uploaded_ids = []
+        for filename, content in cases:
+            status, result = _request_json(
+                base + "/api/tools/upload/rulestripper_base?filename=" + urllib.parse.quote(filename),
+                headers, raw=content, method="POST",
+            )
+            assert status == 200 and result["ok"] is True, result
+            assert result["library"] is True
+            asset = data_dir / "library" / "wordlists" / result["asset_id"]
+            assert asset.read_bytes() == content
+            uploaded_ids.append(result["asset_id"])
+
+        status, listed = _request_json(base + "/api/library", headers, method="GET")
+        assert status == 200
+        assert set(uploaded_ids).issubset({item["id"] for item in listed["wordlists"]})
+        assert list(uploads_dir.iterdir()) == []
     finally:
         _stop_server(server, thread)
 

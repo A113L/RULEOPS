@@ -14,7 +14,7 @@ def test_completion_sound_is_opt_out_and_tracks_all_job_types():
     assert "data.status === 'completed'" in js
     assert "pendingCompletionJobIds" in js
     assert "trackStartedJob(started)" in js
-    assert js.count("trackStartedJob(started)") == 3
+    assert js.count("trackStartedJob(started)") == 4
 
 
 def test_reusable_library_dropdowns_cover_wordlists_and_rules_for_all_workspaces():

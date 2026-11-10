@@ -13,7 +13,9 @@ def test_about_page_preserves_tool_descriptions_donations_and_support():
     assert '<b>About</b>' in html
     assert 'id="about"' in html and 'id="about-grid"' in html
     assert 'Local-first' in html
-    assert 'RULEOPS brings RULEST, Rule Ranker and Concentrator together' in html
+    assert 'One toolchain, six integrated tools' in html
+    for tool_name in ('RULEST', 'Rule Ranker', 'Concentrator', 'Rulestripper', 'Rule Minimizer', 'Email Rule Extractor'):
+        assert tool_name in html
     assert 'Donations are entirely optional' in html
     assert '0x597c06b19bc90876f6375b8d1348b34c94f223a4' in html
     assert '13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ' in html
@@ -50,4 +52,4 @@ def test_about_page_uses_shared_card_spacing_and_stacked_tool_headings():
     assert ".donation-row{\n  display:grid;" in css
     assert ".contact-row{\n  display:grid;" in css
     assert "@media(max-width:650px)" in css
-    assert "build=2.5.0-about-layout" in html
+    assert "build=2.6.2" in html

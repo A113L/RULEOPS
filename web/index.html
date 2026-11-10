@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=ruleops-2.5.0-about-layout&build=2.5.0-about-layout">
+  <link rel="stylesheet" href="/styles.css?v=2.6.2-utility-monitor&build=2.6.2">
 </head>
 <body>
   <div class="app-shell">
@@ -40,6 +40,15 @@
         <a class="nav-item nav-program-link" href="#concentrator" data-nav-tool="concentrator" title="Concentrator — extract, generate and clean rules">
           <span class="nav-icon">⌘</span><span class="nav-main-copy"><b>Concentrator</b><small>Extract, generate &amp; clean</small></span>
         </a>
+        <a class="nav-item nav-program-link" href="#rulestripper" data-nav-tool="rulestripper" title="Rulestripper — extract Hashcat rule chains from BASE/TARGET">
+          <span class="nav-icon">⛓</span><span class="nav-main-copy"><b>Rulestripper</b><small>Extract rule chains</small></span>
+        </a>
+        <a class="nav-item nav-program-link" href="#minimizer" data-nav-tool="minimizer" title="Rule Minimizer — remove functionally equivalent rules">
+          <span class="nav-icon">≋</span><span class="nav-main-copy"><b>Rule Minimizer</b><small>Deduplicate rules by behavior</small></span>
+        </a>
+        <a class="nav-item nav-program-link" href="/email-rule-extractor.html" title="Email Rule Extractor — generate Hashcat rules from email patterns">
+          <span class="nav-icon">＠</span><span class="nav-main-copy"><b>Email Extractor</b><small>Generate rules from emails</small></span>
+        </a>
       </nav>
       <div class="sidebar-utility">
         <div class="side-label">MONITORING</div>
@@ -60,7 +69,7 @@
           <span>FREE TOOLCHAIN</span>
           <p>All features available. Donations are optional and support ongoing development.</p>
         </div>
-        <div class="side-foot"><span class="version-dot"></span> RULEOPS <b>v2.5.0</b><br><span>Password protected · LAN access</span></div>
+        <div class="side-foot"><span class="version-dot"></span> RULEOPS <b>v2.6.0</b><br><span>Password protected · LAN access</span></div>
       </div>
     </aside>
 
@@ -459,6 +468,106 @@
         </div>
       </div><!-- /concentrator-view -->
 
+      <div id="rulestripper-view" hidden>
+        <section class="page-heading" id="rulestripper">
+          <div><div class="eyebrow">HASHCAT RULE EXTRACTION <span class="eyebrow-line"></span> CPU · MULTIPROCESSING</div><h1>Rulestripper<span class="title-period">.</span></h1><p>Discover rule chains that transform BASE words into TARGET words. Large wordlists stay in shared memory; workers receive only index ranges.</p></div>
+          <div class="heading-badge"><span class="badge-orbit">⛓</span><div><b>Spawn-safe engine</b><small>Shared UTF-8 · uint64 offsets</small></div></div>
+        </section>
+        <div class="content-grid utility-tool-grid">
+          <div class="primary-column">
+            <section class="panel">
+              <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">01</span><h2>Input wordlists</h2></div><p>BASE and TARGET are stored in the reusable wordlist library.</p></div><span class="required-pill">2 REQUIRED</span></div>
+              <div class="upload-grid two-col">
+                <div class="upload-card" data-upload="rulestripper_base">
+                  <div class="upload-head"><div class="file-icon base-icon">B</div><div><h3>BASE wordlist</h3><small>Candidate stems · normalized to lowercase</small></div><span class="required-star">*</span></div>
+                  <label class="drop-zone" for="rulestripper_base-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>Any plain-text wordlist · filename extension does not matter</small><input id="rulestripper_base-file" type="file"></label>
+                  <div class="file-state" id="rulestripper_base-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="rulestripper_base-progress"></span></div>
+                  <div class="library-pick"><label for="library-rulestripper_base">Or reuse saved wordlist</label><select id="library-rulestripper_base" data-library-field="rulestripper_base"><option value="">Choose saved wordlist…</option></select></div>
+                </div>
+                <div class="upload-card" data-upload="rulestripper_target">
+                  <div class="upload-head"><div class="file-icon target-icon">T</div><div><h3>TARGET wordlist</h3><small>Passwords to decompose</small></div><span class="required-star">*</span></div>
+                  <label class="drop-zone" for="rulestripper_target-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>Any plain-text wordlist · filename extension does not matter</small><input id="rulestripper_target-file" type="file"></label>
+                  <div class="file-state" id="rulestripper_target-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="rulestripper_target-progress"></span></div>
+                  <div class="library-pick"><label for="library-rulestripper_target">Or reuse saved wordlist</label><select id="library-rulestripper_target" data-library-field="rulestripper_target"><option value="">Choose saved wordlist…</option></select></div>
+                </div>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">02</span><h2>Extraction settings</h2></div><p>Configure chain depth, stem requirements and worker ranges.</p></div></div>
+              <div class="form-grid three-col">
+                <label class="field"><span>Maximum chain depth</span><input id="rulestripper-max-depth" type="number" min="0" max="31" value="0"><small>0 = Hashcat maximum (31).</small></label>
+                <label class="field"><span>Minimum stem length</span><input id="rulestripper-min-stem" type="number" min="1" max="256" value="4"></label>
+                <label class="field"><span>Leet ambiguity</span><input id="rulestripper-leet-amb" type="number" min="0" max="12" value="3"></label>
+                <label class="field"><span>Worker processes</span><input id="rulestripper-workers" type="number" min="0" max="256" value="0"><small>0 = CPU count; Windows uses spawn.</small></label>
+                <label class="field"><span>Words per task</span><input id="rulestripper-chunk-size" type="number" min="0" value="0"><small>0 = automatic lazy range sizing.</small></label>
+                <label class="field"><span>ASCII offset range</span><input id="rulestripper-ascii-range" type="number" min="0" max="9" value="3"></label>
+              </div>
+              <div class="toggle-row"><div><b>Toggle-chain seed rules</b><small>Append common T-position and leet combinations.</small></div><label class="switch"><input id="rulestripper-toggle-seeds" type="checkbox" checked><span></span></label></div>
+              <div class="toggle-row"><div><b>Enhanced extraction modes</b><small>Insert, swap, range, character duplicate, ASCII, truncate and purge.</small></div><label class="switch"><input id="rulestripper-new-modes" type="checkbox" checked><span></span></label></div>
+              <div class="toggle-row"><div><b>Debug output</b><small>Print additional extraction diagnostics.</small></div><label class="switch"><input id="rulestripper-debug" type="checkbox"><span></span></label></div>
+              <label class="field" style="margin-top:14px"><span>Output filename</span><input id="rulestripper-output-name" type="text" value="rulestripper_rules.rule"></label>
+            </section>
+            <section class="concentrator-launch-bar">
+              <div><b id="rulestripper-launch-title">Rulestripper ready</b><small id="rulestripper-launch-hint">Upload BASE and TARGET wordlists, then start extraction.</small></div>
+              <div class="launch-actions"><button id="rulestripper-cancel" class="secondary-button" type="button" disabled>Cancel</button><button id="rulestripper-start" class="primary-button" type="button"><span>Extract rules</span><b>→</b></button></div>
+            </section>
+          </div>
+          <aside class="secondary-column">
+            <section class="panel stage-monitor-panel"><div class="panel-heading"><div class="utility-monitor-heading"><span class="side-panel-kicker">LIVE MONITOR</span><h2>Rulestripper status</h2></div><span class="live-pill" id="rulestripper-live-pill"><i></i> STANDBY</span></div><div class="stage-monitor-copy"><b id="rulestripper-current-stage">Waiting for Rulestripper</b><p id="rulestripper-stage-detail">Upload the two wordlists to begin.</p></div><div class="monitor-meta"><span class="monitor-meta-item"><small>RUNTIME</small><b id="rulestripper-runtime">00:00</b></span><span class="monitor-meta-item"><small>PID</small><b id="rulestripper-pid">—</b></span></div></section>
+            <section class="panel"><div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ARTIFACTS</span><h2>Rulestripper output</h2></div><span class="output-count" id="rulestripper-output-count">0</span></div><div id="rulestripper-output-list" class="output-list"><div class="empty-output"><span>▤</span><b>No outputs yet</b><small>Extracted Hashcat rules will appear here.</small></div></div></section>
+            <section class="panel notes-panel"><div class="notes-icon">⛓</div><h3>Shared-memory execution</h3><div class="note-row"><span>01</span><p>BASE and TARGET are packed directly from disk into shared UTF-8 buffers with uint64 offsets.</p></div><div class="note-row"><span>02</span><p>Workers attach by shared-memory descriptor; Pool tasks carry only start/stop indexes.</p></div><div class="note-row"><span>03</span><p>The same worker initializer is compatible with Windows spawn and POSIX fork.</p></div></section>
+          </aside>
+        </div>
+      </div><!-- /rulestripper-view -->
+
+      <div id="minimizer-view" hidden>
+        <section class="page-heading" id="minimizer">
+          <div><div class="eyebrow">HASHCAT RULESET CLEANUP <span class="eyebrow-line"></span> FUNCTIONAL SIGNATURES</div><h1>Rule Minimizer<span class="title-period">.</span></h1><p>Remove functionally equivalent Hashcat rules while preserving the first occurrence and original ranking order.</p></div>
+          <div class="heading-badge"><span class="badge-orbit">≋</span><div><b>Signature analysis</b><small>Probe-driven deduplication</small></div></div>
+        </section>
+        <div class="content-grid utility-tool-grid">
+          <div class="primary-column">
+            <section class="panel">
+              <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">01</span><h2>Ruleset input</h2></div><p>Upload a Hashcat .rule file or reuse a saved ruleset.</p></div><span class="required-pill">1 REQUIRED</span></div>
+              <div class="upload-grid two-col">
+                <div class="upload-card" data-upload="minimizer_rules">
+                  <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Input rules</h3><small>One Hashcat rule per line</small></div><span class="required-star">*</span></div>
+                  <label class="drop-zone" for="minimizer_rules-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>.rule, .rules or .txt</small><input id="minimizer_rules-file" type="file" accept=".rule,.rules,.hr,.hashcat,.txt,text/plain"></label>
+                  <div class="file-state" id="minimizer_rules-state"><span class="file-state-dot"></span><span>No file selected</span></div><div class="upload-progress"><span id="minimizer_rules-progress"></span></div>
+                  <div class="library-pick"><label for="library-minimizer_rules">Or reuse saved rule file</label><select id="library-minimizer_rules" data-library-field="minimizer_rules"><option value="">Choose saved rule file…</option></select></div>
+                </div>
+                <div class="upload-card" data-upload="minimizer_probe">
+                  <div class="upload-head"><div class="file-icon target-icon">P</div><div><h3>Extra probe wordlist</h3><small>Optional words added to the built-in probe set</small></div></div>
+                  <label class="drop-zone" for="minimizer_probe-file"><span class="upload-cloud">↑</span><strong>Choose a file <em>or drop it here</em></strong><small>Optional .txt / .lst</small><input id="minimizer_probe-file" type="file" accept=".txt,.lst,.dict,.wordlist,text/plain"></label>
+                  <div class="file-state" id="minimizer_probe-state"><span class="file-state-dot"></span><span>No probe wordlist selected</span></div><div class="upload-progress"><span id="minimizer_probe-progress"></span></div>
+                  <div class="library-pick"><label for="library-minimizer_probe">Or reuse saved wordlist</label><select id="library-minimizer_probe" data-library-field="minimizer_probe"><option value="">Choose saved wordlist…</option></select></div>
+                </div>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">02</span><h2>Probe and performance settings</h2></div><p>Built-in probes cover Hashcat opcodes and long position arguments.</p></div></div>
+              <div class="form-grid three-col">
+                <label class="field"><span>Probe words from file</span><input id="minimizer-probe-words" type="number" min="1" max="1000000" value="50"></label>
+                <label class="field"><span>Worker processes</span><input id="minimizer-workers" type="number" min="0" max="256" value="1"><small>0 = automatic worker count.</small></label>
+                <label class="field"><span>Random seed</span><input id="minimizer-seed" type="number" min="0" value="42"></label>
+              </div>
+              <label class="field" style="margin-top:14px"><span>Additional probe words (whitespace separated)</span><textarea id="minimizer-extra-probes" rows="3" placeholder="password admin letmein root test"></textarea></label>
+              <div class="toggle-row"><div><b>Multibyte / Unicode mode</b><small>Apply rules to UTF-8 byte sequences and add Unicode probes.</small></div><label class="switch"><input id="minimizer-multibyte" type="checkbox"><span></span></label></div>
+              <label class="field" style="margin-top:14px"><span>Output filename</span><input id="minimizer-output-name" type="text" value="minimized_rules.rule"></label>
+            </section>
+            <section class="concentrator-launch-bar">
+              <div><b id="minimizer-launch-title">Rule Minimizer ready</b><small id="minimizer-launch-hint">Upload a ruleset, configure probes and launch minimization.</small></div>
+              <div class="launch-actions"><button id="minimizer-cancel" class="secondary-button" type="button" disabled>Cancel</button><button id="minimizer-start" class="primary-button" type="button"><span>Minimize rules</span><b>→</b></button></div>
+            </section>
+          </div>
+          <aside class="secondary-column">
+            <section class="panel stage-monitor-panel"><div class="panel-heading"><div class="utility-monitor-heading"><span class="side-panel-kicker">LIVE MONITOR</span><h2>Minimizer status</h2></div><span class="live-pill" id="minimizer-live-pill"><i></i> STANDBY</span></div><div class="stage-monitor-copy"><b id="minimizer-current-stage">Waiting for Rule Minimizer</b><p id="minimizer-stage-detail">Upload a ruleset to begin.</p></div><div class="monitor-meta"><span class="monitor-meta-item"><small>RUNTIME</small><b id="minimizer-runtime">00:00</b></span><span class="monitor-meta-item"><small>PID</small><b id="minimizer-pid">—</b></span></div></section>
+            <section class="panel"><div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ARTIFACTS</span><h2>Minimizer output</h2></div><span class="output-count" id="minimizer-output-count">0</span></div><div id="minimizer-output-list" class="output-list"><div class="empty-output"><span>▤</span><b>No outputs yet</b><small>Minimized Hashcat rules will appear here.</small></div></div></section>
+            <section class="panel notes-panel"><div class="notes-icon">≋</div><h3>Functional minimization</h3><div class="note-row"><span>01</span><p>Rules are compared by their outputs over a carefully curated probe set.</p></div><div class="note-row"><span>02</span><p>Earlier rules are retained when later rules have identical signatures.</p></div><div class="note-row"><span>03</span><p>Optional probe files and extra words extend the signature set.</p></div></section>
+          </aside>
+        </div>
+      </div><!-- /minimizer-view -->
+
       <div id="system-view" hidden>
         <section class="page-heading storage-page-heading" id="run-storage">
           <div class="storage-heading-copy">
@@ -475,7 +584,7 @@
           <article class="metric-card"><div class="metric-label">ENGINE STATUS</div><div class="metric-value" id="storage-engine-state">READY</div><div class="metric-note" id="storage-engine-note">No active run detected</div></article>
         </section>
         <section class="panel storage-cleanup-panel">
-          <div class="panel-heading"><div class="panel-heading-copy storage-panel-heading-copy"><span class="side-panel-kicker">GLOBAL CLEANUP</span><h2>Delete run directories</h2><p>Remove saved run folders from all three tools in one operation.</p></div><span class="subtle-tag storage-destructive-tag">DESTRUCTIVE ACTION</span></div>
+          <div class="panel-heading"><div class="panel-heading-copy storage-panel-heading-copy"><span class="side-panel-kicker">GLOBAL CLEANUP</span><h2>Delete run directories</h2><p>Remove saved run folders from all server-side tools in one operation.</p></div><span class="subtle-tag storage-destructive-tag">DESTRUCTIVE ACTION</span></div>
           <div class="storage-warning"><span class="storage-warning-icon">!</span><div><b>This permanently removes saved run data</b><p>All folders directly inside <code>runs/</code> will be deleted except <code>runs/uploads/</code>. This includes generated outputs, engine logs, partial results and historical run files. The action cannot be undone.</p></div></div>
           <div class="storage-cleanup-footer"><div><b id="storage-cleanup-summary">Loading run storage summary…</b><small>Authentication settings, application files, temporary inputs and the reusable runs/library/ wordlist/rules folders are not deleted.</small></div><button id="delete-run-directories" class="danger-action-button" type="button" disabled><span aria-hidden="true">⌫</span> Delete all run folders</button></div>
           <div class="storage-feedback" id="storage-feedback" role="status" aria-live="polite"></div>
@@ -492,9 +601,9 @@
       <section class="content-grid system-page about-grid" id="about-grid" hidden>
         <div class="primary-column">
           <section class="panel about-intro-panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">THE PROJECT</span><h2>One toolchain, three workflows</h2></div></div>
-            <p class="about-copy">RULEOPS brings RULEST, Rule Ranker and Concentrator together in one authenticated local interface. Processing runs on your machine and uses your available CPU and GPU resources, with a focus on efficient local workflows.</p>
-            <div class="about-feature-tags"><span>GPU accelerated</span><span>Local processing</span><span>Community-driven</span></div>
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">THE PROJECT</span><h2>One toolchain, six integrated tools</h2></div></div>
+            <p class="about-copy">RULEOPS brings six rule-generation, extraction, ranking and cleanup utilities together in one authenticated local interface. Processing runs on your machine and uses your available CPU and GPU resources, with reusable inputs and a focus on efficient local workflows.</p>
+            <div class="about-feature-tags"><span>GPU accelerated</span><span>Local processing</span><span>MIT License</span></div>
           </section>
           <section class="panel usecases-panel" id="about-usecases-panel">
             <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">TOOLCHAIN</span><h2>What each program does</h2></div></div>
@@ -525,6 +634,36 @@
                   <li>Kneser–Ney Markov training and best-first rule generation</li>
                   <li>Normalize, deduplicate and refine large multi-file rule libraries</li>
                 </ul>
+              </article>
+              <article class="usecase-card" data-tool="rulestripper">
+                <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">⛓</span><div><b>Rulestripper</b><small>Extract rule chains from BASE/TARGET</small></div></div>
+                <ul class="usecase-list">
+                  <li>Empirically decompose target words into Hashcat rule chains</li>
+                  <li>Fourteen extraction modes including insert, swap, range and purge</li>
+                  <li>Shared UTF-8 buffers, uint64 offsets and compact BASE membership</li>
+                  <li>Spawn-safe multiprocessing for Windows and POSIX systems</li>
+                </ul>
+                <a class="about-tool-link" href="#rulestripper" data-nav-tool="rulestripper">Open Rulestripper →</a>
+              </article>
+              <article class="usecase-card" data-tool="minimizer">
+                <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">≋</span><div><b>Rule Minimizer</b><small>Functional Hashcat rule deduplication</small></div></div>
+                <ul class="usecase-list">
+                  <li>Compare rule signatures over built-in probe words</li>
+                  <li>Keep the earliest rule when signatures are equivalent</li>
+                  <li>Extend probes with user wordlists or extra words</li>
+                  <li>Optional Unicode-aware multibyte processing</li>
+                </ul>
+                <a class="about-tool-link" href="#minimizer" data-nav-tool="minimizer">Open Rule Minimizer →</a>
+              </article>
+              <article class="usecase-card" data-tool="email-extractor">
+                <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">＠</span><div><b>Email Rule Extractor</b><small>Generate rules from email patterns</small></div></div>
+                <ul class="usecase-list">
+                  <li>Analyze usernames, trailing digits and domain patterns</li>
+                  <li>Accept plain email and hash:email input formats</li>
+                  <li>Apply optional domain filtering and pattern controls</li>
+                  <li>Export generated Hashcat rules directly from the browser</li>
+                </ul>
+                <a class="about-tool-link" href="/email-rule-extractor.html">Open Email Rule Extractor →</a>
               </article>
             </div>
           </section>
@@ -562,7 +701,7 @@
       </div><!-- /system-view -->
 
       <section class="panel log-panel" id="live-log" tabindex="-1" aria-label="Live tool log">
-        <div class="panel-heading log-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ENGINE OUTPUT</span><h2>Live log</h2><p>Live output from the active RULEST, Rule Ranker or Concentrator job.</p></div><div class="log-actions"><span class="log-live"><i></i> LIVE STREAM</span><button id="wrap-log" class="small-ghost" type="button" aria-pressed="true">Wrap: ON</button><button id="expand-log" class="small-ghost" type="button" aria-expanded="false">Expand</button><button id="download-log" class="small-ghost" type="button">↓ Export log</button></div></div>
+        <div class="panel-heading log-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ENGINE OUTPUT</span><h2>Live log</h2><p>Live output from the active RULEST, Ranker, Concentrator, Rulestripper or Minimizer job.</p></div><div class="log-actions"><span class="log-live"><i></i> LIVE STREAM</span><button id="wrap-log" class="small-ghost" type="button" aria-pressed="true">Wrap: ON</button><button id="expand-log" class="small-ghost" type="button" aria-expanded="false">Expand</button><button id="download-log" class="small-ghost" type="button">↓ Export log</button></div></div>
         <div class="log-clear-row">
           <div class="log-clear-copy"><b>Log history</b><small>Clear the visible stream and truncate the server-side <code>engine.log</code> file. New events will continue to appear.</small></div>
           <button id="clear-log" class="clear-logs-action" type="button" title="Clear visible logs and truncate the saved engine.log" aria-label="Clear log history">
@@ -590,6 +729,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   
-      <script src="/app.js?v=ruleops-2.5.0-about-cleanup&build=2.5.0-about-cleanup"></script>
+      <script src="/app.js?v=ruleops-2.6.0-integrated-tools&build=2.6.0-integrated-tools"></script>
 </body>
 </html>

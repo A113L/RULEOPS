@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Email Rule Extractor · RULEOPS</title>
+<link rel="stylesheet" href="/styles.css?v=2.6.1-ui-polish">
+<link rel="stylesheet" href="/email-rule-extractor.css?v=2.6.1">
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand">RULEOPS <span>· TOOLCHAIN</span></a>
+  <ul class="nav-links">
+    <li><a href="/">Workspace</a></li>
+    <li><a href="/#about">About</a></li>
+    <li><a href="/email-rule-extractor.html" class="active">Email Extractor</a></li>
+  </ul>
+</nav>
+<div class="wrap">
+
+<div class="hero">
+  <span class="hero-eyebrow">Hashcat Rule Extractor</span>
+  <h1>Email Rule <span class="accent">Extractor</span></h1>
+  <p class="hero-sub">Generate Hashcat rules from email list patterns. Analyzes trailing digits, username formats, and domain patterns to produce targeted rule files.</p>
+  <div class="badges">
+    <span class="badge bi">Dual format support</span>
+    <span class="badge bg">Pattern recognition</span>
+    <span class="badge bc">Domain filtering</span>
+    <span class="badge bp">Client-side only</span>
+  </div>
+</div>
+
+<div class="gc3">
+  <div>
+    <div class="card">
+      <div class="st"><span class="dot" style="background:var(--indigo)"></span>Upload Email List</div>
+      <div id="status-messages"></div>
+      <div style="margin-bottom:1.25rem">
+        <label>Email List File</label>
+        <div class="uzone" id="email-upload-area">
+          <input type="file" id="email-file" accept=".txt,.csv" style="display:none">
+          <svg class="uzone-icon" xmlns="http://www.w3.org/2000/svg" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          <p style="color:var(--t2);font-size:.875rem;margin-bottom:.5rem">Drag & drop email list or click to browse</p>
+          <p style="font-size:.78rem;color:var(--t3)">One email per line · .txt, .csv (hash:email or plain)</p>
+          <button type="button" class="btn btn-g" style="margin-top:.75rem" id="select-file-btn">Select File</button>
+        </div>
+        <div id="email-file-info"></div>
+      </div>
+      <div style="margin-bottom:1.25rem">
+        <label>Domain Filter (optional)</label>
+        <input type="text" id="domain-filter" placeholder="e.g. gmail.com,protonmail.com (leave blank for all)">
+        <p style="font-size:.78rem;color:var(--t3);margin-top:.3rem">Comma-separated, case-insensitive. Only keep matching domains.</p>
+      </div>
+      <div style="margin-bottom:1.25rem">
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+          <input type="checkbox" id="extract-digits" checked>
+          <span>Extract trailing digit patterns only (skip emails without trailing digits in username)</span>
+        </label>
+      </div>
+      <div class="btn-row">
+        <button id="extract-btn" class="btn btn-p" disabled>Extract Rules</button>
+        <button id="clear-btn" class="btn btn-g">Clear</button>
+      </div>
+    </div>
+    <div id="results-section" class="card" style="display:none">
+      <div class="st"><span class="dot" style="background:var(--green)"></span>Extracted Rules</div>
+      <div id="results-content"></div>
+      <div class="btn-row" style="margin-top:1rem">
+        <button id="download-rules-btn" class="btn btn-p">⬇ Download .rule file</button>
+      </div>
+    </div>
+  </div>
+  <div>
+    <div class="card">
+      <div class="st2">Extraction Workflow</div>
+      <div class="steps">
+        <div class="step"><div class="step-t">Parse addresses</div><div class="step-d">Split each email into username and domain. Supports hash:email format.</div></div>
+        <div class="step"><div class="step-t">Pattern analysis</div><div class="step-d">Detect recurring digit suffixes or full local-part depending on option.</div></div>
+        <div class="step"><div class="step-t">Generate rules</div><div class="step-d">Produce Hashcat rule syntax ($c$h$a$r$...).</div></div>
+        <div class="step"><div class="step-t">Export</div><div class="step-d">Download .rule file ready for Hashcat (-r).</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="st2">Supported Formats</div>
+      <div style="font-size:.84rem;color:var(--t2);display:flex;flex-direction:column;gap:.5rem">
+        <div><code style="color:var(--cyan);font-size:.78rem">user@domain.com</code><br><span style="color:var(--t3)">Standard email format</span></div>
+        <div><code style="color:var(--cyan);font-size:.78rem">hash:user123@domain.com</code><br><span style="color:var(--t3)">Hash:Email (colon separated)</span></div>
+        <div><code style="color:var(--cyan);font-size:.78rem">user+tag@domain.com</code><br><span style="color:var(--t3)">Sub-addressing (local-part fully used)</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<footer class="site-footer" style="border-top:1px solid var(--b);padding:1.5rem 1rem;margin-top:2rem;text-align:center;color:var(--t3);font-size:.78rem">
+  <a href="/">Back to RULEOPS workspace</a>
+</footer>
+
+<script src="/email-rule-extractor.js?v=2.6.1" defer></script>
+</body>
+</html>

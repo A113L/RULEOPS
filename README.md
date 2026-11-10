@@ -1,6 +1,6 @@
 # RULEOPS — Hashcat Rule Toolchain
 
-RULEOPS is a unified, dark Cleanlooks-inspired workbench for three complementary Hashcat ruleset tools: RULEST, Rule Ranker and Concentrator. RULEST generates rulesets; Rule Ranker scores candidate rules, optimizes existing rulesets with CELF, and analyzes ranking CSV files. All three tools share one authenticated UI, LAN server, live log, job monitor, output/download area and global run-storage manager.
+RULEOPS is a unified local-first workbench for six complementary Hashcat rule tools: RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Email Rule Extractor. RULEST generates rulesets; Ranker scores and CELF-optimizes them; Concentrator extracts, generates and cleans rule collections; Rulestripper derives rule chains from BASE/TARGET wordlists; Rule Minimizer removes behaviorally equivalent rules; and Email Rule Extractor generates rules from email-list patterns. The server-based tools share one authenticated UI, LAN server, live log, job monitor, output/download area and run-storage manager. Email Rule Extractor runs entirely in the browser.
 
 ## Requirements
 
@@ -114,7 +114,7 @@ For the strongest repeatability, use the same RULEST version, Python/NumPy versi
 
 Monitor cards use a muted section label above a separately spaced title and readable status detail. The Rule Ranker mode selector offers **Adaptive MAB** and **Legacy exhaustive** at the top of the ranking workspace.
 
-Use the persistent **RULEOPS sidebar** to open any of the three programs: expand **RULEST** for Run workspace, Engine tuning and GPU diagnostics, or select **Rule Ranker** and **Concentrator** directly. All three programs use the same application password, LAN address, live log, output area and single-job controller. Only one engine job can run at a time, which avoids unintended competition for GPU memory and compute.
+Use the persistent **RULEOPS sidebar** to open the six tools: expand **RULEST** for Run workspace, Engine tuning and GPU diagnostics, or select **Rule Ranker**, **Concentrator**, **Rulestripper**, **Rule Minimizer** or **Email Extractor** directly. Server-side jobs share the same application password, LAN address, live log, output area and single-job controller. Only one server-side job can run at a time, which avoids unintended competition for GPU memory and compute. Email Rule Extractor is a browser-only utility and does not start an engine job.
 
 Rule Ranker provides three workflows:
 
@@ -125,6 +125,32 @@ Rule Ranker provides three workflows:
 All Ranker workflows stream their output into the shared **Live activity** panel and place generated files in the shared downloads list. Ranker supports cancellation (partial files already written are preserved); safe-checkpoint Pause/Resume is available only for the RULEST engine. Uploaded input files are temporary server-side copies and are removed after the job completes, fails or is cancelled. Re-upload wordlists and cracked-password lists before a subsequent Ranker workflow. Generated output files remain in `runs/<run-id>/`.
 
 The Ranker command-line package is also available directly through `run_ranker.py`; its original CLI options remain available. See [`RANKER_README.md`](RANKER_README.md) for standalone CLI examples.
+
+## Rulestripper integration
+
+Rulestripper extracts Hashcat rule chains empirically by decomposing TARGET words into BASE-word stems and transformations. The integrated runner is `run_rulestripper.py`; it keeps BASE/TARGET text in packed UTF-8 shared-memory buffers with `uint64` offsets, uses a compact shared BASE membership table and target-keyed shared postings, and sends only `(start, stop)` range descriptors through the multiprocessing pool. On Windows it explicitly uses the `spawn` start method; POSIX uses `fork` by default. The original 14 extraction modes and toggle-chain seeds remain available.
+
+Standalone example:
+
+```bash
+python run_rulestripper.py BASE.txt TARGET.txt --output extracted.rule --workers 0 --chunk-size 0
+```
+
+In the Control Center, open **Rulestripper**, upload or select reusable BASE and TARGET wordlists, configure extraction depth and modes, then start the job. Upload acceptance is content-based rather than extension-based: ordinary non-empty text files are accepted with or without a suffix (for example `wordlist`, `targets.found` or `dump.data`), while obvious binary payloads are rejected.
+
+## Rule Minimizer integration
+
+The standalone `minimizer.py` utility removes functionally equivalent Hashcat rules by comparing the outputs they produce over a configurable probe set. It preserves the first occurrence in the input ruleset, and supports built-in probes, additional words, an optional probe wordlist, worker processes and UTF-8 multibyte mode. It is exposed as **Rule Minimizer** in the sidebar and shares the Control Center's upload library, job monitor, cancellation and output browser.
+
+Standalone example:
+
+```bash
+python minimizer.py input.rule --output minimized.rule --workers 1
+```
+
+## Email Rule Extractor
+
+**Email Extractor** is a client-side page at `/email-rule-extractor.html`. It accepts plain email lists and `hash:email` files, can filter by domain, detects username/digit patterns and exports a Hashcat `.rule` file. Input data is processed in the browser and is not uploaded to the RULEOPS server.
 
 ## GPU diagnostics
 
@@ -143,36 +169,15 @@ Open **Live activity** and click **Clear log history**. After confirmation, the 
 
 ## Concentrator integration
 
-The web Control Center includes the original `concentrator.py` processor as a third tool beside RULEST Engine and Rule Ranker. It exposes the source CLI's four processing workflows:
+The web Control Center includes the original `concentrator.py` processor alongside RULEST Engine and Rule Ranker. It exposes the source CLI's four processing workflows:
 
 - **Extract** — frequency-ranked extraction or statistical (Markov-weighted) extraction.
 - **Combinatorial** — valid token-chain generation with target and length bounds.
 - **Markov** — Kneser–Ney training and best-first rule generation.
 - **Process & clean** — minimum-occurrence, top-N, functional-minimization, inverse and Hashcat cleanup filters in the source-defined order.
 
-All three tools share one authenticated web server, LAN listener, live log, output browser and upload-cleanup lifecycle. Only one job can use the engine at a time. Concentrator uses its original CLI through a non-interactive web mode; high-memory actions that need explicit approval are controlled by the **Confirm high-memory operations** switch. The standalone interactive CLI remains available by running `python concentrator.py` directly.
+RULEST, Rule Ranker, Concentrator, Rulestripper and Rule Minimizer share one authenticated web server, LAN listener, live log, output browser and upload-cleanup lifecycle. Only one job can use the engine at a time. Concentrator uses its original CLI through a non-interactive web mode; high-memory actions that need explicit approval are controlled by the **Confirm high-memory operations** switch. The standalone interactive CLI remains available by running `python concentrator.py` directly.
 
 ## Sidebar navigation and run storage
 
-The sidebar is the primary application navigator. Select **RULEST** to expand its workspace, engine tuning and GPU diagnostics pages. Select **Rule Ranker** or **Concentrator** to open those tools. **Live activity** remains available as a shared monitor across all three programs. Under **System → Run storage**, review the number of saved run folders, files and disk usage. **Delete all run folders** removes saved RULEST, Ranker and Concentrator run directories after an explicit confirmation. It is blocked while a job is active or an upload is in progress. The cleanup deliberately preserves `runs/uploads/`, `auth.json`, application files and configuration; generated outputs, logs and partial results in run folders are permanently deleted. On narrow screens, the sidebar becomes a compact horizontal tool bar; the RULEST submenu opens as a dropdown.
-
-## About, donations and support
-
-RULEOPS brings RULEST, Rule Ranker and Concentrator together in one local-first toolchain. Processing runs on your machine and uses the CPU and GPU resources available to the application. The **About** page inside the Control Center describes each tool and provides project support information.
-
-### Optional donations
-
-If RULEOPS is useful to you, voluntary cryptocurrency donations are welcome and help support maintenance and future development. The wallet addresses are shown in the **About** page inside the application:
-
-- ETH: `0x597c06b19bc90876f6375b8d1348b34c94f223a4`
-- Bitcoin: `13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ`
-- Litecoin: `LLDEKP1L7Zs99cYHSVdxXHZPUaR5Hcpand`
-- Ravencoin: `RHXGULWc3jcgSHB9LAEmRCGnddRemnZ6hu`
-- Tron: `TWCr67GVVWYmPhDadGFzqWu5rcWuqwD8gi`
-
-### Support
-
-For help, bug reports and feedback:
-
-- Email: `nullpointer@i2pmail.org`
-- Discord: `a_1_1_3_1`
+The sidebar is the primary application navigator. Select **RULEST** to expand its workspace, engine tuning and GPU diagnostics pages. Select **Rule Ranker**, **Concentrator**, **Rulestripper** or **Rule Minimizer** to open their integrated workspaces; **Email Extractor** opens its browser-only page. **Live activity** remains available as a shared monitor across all server-side tools. Under **System → Run storage**, review the number of saved run folders, files and disk usage. **Delete all run folders** removes saved RULEST, Ranker, Concentrator, Rulestripper and Minimizer run directories after an explicit confirmation. It is blocked while a job is active or an upload is in progress. The cleanup deliberately preserves `runs/uploads/`, `auth.json`, application files and configuration; generated outputs, logs and partial results in run folders are permanently deleted. On narrow screens, the sidebar becomes a compact horizontal tool bar; the RULEST submenu opens as a dropdown.

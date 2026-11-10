@@ -107,7 +107,7 @@ def test_ui_exposes_three_tools_four_concentrator_modes_and_legacy_selector():
         assert f'data-concentrator-panel="{mode}"' in html
     assert 'data-rank-mode="legacy"' in html
     assert 'data-rank-mode="mab"' in html
-    assert "activeTool = ['ranker', 'concentrator'].includes(tool) ? tool : 'rulest'" in js
+    assert "activeTool = ['ranker', 'concentrator', 'rulestripper', 'minimizer'].includes(tool) ? tool : 'rulest'" in js
     assert ".concentrator-mode-tab.active" in css
     assert ".rank-mode-tab.active" in css
 

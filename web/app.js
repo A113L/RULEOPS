@@ -5,6 +5,8 @@ const uploadState = {
   ranker_wordlist: null, ranker_cracked: null, ranker_rules: null,
   ranker_source_csv: null, ranker_source_rules: null, ranker_analysis_csv: null,
   concentrator_files: [],
+  rulestripper_base: null, rulestripper_target: null,
+  minimizer_rules: null, minimizer_probe: null,
 };
 const uploadInProgress = Object.fromEntries(Object.keys(uploadState).map((key) => [key, false]));
 let activeTool = 'rulest';
@@ -34,6 +36,8 @@ let latestStatusJobId = null;
 const LIBRARY_FIELD_CATEGORIES = {
   base: 'wordlists', target: 'wordlists', ranker_wordlist: 'wordlists', ranker_cracked: 'wordlists',
   seed: 'rules', ranker_rules: 'rules', ranker_source_rules: 'rules', concentrator_files: 'rules',
+  rulestripper_base: 'wordlists', rulestripper_target: 'wordlists',
+  minimizer_rules: 'rules', minimizer_probe: 'wordlists',
 };
 try { completionSoundEnabled = localStorage.getItem('ruleops-completion-sound') !== 'off'; } catch {}
 
@@ -316,7 +320,7 @@ function uploadFile(field, file) {
   } else stateEl.textContent = `Uploading ${file.name}…`;
   if (progress) progress.style.width = '0%';
   const xhr = new XMLHttpRequest();
-  const uploadEndpoint = field.startsWith('ranker_') ? `/api/ranker/upload/${field}` : `/api/upload/${field}`;
+  const uploadEndpoint = field.startsWith('ranker_') ? `/api/ranker/upload/${field}` : ['rulestripper_base','rulestripper_target','minimizer_rules','minimizer_probe'].includes(field) ? `/api/tools/upload/${field}` : `/api/upload/${field}`;
   xhr.open('POST', `${uploadEndpoint}?filename=${encodeURIComponent(file.name)}`);
   xhr.setRequestHeader('Content-Type', 'application/octet-stream');
   xhr.setRequestHeader('X-CSRF-Token', csrfToken);
@@ -334,7 +338,7 @@ function uploadFile(field, file) {
         stateEl.classList.remove('error'); stateEl.textContent = `✓ ${result.name} · ${humanSize(result.size)}`;
       } else setUploadCard(field, file);
       if (progress) progress.style.width = '100%';
-      const uploadLabels = { base: 'BASE', target: 'TARGET', seed: 'Seed rules', ranker_wordlist: 'Base wordlist', ranker_cracked: 'Cracked-password list', ranker_rules: 'Candidate rules', ranker_source_csv: 'Ranking CSV', ranker_source_rules: 'Optimization ruleset', ranker_analysis_csv: 'Analysis CSV' };
+      const uploadLabels = { base: 'BASE', target: 'TARGET', seed: 'Seed rules', ranker_wordlist: 'Base wordlist', ranker_cracked: 'Cracked-password list', ranker_rules: 'Candidate rules', ranker_source_csv: 'Ranking CSV', ranker_source_rules: 'Optimization ruleset', ranker_analysis_csv: 'Analysis CSV', rulestripper_base: 'Rulestripper BASE', rulestripper_target: 'Rulestripper TARGET', minimizer_rules: 'Minimizer rules', minimizer_probe: 'Minimizer probe wordlist' };
       toast(`${uploadLabels[field] || field} uploaded successfully.`);
       if (result.library) await refreshLibraryMenus();
     } else {
@@ -473,7 +477,9 @@ function renderOutputs(outputs = []) {
   $('output-count').textContent = outputs.length;
   $('ranker-output-count').textContent = outputs.length;
   $('concentrator-output-count').textContent = outputs.length;
-  ['output-list', 'ranker-output-list', 'concentrator-output-list'].forEach((rootId) => {
+  if ($('rulestripper-output-count')) $('rulestripper-output-count').textContent = outputs.length;
+  if ($('minimizer-output-count')) $('minimizer-output-count').textContent = outputs.length;
+  ['output-list', 'ranker-output-list', 'concentrator-output-list', 'rulestripper-output-list', 'minimizer-output-list'].forEach((rootId) => {
     const root = $(rootId); if (!root) return; root.innerHTML = '';
     if (!outputs.length) {
       const empty = document.createElement('div'); empty.className = 'empty-output';
@@ -508,7 +514,7 @@ function updateLocalEngineBadge(data) {
   })();
   card.dataset.engineState = badge.state;
   label.textContent = badge.label;
-  const toolNames = { rulest: 'RULEST', ranker: 'RULE RANKER', concentrator: 'CONCENTRATOR' };
+  const toolNames = { rulest: 'RULEST', ranker: 'RULE RANKER', concentrator: 'CONCENTRATOR', rulestripper: 'RULESTRIPPER', minimizer: 'RULE MINIMIZER' };
   const activeTool = toolNames[data.tool] || 'engine';
   card.setAttribute('aria-label', `Local engine status: ${badge.label.toLowerCase()}${badge.state === 'running' || badge.state === 'paused' || badge.state === 'stopping' ? ` · ${activeTool}` : ''}`);
   card.title = badge.state === 'running' ? `${activeTool} is processing.` : badge.state === 'paused' ? `${activeTool} is paused.` : badge.state === 'stopping' ? `${activeTool} is stopping.` : `Local engine ${badge.label.toLowerCase()}.`;
@@ -636,10 +642,30 @@ function renderStatus(data) {
   $('concentrator-live-pill').innerHTML = `<span></span> ${concentratorRunning ? (data.status === 'stopping' ? 'CANCELLING' : 'RUNNING') : data.status === 'completed' && data.tool === 'concentrator' ? 'COMPLETE' : data.status === 'stopped' && data.tool === 'concentrator' ? 'CANCELLED' : data.status === 'failed' && data.tool === 'concentrator' ? 'FAILED' : 'STANDBY'}`;
   $('concentrator-cancel').disabled = !concentratorRunning || data.status === 'stopping';
   $('start-concentrator-run').disabled = running;
+  const utilityTools = {
+    rulestripper: { label: 'Rulestripper', start: 'rulestripper-start', cancel: 'rulestripper-cancel', stage: 'rulestripper-current-stage', detail: 'rulestripper-stage-detail', runtime: 'rulestripper-runtime', pid: 'rulestripper-pid', pill: 'rulestripper-live-pill', waiting: 'Waiting for Rulestripper' },
+    minimizer: { label: 'Rule Minimizer', start: 'minimizer-start', cancel: 'minimizer-cancel', stage: 'minimizer-current-stage', detail: 'minimizer-stage-detail', runtime: 'minimizer-runtime', pid: 'minimizer-pid', pill: 'minimizer-live-pill', waiting: 'Waiting for Rule Minimizer' },
+  };
+  Object.entries(utilityTools).forEach(([tool, ids]) => {
+    const active = data.tool === tool;
+    const toolRunning = running && active;
+    $(ids.stage).textContent = active ? (data.stage || ids.waiting) : ids.waiting;
+    $(ids.detail).textContent = active ? (data.stage_detail || `${ids.label} output will appear here.`) : `Configure inputs and start ${ids.label}.`;
+    $(ids.runtime).textContent = active ? fmtTime(data.elapsed) : '00:00';
+    $(ids.pid).textContent = active && data.pid ? data.pid : '—';
+    $(ids.pill).classList.toggle('running', toolRunning);
+    $(ids.pill).innerHTML = `<i></i> ${toolRunning ? (data.status === 'stopping' ? 'CANCELLING' : 'RUNNING') : active && data.status === 'completed' ? 'COMPLETE' : active && data.status === 'stopped' ? 'CANCELLED' : active && data.status === 'failed' ? 'FAILED' : 'STANDBY'}`;
+    $(ids.start).disabled = running;
+    $(ids.cancel).disabled = !toolRunning || data.status === 'stopping';
+  });
   if (data.tool === 'ranker') {
     $('terminal-tool-label').textContent = 'rule-ranker / stdout';
   } else if (data.tool === 'concentrator') {
     $('terminal-tool-label').textContent = 'concentrator-v3.5 / stdout';
+  } else if (data.tool === 'rulestripper') {
+    $('terminal-tool-label').textContent = 'rulestripper / stdout';
+  } else if (data.tool === 'minimizer') {
+    $('terminal-tool-label').textContent = 'rule-minimizer / stdout';
   } else {
     $('terminal-tool-label').textContent = 'rulest-engine / stdout';
   }
@@ -883,10 +909,12 @@ async function clearLogHistoryFromUi() {
 }
 
 function setActiveTool(tool, scroll = false) {
-  activeTool = ['ranker', 'concentrator'].includes(tool) ? tool : 'rulest';
+  activeTool = ['ranker', 'concentrator', 'rulestripper', 'minimizer'].includes(tool) ? tool : 'rulest';
   $('rulest-view').hidden = activeTool !== 'rulest';
   $('ranker-view').hidden = activeTool !== 'ranker';
   $('concentrator-view').hidden = activeTool !== 'concentrator';
+  $('rulestripper-view').hidden = activeTool !== 'rulestripper';
+  $('minimizer-view').hidden = activeTool !== 'minimizer';
   const systemView = $('system-view');
   if (systemView) systemView.hidden = true;
 
@@ -894,6 +922,8 @@ function setActiveTool(tool, scroll = false) {
     rulest: 'Run workspace',
     ranker: 'Rule Ranker',
     concentrator: 'Concentrator',
+    rulestripper: 'Rulestripper',
+    minimizer: 'Rule Minimizer',
   };
   const breadcrumb = document.querySelector('.breadcrumb strong');
   if (breadcrumb && !['#tuning', '#gpu-diagnostic', '#live-log'].includes(window.location.hash)) {
@@ -916,7 +946,9 @@ function setActiveTool(tool, scroll = false) {
   try { sessionStorage.setItem('ruleops-active-tool', activeTool); } catch {}
   if (scroll) {
     const target = activeTool === 'ranker' ? $('ranker-view')
-      : activeTool === 'concentrator' ? $('concentrator-view') : $('workspace');
+      : activeTool === 'concentrator' ? $('concentrator-view')
+      : activeTool === 'rulestripper' ? $('rulestripper-view')
+        : activeTool === 'minimizer' ? $('minimizer-view') : $('workspace');
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
@@ -925,6 +957,8 @@ function setActiveSystemView(view = 'storage') {
   $('rulest-view').hidden = true;
   $('ranker-view').hidden = true;
   $('concentrator-view').hidden = true;
+  $('rulestripper-view').hidden = true;
+  $('minimizer-view').hidden = true;
   $('system-view').hidden = false;
   const aboutElements = new Set(['about', 'about-grid']);
   document.querySelectorAll('#system-view > section, #system-view > div').forEach((el) => {
@@ -1183,6 +1217,67 @@ async function cancelRankerRun() {
   catch (error) { toast(error.message, true); }
 }
 
+function readUtilityNumber(id, label) {
+  const raw = $(id).value;
+  if (raw === '') return '';
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < Number($(id).min || 0) || (id === 'rulestripper-max-depth' && value > 31)) {
+    throw new Error(`${label} must be a valid integer in the displayed range.`);
+  }
+  return value;
+}
+function utilityOptions(tool) {
+  if (tool === 'rulestripper') {
+    if (!uploadState.rulestripper_base || !uploadState.rulestripper_target) throw new Error('Upload or select both Rulestripper BASE and TARGET wordlists.');
+    return {
+      max_depth: readUtilityNumber('rulestripper-max-depth', 'Maximum depth'),
+      min_stem: readUtilityNumber('rulestripper-min-stem', 'Minimum stem length'),
+      leet_amb: readUtilityNumber('rulestripper-leet-amb', 'Leet ambiguity'),
+      workers: readUtilityNumber('rulestripper-workers', 'Worker count'),
+      chunk_size: readUtilityNumber('rulestripper-chunk-size', 'Chunk size'),
+      ascii_range: readUtilityNumber('rulestripper-ascii-range', 'ASCII range'),
+      no_toggle_seeds: !$('rulestripper-toggle-seeds').checked,
+      no_new_modes: !$('rulestripper-new-modes').checked,
+      debug: $('rulestripper-debug').checked,
+      output_name: $('rulestripper-output-name').value,
+    };
+  }
+  if (!uploadState.minimizer_rules) throw new Error('Upload or select a Hashcat rules file first.');
+  return {
+    workers: readUtilityNumber('minimizer-workers', 'Worker count'),
+    probe_words: readUtilityNumber('minimizer-probe-words', 'Probe word count'),
+    seed: readUtilityNumber('minimizer-seed', 'Random seed'),
+    extra_probes: $('minimizer-extra-probes').value,
+    multibyte: $('minimizer-multibyte').checked,
+    output_name: $('minimizer-output-name').value,
+  };
+}
+async function startUtilityRun(tool) {
+  const title = tool === 'rulestripper' ? 'Rulestripper' : 'Rule Minimizer';
+  const startButton = $(`${tool}-start`);
+  try {
+    const options = utilityOptions(tool);
+    startButton.disabled = true;
+    setActiveTool(tool);
+    resetLogView(`Starting ${title}`, `${title} output will appear here as the process begins.`);
+    lastLogId = 0;
+    const started = await apiPost('/api/tools/run', { tool, options });
+    trackStartedJob(started);
+    toast(`${title} started.`);
+    await pollStatus();
+  } catch (error) {
+    toast(error.message, true);
+    startButton.disabled = false;
+  }
+}
+async function cancelUtilityRun(tool) {
+  const title = tool === 'rulestripper' ? 'Rulestripper' : 'Rule Minimizer';
+  if (!window.confirm(`Cancel the active ${title} process? Any output already written will be preserved.`)) return;
+  $(`${tool}-cancel`).disabled = true;
+  try { await apiPost('/api/tools/cancel', {}); toast(`${title} cancellation requested.`); await pollStatus(); }
+  catch (error) { toast(error.message, true); }
+}
+
 function initializeApp() {
   initDepthOverrides(); setDefaults(); configureFileInputs(); configureLibrarySelectors();
   const soundToggle = $('completion-sound');
@@ -1207,6 +1302,10 @@ function initializeApp() {
   $('ranker-cancel').addEventListener('click', cancelRankerRun);
   $('start-concentrator-run').addEventListener('click', startConcentratorRun);
   $('concentrator-cancel').addEventListener('click', cancelConcentratorRun);
+  $('rulestripper-start').addEventListener('click', () => startUtilityRun('rulestripper'));
+  $('rulestripper-cancel').addEventListener('click', () => cancelUtilityRun('rulestripper'));
+  $('minimizer-start').addEventListener('click', () => startUtilityRun('minimizer'));
+  $('minimizer-cancel').addEventListener('click', () => cancelUtilityRun('minimizer'));
   const navigateTo = (href) => {
     const target = href && href.startsWith('#') ? document.getElementById(href.slice(1)) : null;
     if (!target) return;
@@ -1214,13 +1313,15 @@ function initializeApp() {
     else if (href === '#about') setActiveSystemView('about');
     else if (href === '#ranker') setActiveTool('ranker');
     else if (href === '#concentrator') setActiveTool('concentrator');
+    else if (href === '#rulestripper') setActiveTool('rulestripper');
+    else if (href === '#minimizer') setActiveTool('minimizer');
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(href)) setActiveTool('rulest');
-    if (['#ranker', '#concentrator', '#run-storage'].includes(href)) setRulestMenuExpanded(false);
+    if (['#ranker', '#concentrator', '#rulestripper', '#minimizer', '#run-storage'].includes(href)) setRulestMenuExpanded(false);
 
     const breadcrumbLabels = {
       '#workspace': 'Run workspace', '#tuning': 'Engine tuning',
       '#gpu-diagnostic': 'GPU diagnostics', '#ranker': 'Rule Ranker',
-      '#concentrator': 'Concentrator', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
+      '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
     const breadcrumb = document.querySelector('.breadcrumb strong');
     if (breadcrumb) breadcrumb.textContent = breadcrumbLabels[href] || 'Workspace';
@@ -1261,7 +1362,7 @@ function initializeApp() {
   selectConcentratorMode('extract');
   let storedTool = 'rulest';
   try { storedTool = sessionStorage.getItem('ruleops-active-tool') || 'rulest'; } catch {}
-  const initialTool = window.location.hash === '#ranker' ? 'ranker' : window.location.hash === '#concentrator' ? 'concentrator' : ['#workspace', '#tuning', '#gpu-diagnostic'].includes(window.location.hash) ? 'rulest' : storedTool;
+  const initialTool = window.location.hash === '#ranker' ? 'ranker' : window.location.hash === '#concentrator' ? 'concentrator' : window.location.hash === '#rulestripper' ? 'rulestripper' : window.location.hash === '#minimizer' ? 'minimizer' : ['#workspace', '#tuning', '#gpu-diagnostic'].includes(window.location.hash) ? 'rulest' : storedTool;
   setActiveTool(initialTool);
   if (window.location.hash === '#run-storage') setActiveSystemView('storage');
   if (window.location.hash === '#about') setActiveSystemView('about');
@@ -1298,7 +1399,7 @@ function initializeApp() {
   });
   const navLinks = Array.from(document.querySelectorAll('[data-nav-tool], [data-nav-section]'));
   const setActiveNav = (hash) => {
-    const wanted = hash || (activeTool === 'ranker' ? '#ranker' : activeTool === 'concentrator' ? '#concentrator' : '#workspace');
+    const wanted = hash || (activeTool === 'ranker' ? '#ranker' : activeTool === 'concentrator' ? '#concentrator' : activeTool === 'rulestripper' ? '#rulestripper' : activeTool === 'minimizer' ? '#minimizer' : '#workspace');
     navLinks.forEach((link) => {
       const active = link.getAttribute('href') === wanted;
       link.classList.toggle('active', active);
@@ -1314,10 +1415,10 @@ function initializeApp() {
     }
     const labels = {
       '#workspace': 'Run workspace', '#tuning': 'Engine tuning', '#gpu-diagnostic': 'GPU diagnostics',
-      '#ranker': 'Rule Ranker', '#concentrator': 'Concentrator', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
+      '#ranker': 'Rule Ranker', '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
     const breadcrumb = document.querySelector('.breadcrumb strong');
-    if (breadcrumb) breadcrumb.textContent = labels[wanted] || (activeTool === 'ranker' ? 'Rule Ranker' : activeTool === 'concentrator' ? 'Concentrator' : 'Run workspace');
+    if (breadcrumb) breadcrumb.textContent = labels[wanted] || (activeTool === 'ranker' ? 'Rule Ranker' : activeTool === 'concentrator' ? 'Concentrator' : activeTool === 'rulestripper' ? 'Rulestripper' : activeTool === 'minimizer' ? 'Rule Minimizer' : 'Run workspace');
   };
   const handleNavigationState = () => {
     const hash = window.location.hash;
@@ -1325,6 +1426,8 @@ function initializeApp() {
     else if (hash === '#about') setActiveSystemView('about');
     else if (hash === '#ranker') setActiveTool('ranker');
     else if (hash === '#concentrator') setActiveTool('concentrator');
+    else if (hash === '#rulestripper') setActiveTool('rulestripper');
+    else if (hash === '#minimizer') setActiveTool('minimizer');
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(hash)) setActiveTool('rulest');
     setActiveNav(hash);
   };

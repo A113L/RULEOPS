@@ -266,6 +266,7 @@ def test_run_worker_cleans_uploaded_files_after_normal_completion(tmp_path, monk
     assert not base.exists() and not target.exists()
     assert all(value is None for value in app.UPLOADS_META.values())
     assert app.STATE["status"] == "completed"
+    assert app.STATE["pid"] == 12345  # Keep the completed child PID visible in LIVE MONITOR.
     assert {item["name"] for item in app.STATE["outputs"]} >= {"rules.txt", "engine.log"}
 
 

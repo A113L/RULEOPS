@@ -403,6 +403,76 @@ class PackedWordBuffer:
             raise
 
     @classmethod
+    def from_file(cls, path, *, lowercase=False, encoding="utf-8"):
+        """Load a newline-delimited wordlist directly into shared memory.
+
+        The file is scanned twice so no Python list of millions of strings or
+        intermediate packed bytearray is required.  Empty lines are skipped,
+        matching the existing RULEST wordlist loader.
+        """
+        source = os.fspath(path)
+
+        def iter_words():
+            with open(source, "r", encoding=encoding, errors="replace", newline="") as stream:
+                for line in stream:
+                    word = line.rstrip("\r\n")
+                    if not word:
+                        continue
+                    yield word.lower() if lowercase else word
+
+        word_count = 0
+        byte_length = 0
+        for word in iter_words():
+            encoded = word.encode("utf-8")
+            word_count += 1
+            byte_length += len(encoded)
+
+        instance = cls.__new__(cls)
+        instance.word_count = word_count
+        instance.byte_length = byte_length
+        instance.encoding = "utf-8"
+        instance._owner = True
+        instance._closed = False
+        instance.data_shm = SharedMemory(create=True, size=max(1, byte_length))
+        instance.offsets_shm = None
+        instance._offsets = None
+        try:
+            instance.offsets_shm = SharedMemory(create=True, size=(word_count + 1) * 8)
+            offsets = instance.offsets_shm.buf.cast("Q")
+            data = instance.data_shm.buf
+            position = 0
+            offsets[0] = 0
+            actual_count = 0
+            for word in iter_words():
+                encoded = word.encode("utf-8")
+                end = position + len(encoded)
+                if encoded:
+                    data[position:end] = encoded
+                position = end
+                actual_count += 1
+                offsets[actual_count] = position
+            if actual_count != word_count or position != byte_length:
+                raise RuntimeError("Wordlist changed while it was being packed into shared memory")
+            instance._offsets = offsets
+        except Exception:
+            if instance._offsets is not None:
+                try:
+                    instance._offsets.release()
+                except Exception:
+                    pass
+            if instance.offsets_shm is not None:
+                instance.offsets_shm.close()
+                instance.offsets_shm.unlink()
+            instance.data_shm.close()
+            instance.data_shm.unlink()
+            raise
+        return instance
+
+    def descriptor(self):
+        """Return the compact attachment descriptor used by spawn workers."""
+        return (self.data_name, self.offsets_name, self.word_count, self.byte_length, self.encoding)
+
+    @classmethod
     def attach(cls, data_name, offsets_name, word_count, byte_length, encoding="utf-8"):
         """Attach to a buffer created in another process."""
         instance = cls.__new__(cls)

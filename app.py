@@ -65,12 +65,15 @@ UPLOADS_META = {
     "ranker_wordlist": None, "ranker_cracked": None, "ranker_rules": None,
     "ranker_source_csv": None, "ranker_source_rules": None, "ranker_analysis_csv": None,
     "concentrator_files": [],
+    "rulestripper_base": None, "rulestripper_target": None,
+    "minimizer_rules": None, "minimizer_probe": None,
 }
 RANKER_UPLOAD_FIELDS = {
     "ranker_wordlist", "ranker_cracked", "ranker_rules",
     "ranker_source_csv", "ranker_source_rules", "ranker_analysis_csv",
 }
 CONCENTRATOR_UPLOAD_FIELDS = {"concentrator_files"}
+UTILITY_UPLOAD_FIELDS = {"rulestripper_base", "rulestripper_target", "minimizer_rules", "minimizer_probe"}
 # Wordlists and rule files are retained in a reusable library. CSV uploads remain
 # temporary because they are workflow-specific and can be re-created cheaply.
 LIBRARY_FIELD_CATEGORIES = {
@@ -78,6 +81,8 @@ LIBRARY_FIELD_CATEGORIES = {
     "ranker_wordlist": "wordlists", "ranker_cracked": "wordlists",
     "seed": "rules", "ranker_rules": "rules",
     "ranker_source_rules": "rules", "concentrator_files": "rules",
+    "rulestripper_base": "wordlists", "rulestripper_target": "wordlists",
+    "minimizer_rules": "rules", "minimizer_probe": "wordlists",
 }
 LIBRARY_ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}_[A-Za-z0-9._ -]{1,180}$")
 MAX_CONCENTRATOR_FILES = 32
@@ -1072,6 +1077,22 @@ def update_stage(line: str):
             stage = "Rule Ranker · GPU scoring"
         else:
             stage = "Rule Ranker"
+    elif active_tool == "rulestripper" and stage is None:
+        upper = clean.upper()
+        if "[LOAD]" in upper or "SHARED RAM" in upper:
+            stage = "Rulestripper · Loading shared wordlists"
+        elif "EXTRACTING" in upper or "TARGET WORDS" in upper or "RULES EXTRACTED" in upper:
+            stage = "Rulestripper · Rule extraction"
+        elif "TOGGLE SEEDS" in upper or "[P0]" in upper:
+            stage = "Rulestripper · Finalizing rules"
+    elif active_tool == "minimizer" and stage is None:
+        upper = clean.upper()
+        if "PROBE" in upper or "SIGNATURE" in upper or "COMPUT" in upper:
+            stage = "Rule Minimizer · Signature computation"
+        elif "DUPLICAT" in upper or "COLLISION" in upper or "REMOVED" in upper:
+            stage = "Rule Minimizer · Deduplication"
+        elif "[OUT]" in upper or "WRITTEN" in upper:
+            stage = "Rule Minimizer · Writing output"
     elif active_tool == "concentrator" and stage is None:
         upper = clean.upper()
         if "MARKOV" in upper:
@@ -1421,6 +1442,64 @@ def build_concentrator_command(mode: str, options: dict, run_dir: Path):
     return cmd, output_name
 
 
+
+def build_rulestripper_command(options: dict, run_dir: Path):
+    """Build the spawn-safe shared-memory Rulestripper CLI command."""
+    base = _uploaded_path("rulestripper_base", "Rulestripper BASE wordlist")
+    target = _uploaded_path("rulestripper_target", "Rulestripper TARGET wordlist")
+    output_name = safe_name(options.get("output_name", "rulestripper_rules.rule"), "rulestripper_rules.rule")
+    if output_name.lower() in {"control.txt", "engine.log", "auth.json"}:
+        raise ValueError("This output filename is reserved.")
+    output_path = run_dir / output_name
+    cmd = [sys.executable, "-u", str(ROOT / "run_rulestripper.py"), str(base), str(target), "--output", str(output_path)]
+    for key, flag, default, minimum, maximum in (
+        ("max_depth", "--max-depth", 0, 0, 31),
+        ("min_stem", "--min-stem", 4, 1, 256),
+        ("leet_amb", "--leet-amb", 3, 0, 12),
+        ("workers", "--workers", 0, 0, 256),
+        ("chunk_size", "--chunk-size", 0, 0, 10_000_000),
+        ("ascii_range", "--ascii-range", 3, 0, 9),
+    ):
+        value = _int_option(options, key, default, minimum, maximum)
+        cmd += [flag, str(value)]
+    if options.get("no_toggle_seeds"):
+        cmd.append("--no-toggle-seeds")
+    if options.get("no_new_modes"):
+        cmd.append("--no-new-modes")
+    if options.get("debug"):
+        cmd.append("--debug")
+    cmd.append("--no-color")
+    return cmd, output_name
+
+
+def build_minimizer_command(options: dict, run_dir: Path):
+    """Build the standalone Hashcat-rule minimizer command."""
+    rules = _uploaded_path("minimizer_rules", "Hashcat rules file")
+    output_name = safe_name(options.get("output_name", "minimized_rules.rule"), "minimized_rules.rule")
+    if output_name.lower() in {"control.txt", "engine.log", "auth.json"}:
+        raise ValueError("This output filename is reserved.")
+    output_path = run_dir / output_name
+    workers = _int_option(options, "workers", 1, 0, 256)
+    probe_words = _int_option(options, "probe_words", 50, 1, 1_000_000)
+    seed = _int_option(options, "seed", 42, 0, 2_147_483_647)
+    cmd = [sys.executable, "-u", str(ROOT / "minimizer.py"), str(rules), "-o", str(output_path),
+           "--workers", str(workers), "--probe-words", str(probe_words), "--seed", str(seed)]
+    probe = UPLOADS_META.get("minimizer_probe")
+    if probe:
+        if not Path(probe["path"]).is_file():
+            raise ValueError("The selected minimizer probe wordlist is missing.")
+        cmd += ["--probe-file", str(probe["path"])]
+    extras = str(options.get("extra_probes", "") or "").strip()
+    if extras:
+        words = extras.split()
+        if len(words) > 256:
+            raise ValueError("At most 256 extra probe words may be supplied.")
+        cmd += ["--extra-probes", *words]
+    if options.get("multibyte"):
+        cmd.append("--multibyte")
+    return cmd, output_name
+
+
 def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_baseline_bytes=None):
     global PROCESS, RUN_THREAD
     env = os.environ.copy()
@@ -1565,7 +1644,9 @@ def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_b
         with LOCK:
             PROCESS = None
             RUN_THREAD = None
-            STATE["pid"] = None
+            # Retain the last child PID for completed/failed utility LIVE MONITORs.
+            # Each new job resets pid to None before launching its subprocess.
+            STATE["pid"] = proc.pid if proc is not None else None
             STATE["paused"] = False
             STATE["pause_requested"] = False
             STATE["finished_at"] = time.time()
@@ -1656,6 +1737,52 @@ class RulestHTTPServer(ThreadingHTTPServer):
             except OSError:
                 pass
         super().server_close()
+
+
+def _is_probably_plain_text_file(path: Path) -> bool:
+    """Classify a Rulestripper wordlist by content, never by filename extension.
+
+    Samples the beginning, middle and end instead of reading a potentially huge
+    wordlist again. UTF-8 and legacy single-byte text are accepted; NUL bytes and
+    a high proportion of control bytes are treated as binary. This deliberately
+    mirrors the useful part of the Linux ``file`` command without depending on
+    an external utility that may not exist on Windows.
+    """
+    try:
+        size = path.stat().st_size
+        if size <= 0:
+            return False
+        sample_size = 32 * 1024
+        offsets = sorted({0, max(0, (size // 2) - (sample_size // 2)), max(0, size - sample_size)})
+        with path.open("rb") as stream:
+            for offset in offsets:
+                stream.seek(offset)
+                sample = stream.read(sample_size)
+                if not sample:
+                    continue
+                if b"\x00" in sample:
+                    return False
+                control_count = sum(
+                    1 for value in sample
+                    if (value < 32 and value not in (9, 10, 12, 13)) or value == 127
+                )
+                if control_count > max(2, len(sample) // 200):
+                    return False
+        return True
+    except OSError:
+        return False
+
+
+def _validate_rulestripper_upload(field: str, filename: str, path: Path) -> None:
+    """Accept Rulestripper wordlists by content, regardless of filename/extension."""
+    if field not in {"rulestripper_base", "rulestripper_target"}:
+        return
+    if not _is_probably_plain_text_file(path):
+        raise ValueError(
+            "Rulestripper accepts plain-text wordlists regardless of filename extension; "
+            "binary files are not accepted."
+        )
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1756,6 +1883,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/app.js":
             self.serve_static("app.js", "text/javascript; charset=utf-8")
+        elif path == "/email-rule-extractor.html":
+            self.serve_static("email-rule-extractor.html", "text/html; charset=utf-8")
+        elif path == "/email-rule-extractor.css":
+            self.serve_static("email-rule-extractor.css", "text/css; charset=utf-8")
+        elif path == "/email-rule-extractor.js":
+            self.serve_static("email-rule-extractor.js", "text/javascript; charset=utf-8")
         elif path == "/styles.css":
             self.serve_static("styles.css", "text/css; charset=utf-8")
         elif path == "/api/devices":
@@ -1884,6 +2017,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_upload(parsed, ranker=True)
         elif parsed.path.startswith("/api/concentrator/upload/"):
             self.handle_upload(parsed, concentrator=True)
+        elif parsed.path.startswith("/api/tools/upload/"):
+            self.handle_upload(parsed, tools=True)
         elif parsed.path == "/api/run":
             self.handle_run()
         elif parsed.path == "/api/ranker/run":
@@ -1894,6 +2029,10 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_concentrator_run()
         elif parsed.path == "/api/concentrator/cancel":
             self.handle_concentrator_cancel()
+        elif parsed.path == "/api/tools/run":
+            self.handle_tools_run()
+        elif parsed.path == "/api/tools/cancel":
+            self.handle_tools_cancel()
         elif parsed.path == "/api/control":
             self.handle_control()
         elif parsed.path == "/api/logs/clear":
@@ -2175,10 +2314,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, **result})
 
-    def handle_upload(self, parsed, ranker=False, concentrator=False):
+    def handle_upload(self, parsed, ranker=False, concentrator=False, tools=False):
         field = parsed.path.rsplit("/", 1)[-1]
         allowed_fields = (CONCENTRATOR_UPLOAD_FIELDS if concentrator else
-                          RANKER_UPLOAD_FIELDS if ranker else {"base", "target", "seed"})
+                          RANKER_UPLOAD_FIELDS if ranker else
+                          UTILITY_UPLOAD_FIELDS if tools else {"base", "target", "seed"})
         if field not in allowed_fields:
             self.send_error(404)
             return
@@ -2189,6 +2329,18 @@ class Handler(BaseHTTPRequestHandler):
             extension = Path(requested_filename).suffix.lower()
             if extension not in {".rule", ".rules", ".hr", ".hashcat", ".txt", ".lst"}:
                 self.send_json({"error": "Concentrator accepts .rule, .rules, .hr, .hashcat, .txt and .lst files."}, 415)
+                return
+        if tools and field not in {"rulestripper_base", "rulestripper_target"}:
+            # Rulestripper wordlists are validated by their contents after the
+            # upload is streamed to disk. Do not infer text/binary type from the
+            # filename: users commonly create wordlists with names such as
+            # ``wordlist``, ``targets.found`` or ``dump.data``.
+            extension = Path(requested_filename).suffix.lower()
+            allowed = ({".rule", ".rules", ".txt", ".hr", ".hashcat"}
+                       if field == "minimizer_rules" else
+                       {".txt", ".lst", ".dict", ".wordlist"})
+            if extension and extension not in allowed:
+                self.send_json({"error": f"Unsupported file type for {field.replace('_', ' ')}."}, 415)
                 return
         try:
             length = self._declared_content_length(MAX_UPLOAD_BYTES)
@@ -2272,6 +2424,7 @@ class Handler(BaseHTTPRequestHandler):
             except (TimeoutError, ConnectionError, OSError):
                 self.close_connection = True
                 raise
+            _validate_rulestripper_upload(field, filename, stored)
 
             category = LIBRARY_FIELD_CATEGORIES.get(field)
             asset_id = None
@@ -2539,6 +2692,81 @@ class Handler(BaseHTTPRequestHandler):
         thread.start()
         self.send_json({"ok": True, "job_id": run_id, "output": output_name, "tool": "concentrator", "mode": mode})
 
+    def handle_tools_run(self):
+        """Launch the standalone Rulestripper or Hashcat-rule Minimizer utility."""
+        global RUN_THREAD
+        data = self.read_json_body(1024 * 1024)
+        if not isinstance(data, dict):
+            self.send_json({"error": "Invalid tool configuration."}, 400)
+            return
+        tool = str(data.get("tool", ""))
+        options = data.get("options") if isinstance(data.get("options"), dict) else {}
+        builders = {"rulestripper": build_rulestripper_command, "minimizer": build_minimizer_command}
+        builder = builders.get(tool)
+        if builder is None:
+            self.send_json({"error": "Choose Rulestripper or Rule Minimizer."}, 400)
+            return
+        with LOCK:
+            storage_ok, storage_message, storage_baseline_bytes = storage_preflight()
+            if not storage_ok:
+                self.send_json({"error": storage_message}, 507)
+                return
+            if STATE["status"] in ("running", "stopping"):
+                self.send_json({"error": "Another RULEOPS job is already running."}, 409)
+                return
+            if UPLOADS_ACTIVE:
+                self.send_json({"error": "Wait for active file uploads to finish before starting."}, 409)
+                return
+            run_id = uuid.uuid4().hex[:10]
+            run_dir = DATA / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                cmd, output_name = builder(options, run_dir)
+            except Exception as exc:
+                shutil.rmtree(run_dir, ignore_errors=True)
+                self.send_json({"error": str(exc)}, 400)
+                return
+            friendly = "Rulestripper" if tool == "rulestripper" else "Rule Minimizer"
+            STATE.update({
+                "status": "running", "tool": tool, "paused": False, "pause_requested": False,
+                "job_id": run_id, "started_at": time.time(), "finished_at": None, "pid": None,
+                "stage": f"{friendly} · Starting", "stage_detail": f"Launching {friendly}…",
+                "stage_started_at": time.time(), "progress": None, "progress_completed": None,
+                "progress_total": None, "progress_rate": None, "progress_rules": None, "exit_code": None,
+                "logs": [], "log_seq": 0, "log_generation": int(STATE.get("log_generation", 0)) + 1,
+                "outputs": [], "error": None, "control_file": None, "run_dir": str(run_dir),
+            })
+            add_log(f"[WEB] Starting {friendly}…")
+            add_log("[WEB] Inputs are mounted from the reusable library; temporary workflow files are cleaned after the job.")
+            add_log("[WEB] " + " ".join(cmd[2:]))
+        thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, None, tool, storage_baseline_bytes), daemon=True)
+        with LOCK:
+            RUN_THREAD = thread
+        thread.start()
+        self.send_json({"ok": True, "job_id": run_id, "output": output_name, "tool": tool})
+
+    def handle_tools_cancel(self):
+        with LOCK:
+            tool = STATE.get("tool")
+            if STATE["status"] not in ("running", "stopping") or tool not in {"rulestripper", "minimizer"}:
+                self.send_json({"error": "There is no active utility job to cancel."}, 409)
+                return
+            proc = PROCESS
+            STATE["status"] = "stopping"
+        add_log(f"[WEB] Cancellation requested for {tool}.")
+        if proc is not None and proc.poll() is None:
+            try:
+                if os.name == "nt":
+                    proc.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
+                else:
+                    os.killpg(proc.pid, signal.SIGINT)
+            except Exception:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+        self.send_json({"ok": True, "action": "cancel"})
+
     def handle_concentrator_cancel(self):
         with LOCK:
             if STATE["status"] not in ("running", "stopping") or STATE.get("tool") != "concentrator":
@@ -2719,7 +2947,7 @@ def main():
     server = RulestHTTPServer((args.host, args.port), Handler)
     actual_port = server.server_address[1]
     print()
-    print("  RULEOPS v2.5.0  /  HASHCAT RULE TOOLCHAIN")
+    print("  RULEOPS v2.6.0  /  HASHCAT RULE TOOLCHAIN")
     print(f"  Listening on: {args.host}:{actual_port}")
     print(f"  Connection limit: {MAX_CONCURRENT_CONNECTIONS} concurrent clients")
     print(f"  Upload limits: {MAX_UPLOAD_BYTES / 1024**3:.1f} GiB/file, {MAX_TOTAL_UPLOAD_BYTES / 1024**3:.1f} GiB total")

@@ -99,8 +99,8 @@ def test_email_extractor_uses_the_shared_ruleops_sidebar():
 def test_email_extractor_is_local_client_side_page():
     html = (ROOT / "web" / "email-rule-extractor.html").read_text(encoding="utf-8")
     js = (ROOT / "web" / "email-rule-extractor.js").read_text(encoding="utf-8")
-    assert 'src="/email-rule-extractor.js?v=2.6.1"' in html
-    assert 'href="/email-rule-extractor.css?v=2.6.4"' in html
+    assert 'src="/email-rule-extractor.js?v=2.6.2"' in html
+    assert 'href="/email-rule-extractor.css?v=2.6.5"' in html
     assert 'href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4"' in html
     assert "hcrt.pages.dev" not in html + js
     assert not re.search(r"<script\b(?![^>]*\bsrc=)[^>]*>", html, flags=re.I)
@@ -128,6 +128,19 @@ def test_email_extractor_uses_shared_dark_theme_without_broken_css_prelude():
     assert "--bg:" not in css  # inherit the canonical RULEOPS background token
     assert "var(--surface)" in css and "var(--accent)" in css
     assert "700;800&family=" not in css
+
+
+def test_email_extractor_fits_main_content_without_horizontal_overflow():
+    css = (ROOT / "web" / "email-rule-extractor.css").read_text(encoding="utf-8")
+    js = (ROOT / "web" / "email-rule-extractor.js").read_text(encoding="utf-8")
+
+    main_rule = re.search(r"\.email-extractor-main\s*\{([^}]*)\}", css)
+    assert main_rule, "Email Extractor main layout rule is missing"
+    assert "width: auto;" in main_rule.group(1)
+    assert "width: 100%;" not in main_rule.group(1)
+    assert "overflow-x:hidden" in js
+    assert "table-layout:fixed" in js
+    assert "table-layout: fixed;" in css
 
 
 def test_integrated_tool_panel_titles_and_descriptions_are_separate_blocks():

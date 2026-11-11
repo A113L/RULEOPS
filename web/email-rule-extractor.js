@@ -145,8 +145,8 @@
     const totalUnique = sorted.length;
     const totalOccurrences = sorted.reduce((acc, e) => acc + e.count, 0);
     let html = `<div class="s-ok" style="margin-bottom:1rem">✅ Extracted ${totalUnique} unique pattern(s) from ${totalOccurrences} matching emails.</div>`;
-    html += `<div style="max-height:360px; overflow-y:auto; border:1px solid var(--b); border-radius:var(--rs); background:rgba(0,0,0,0.2);">`;
-    html += `<table style="width:100%; border-collapse:collapse; font-size:0.8rem;">`;
+    html += `<div style="max-width:100%; max-height:360px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--b); border-radius:var(--rs); background:rgba(0,0,0,0.2);">`;
+    html += `<table style="width:100%; table-layout:fixed; border-collapse:collapse; font-size:0.8rem;">`;
     html += `<thead><tr style="background:var(--sf2);"><th style="padding:8px; text-align:left;">Pattern</th><th style="padding:8px; width:80px;">Count</th><th style="padding:8px;">Example</th></tr></thead><tbody>`;
     for (const entry of sorted.slice(0, 100)) {
       const exampleShort = entry.examples[0]?.length > 45 ? entry.examples[0].substring(0,42)+'...' : entry.examples[0] || '—';

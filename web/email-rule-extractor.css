@@ -310,14 +310,24 @@ label:has(input[type="checkbox"]) {
 .step-d { color: #8793a3; font-size: 9px; line-height: 1.6; }
 
 #results-content { min-width: 0; }
-#results-content table { color: #c5cfdb; }
+#results-content table {
+  width: 100%;
+  table-layout: fixed;
+  color: #c5cfdb;
+}
+#results-content th,
+#results-content td {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 #results-content th {
   color: #b8c6d7;
   font: 700 9px/1.4 var(--mono);
   letter-spacing: .04em;
   text-transform: uppercase;
 }
-#results-content td { line-height: 1.5; overflow-wrap: anywhere; }
+#results-content td { line-height: 1.5; }
 #results-content tr:hover td { background: rgba(184, 243, 107, .035); }
 .file-info {
   margin-top: 8px;
@@ -362,7 +372,12 @@ label:has(input[type="checkbox"]) {
 /* Email Extractor inside the canonical RULEOPS app shell/sidebar. */
 .email-extractor-main {
   min-width: 0;
-  width: 100%;
+  width: auto;
+}
+.email-extractor-main > .wrap,
+.email-extractor-main .gc3,
+.email-extractor-main .gc3 > * {
+  min-width: 0;
 }
 .email-extractor-main > .topbar {
   min-width: 0;

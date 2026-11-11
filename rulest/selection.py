@@ -547,7 +547,17 @@ def _celf_select_from_upper_bounds(
                     progress.refresh()
                     last_refresh[0] = now
             elif heartbeat is not None:
-                heartbeat.set_desc(_status_line())
+                # report_scan() can be called once for every exact GPU score.
+                # On large CELF runs that may mean hundreds of thousands of
+                # calls; formatting the full status line each time is pure
+                # controller overhead because ActivityHeartbeat already
+                # throttles terminal rendering internally. Throttle before
+                # building the string as well, while keeping the heartbeat
+                # responsive at the same 0.5 s cadence as the TTY progress bar.
+                now = time.monotonic()
+                if now - last_refresh[0] >= 0.5:
+                    heartbeat.set_desc(_status_line())
+                    last_refresh[0] = now
 
         def exact_score(index):
             # Full exact scan WITH hit-slot recording -- the expensive path

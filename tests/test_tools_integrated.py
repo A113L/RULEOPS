@@ -99,9 +99,9 @@ def test_email_extractor_uses_the_shared_ruleops_sidebar():
 def test_email_extractor_is_local_client_side_page():
     html = (ROOT / "web" / "email-rule-extractor.html").read_text(encoding="utf-8")
     js = (ROOT / "web" / "email-rule-extractor.js").read_text(encoding="utf-8")
-    assert 'src="/email-rule-extractor.js?v=2.6.2"' in html
-    assert 'href="/email-rule-extractor.css?v=2.6.5"' in html
-    assert 'href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4"' in html
+    assert 'src="/email-rule-extractor.js?v=2.6.2&metrics=2.6.6"' in html
+    assert 'href="/email-rule-extractor.css?v=2.6.5&metrics=2.6.6"' in html
+    assert 'href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4&metrics=2.6.5"' in html
     assert "hcrt.pages.dev" not in html + js
     assert not re.search(r"<script\b(?![^>]*\bsrc=)[^>]*>", html, flags=re.I)
     assert "FileReader" in js

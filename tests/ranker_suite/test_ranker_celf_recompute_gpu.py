@@ -398,3 +398,116 @@ def test_exact_batch_kernel_uses_compact_result_stream():
     assert "hit_total_count" in kernel
     assert "atomic_add(hit_total_count, 1)" in kernel
     assert "hit_slots[rule_idx * words_per_rule_cap" not in kernel
+
+
+class TestOpenCLBuildWarnings:
+    def test_opencl_build_suppresses_only_pyopencl_compiler_notice(self, monkeypatch):
+        import warnings
+
+        class FakeCompilerWarning(Warning):
+            pass
+
+        class FakeProgram:
+            def __init__(self, context, source):
+                self.context = context
+                self.source = source
+
+            def build(self, **kwargs):
+                warnings.warn(
+                    "Non-empty compiler output encountered. Set PYOPENCL_COMPILER_OUTPUT=1",
+                    FakeCompilerWarning,
+                )
+                warnings.warn("unrelated warning must remain visible", UserWarning)
+                return self
+
+        class FakeCL:
+            CompilerWarning = FakeCompilerWarning
+            Program = FakeProgram
+
+        monkeypatch.setattr(crg, "cl", FakeCL)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            program = crg._build_opencl_program("ctx", "kernel source", options=["-cl-std=CL1.2"])
+
+        assert isinstance(program, FakeProgram)
+        assert program.context == "ctx"
+        assert program.source == "kernel source"
+        assert len(caught) == 1
+        assert caught[0].category is UserWarning
+        assert str(caught[0].message) == "unrelated warning must remain visible"
+
+
+def test_celf_profile_reports_candidate_landscape_and_first_round_work(monkeypatch):
+    """The opt-in profile exposes upper-bound shape and first-winner effort."""
+    monkeypatch.setenv("RANKER_GREEDY_PROFILE", "1")
+    messages = []
+    monkeypatch.setattr(crg, "log", lambda message: messages.append(str(message)))
+
+    class _SilentProgress:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def update(self, *_args, **_kwargs):
+            pass
+
+        def set_postfix_str(self, *_args, **_kwargs):
+            pass
+
+        def set_postfix(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(crg, "ProgressBar", _SilentProgress)
+
+    class _ProfileScorer:
+        def __init__(self, *_args, **_kwargs):
+            self.active = set(range(10))
+            self.calls = 0
+            self.last_gpu_dispatches = 1
+
+        def score_batch(self, rule_indices, _wordlist_path):
+            indices = [int(i) for i in rule_indices]
+            self.calls += 1
+            # The first pass deliberately represents duplicate-inflated
+            # upper bounds; later singleton scores represent exact gains.
+            if self.calls == 1:
+                return np.asarray([10, 8, 7, 0], dtype=np.int64)
+            exact = {0: 5, 1: 6, 2: 4, 3: 0}
+            tightened = {0: 5, 1: 8, 2: 7, 3: 0}
+            if len(indices) > 1:
+                return np.asarray([tightened[i] for i in indices], dtype=np.int64)
+            return np.asarray([exact[indices[0]]], dtype=np.int64)
+
+        def apply_winner_and_clear(self, _rule_idx, _rule_str, _wordlist_path):
+            self.active.difference_update(range(6))
+            return 6
+
+        def remaining_active_count(self):
+            return len(self.active)
+
+    monkeypatch.setattr(crg, "_GpuScorer", _ProfileScorer)
+    rules = ["seed", "winner", "challenger", "no-hit"]
+    selected = crg.celf_select_recompute_gpu(
+        rules,
+        wordlist_path="unused.txt",
+        cracked_hashes_sorted=np.arange(10, dtype=np.uint32),
+        rule_batch_size=4,
+        words_per_gpu_batch=100,
+        device_id=None,
+        budget=1,
+        cost_alpha=0.0,
+    )
+
+    assert selected == [("winner", 6)]
+    log_text = "\n".join(messages)
+    assert "candidate pool: total=4, active=3 (75.00%), zero-hit=1" in log_text
+    assert "top-1 priority upper bound: rule=0, raw_hits=10" in log_text
+    assert "top-10 raw upper-bound distribution: n=3, min=7, median=8.0" in log_text
+    assert "top-100 raw upper-bound distribution: n=3" in log_text
+    assert "first winner: rule=1, exact_gain=6, seed_rule=0" in log_text
+    assert "exact_verified=2 (excluding seed)" in log_text
+    assert "upper_bounds_tightened=2" in log_text
+    assert "seed_exact=1" in log_text
+    assert "winner_after_celf=" in log_text

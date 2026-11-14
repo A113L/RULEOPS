@@ -63,6 +63,7 @@ import math
 import os
 import sys
 import time
+import warnings
 
 import numpy as np
 import pyopencl as cl
@@ -77,6 +78,26 @@ from .ranker_postprocess import (
     optimized_wordlist_iterator, load_cracked_universe, load_candidate_rules,
     select_device, save_output, parse_budgets, save_output_multi,
 )
+
+
+def _build_opencl_program(context, source, **build_kwargs):
+    """Build an OpenCL program without printing PyOpenCL's benign compiler notice.
+
+    Some OpenCL drivers emit informational text (for example optimization or
+    cache messages) during a successful build. PyOpenCL turns any non-empty
+    build output into ``CompilerWarning``. Suppress only that notice for this
+    build operation; real build failures and unrelated warnings remain visible.
+    """
+    compiler_warning = getattr(cl, "CompilerWarning", None)
+    with warnings.catch_warnings():
+        if compiler_warning is not None:
+            warnings.simplefilter("ignore", category=compiler_warning)
+        else:
+            # Compatibility fallback for older/minimal PyOpenCL bindings.
+            warnings.filterwarnings(
+                "ignore", message=r"^Non-empty compiler output encountered\.",
+            )
+        return cl.Program(context, source).build(**build_kwargs)
 
 # The full apply_hashcat_rule()/apply_single_command() C source is kept
 # in this module rather than imported from another implementation. The two
@@ -844,7 +865,7 @@ class _GpuScorer(_ResidentWordlistMixin):
                             else 0)
         self.queue = cl.CommandQueue(self.context, properties=queue_properties)
         src = get_recompute_kernel_source(num_cracked, self.hash_table_size)
-        prg = cl.Program(self.context, src).build()
+        prg = _build_opencl_program(self.context, src)
         self.score_kernel = prg.score_against_active_kernel
         self.clear_kernel = prg.apply_and_clear_kernel
         self.record_kernel = prg.score_single_and_record_kernel
@@ -1474,6 +1495,41 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
     n_active = len(candidate_heap)
     log(f"{green('Candidates with >=1 hit:')} {cyan(f'{n_active:,}')}/{cyan(f'{n_rules:,}')}")
 
+    # Describe the candidate landscape before greedy selection. The raw
+    # upper-bound kernel counts (word, rule) hits and can include duplicates;
+    # these are pruning bounds, NOT exact unique-coverage gains. Emit these
+    # diagnostics only when profiling is enabled to keep the default path
+    # free of an extra O(n_rules) analysis pass.
+    if profiling:
+        zero_hit = n_rules - n_active
+        active_pct = (100.0 * n_active / n_rules) if n_rules else 0.0
+        log(
+            f"[CELF profile] candidate pool: total={n_rules:,}, active={n_active:,} "
+            f"({active_pct:.2f}%), zero-hit={zero_hit:,}."
+        )
+        if candidate_heap:
+            _top_priority, top_idx, top_bound = candidate_heap[0]
+            top_priority = -float(_top_priority)
+            log(
+                f"[CELF profile] top-1 priority upper bound: rule={int(top_idx)}, "
+                f"raw_hits={int(top_bound):,}, priority={top_priority:,.4f}."
+            )
+        else:
+            log("[CELF profile] top-1 priority upper bound: none (no active candidates).")
+
+        active_bounds = upper_bound[upper_bound > 0]
+        for top_n in (10, 100):
+            take = min(top_n, int(active_bounds.size))
+            if take <= 0:
+                log(f"[CELF profile] top-{top_n} raw upper-bound distribution: n=0.")
+                continue
+            top_values = np.partition(active_bounds, active_bounds.size - take)[-take:]
+            log(
+                f"[CELF profile] top-{top_n} raw upper-bound distribution: n={take}, "
+                f"min={int(top_values.min()):,}, median={float(np.median(top_values)):,.1f}, "
+                f"mean={float(top_values.mean()):,.1f}, max={int(top_values.max()):,}."
+            )
+
     limit = budget if budget else n_active
     greedy_rescore_batch = max(
         1,
@@ -1493,6 +1549,14 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
     total_rescored_rules = 0
     total_gpu_dispatches = 0
     round_t0 = time.time()
+    first_round_exact_challengers = 0
+    first_round_batch_tightened = 0
+    first_round_seed_idx = None
+    first_round_winner_idx = None
+    first_round_winner_gain = None
+    first_round_elapsed = None
+    first_round_dispatches = 0
+    first_round_rescored = 0
 
     pbar = ProgressBar(total=limit, desc=cyan("CELF"),
                 unit="rule", bar_width=14)
@@ -1581,6 +1645,8 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
         # pick a winner either; it only ever tightens the heap.
         _neg_priority, seed_idx, _bound = heapq.heappop(candidate_heap)
         seed_idx = int(seed_idx)
+        if profiling and round_num == 1:
+            first_round_seed_idx = seed_idx
         with _Timed("seed_exact"):
             seed_gain = int(_score_batch_with_progress(
                 np.asarray([seed_idx], dtype=np.int64),
@@ -1650,6 +1716,10 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                                 np.asarray([ridx], dtype=np.int64), wordlist_path)[0])
                             exact[ridx] = (g, None)
                     dispatches_this_pick += len(resolve_batch)
+                if profiling and round_num == 1:
+                    # Count true deduplicated exact challenger evaluations,
+                    # excluding the seed candidate which is reported separately.
+                    first_round_exact_challengers += len(resolve_batch)
                 rescored_this_pick += len(resolve_batch)
                 total_rescored_rules += len(resolve_batch)
 
@@ -1698,6 +1768,8 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                     np.asarray(batch, dtype=np.int64),
                     _round_progress_callback("batch-tighten"))
             dispatches_this_pick += max(1, int(getattr(scorer, 'last_gpu_dispatches', 1)))
+            if profiling and round_num == 1:
+                first_round_batch_tightened += len(batch)
             rescored_this_pick += len(batch)
             total_rescored_rules += len(batch)
 
@@ -1730,6 +1802,27 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 f"CELF first round committed: winner={best_idx}, gain={best_gain:,}, "
                 f"elapsed={round_elapsed:.1f}s, gpu_dispatches={dispatches_this_pick:,}, "
                 f"rescored={rescored_this_pick:,}.")
+            if profiling:
+                first_round_winner_idx = int(best_idx)
+                first_round_winner_gain = int(best_gain)
+                first_round_elapsed = float(round_elapsed)
+                first_round_dispatches = int(dispatches_this_pick)
+                first_round_rescored = int(rescored_this_pick)
+                upper_bound_elapsed = float(prof.get("upper_bound_pass", (0, 0.0))[1])
+                log(
+                    f"[CELF profile] first winner: rule={first_round_winner_idx}, "
+                    f"exact_gain={first_round_winner_gain:,}, "
+                    f"seed_rule={first_round_seed_idx}, "
+                    f"winner_after_celf={first_round_elapsed:.2f}s, "
+                    f"upper_bound_plus_first_winner={upper_bound_elapsed + first_round_elapsed:.2f}s."
+                )
+                log(
+                    f"[CELF profile] first-round challenger work: "
+                    f"exact_verified={first_round_exact_challengers:,} (excluding seed), "
+                    f"upper_bounds_tightened={first_round_batch_tightened:,}, "
+                    f"seed_exact=1, total_rescored={first_round_rescored:,}, "
+                    f"gpu_dispatches={first_round_dispatches:,}."
+                )
         pbar.set_postfix({
             "round": round_num,
             "gpu_dispatches": dispatches_this_pick,

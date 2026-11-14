@@ -8,6 +8,12 @@
   let currentFileName = null;
   let lastExtractedRules = [];     // store { pattern, rule, count, example }
   let rawRuleLines = [];           // plain rule strings for download
+  let metricStatus = 'idle';
+  let metricStage = 'Waiting for a run';
+  let metricStartedAt = null;
+  let metricElapsedSeconds = 0;
+  let metricOutputFiles = 0;
+  let metricTimer = null;
 
   // DOM elements
   const fileInput = document.getElementById('email-file');
@@ -22,6 +28,67 @@
   const domainFilterInput = document.getElementById('domain-filter');
   const extractDigitsCheck = document.getElementById('extract-digits');
   const downloadBtn = document.getElementById('download-rules-btn');
+
+  const emailMetricEls = {
+    status: document.getElementById('email-metric-status'),
+    note: document.getElementById('email-metric-note'),
+    dot: document.getElementById('email-metric-dot'),
+    stage: document.getElementById('email-metric-stage'),
+    elapsed: document.getElementById('email-metric-elapsed'),
+    outputs: document.getElementById('email-metric-outputs'),
+  };
+
+  function formatMetricTime(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const remainder = total % 60;
+    return hours
+      ? `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+      : `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+  }
+
+  function renderEmailMetrics() {
+    const statusLabels = { idle: 'Idle', running: 'Running', completed: 'Completed', failed: 'Failed' };
+    const notes = {
+      idle: currentFileContent ? 'Ready to extract' : 'Ready to configure',
+      running: 'Analyzing email patterns in this browser',
+      completed: rawRuleLines.length ? 'Extraction finished · rules ready to download' : 'Extraction finished · no matching patterns',
+      failed: 'Check the extraction message below',
+    };
+    if (emailMetricEls.status) emailMetricEls.status.textContent = statusLabels[metricStatus] || 'Idle';
+    if (emailMetricEls.note) emailMetricEls.note.textContent = notes[metricStatus] || notes.idle;
+    if (emailMetricEls.dot) emailMetricEls.dot.dataset.state = metricStatus;
+    if (emailMetricEls.stage) emailMetricEls.stage.textContent = metricStage;
+    if (emailMetricEls.stage) emailMetricEls.stage.title = metricStage;
+    if (emailMetricEls.elapsed) {
+      const current = metricStatus === 'running' && metricStartedAt != null
+        ? (Date.now() - metricStartedAt) / 1000 : metricElapsedSeconds;
+      emailMetricEls.elapsed.textContent = formatMetricTime(current);
+    }
+    if (emailMetricEls.outputs) emailMetricEls.outputs.textContent = String(metricOutputFiles);
+  }
+
+  function setEmailMetricState(status, stage, { resetElapsed = false } = {}) {
+    metricStatus = status;
+    metricStage = stage;
+    if (resetElapsed) {
+      metricElapsedSeconds = 0;
+      metricStartedAt = null;
+    }
+    if (status === 'running') {
+      metricStartedAt = Date.now();
+      metricElapsedSeconds = 0;
+      if (metricTimer) clearInterval(metricTimer);
+      metricTimer = setInterval(renderEmailMetrics, 1000);
+    } else {
+      if (metricStartedAt != null) metricElapsedSeconds = (Date.now() - metricStartedAt) / 1000;
+      metricStartedAt = null;
+      if (metricTimer) clearInterval(metricTimer);
+      metricTimer = null;
+    }
+    renderEmailMetrics();
+  }
 
   // Helper: show status message
   function showStatus(msg, type = 'info') {
@@ -176,19 +243,25 @@
 
     const extractDigitsOnly = extractDigitsCheck.checked;
 
+    metricOutputFiles = 0;
+    setEmailMetricState('running', 'Analyzing email patterns');
     showStatus(`Processing ${currentFileName || 'file'}...`, 'info');
     // slight delay to allow UI update
     setTimeout(() => {
       try {
         const patternMap = processEmails(currentFileContent, domainSet, extractDigitsOnly);
         renderResults(patternMap);
+        metricOutputFiles = rawRuleLines.length ? 1 : 0;
         if (patternMap.size === 0) {
+          setEmailMetricState('completed', 'No matching patterns found');
           showStatus('No patterns extracted. Try adjusting domain filter or disable "trailing digits only" if emails have no numeric suffix.', 'info');
         } else {
+          setEmailMetricState('completed', `Extraction complete · ${patternMap.size.toLocaleString()} unique rules`);
           showStatus(`Extraction complete: ${patternMap.size} unique rules generated.`, 'success');
         }
       } catch (err) {
         console.error(err);
+        setEmailMetricState('failed', 'Extraction failed');
         showStatus(`Extraction error: ${err.message}`, 'error');
       }
     }, 10);
@@ -210,23 +283,29 @@
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    metricOutputFiles = 1;
+    setEmailMetricState('completed', 'Rules file downloaded');
     showStatus(`Downloaded ${rawRuleLines.length} rules.`, 'success');
   }
 
   // Read file
   function readFile(file) {
     if (!file) return;
+    metricOutputFiles = 0;
     const reader = new FileReader();
     reader.onload = (e) => {
       currentFileContent = e.target.result;
       currentFileName = file.name;
       fileInfoDiv.innerHTML = `<div class="file-info" style="background:var(--sf2); border-radius:var(--rs); padding:0.75rem; font-size:0.85rem;">📄 ${escapeHtml(file.name)} (${(file.size/1024).toFixed(1)} KB) loaded.</div>`;
       extractBtn.disabled = false;
+      metricOutputFiles = 0;
+      setEmailMetricState('idle', 'Email list loaded · ready to extract', { resetElapsed: true });
       showStatus(`File "${file.name}" loaded successfully. Ready to extract.`, 'success');
     };
     reader.onerror = () => {
       showStatus('Error reading file.', 'error');
       currentFileContent = null;
+      setEmailMetricState('failed', 'Could not read email list');
       extractBtn.disabled = true;
     };
     reader.readAsText(file, 'UTF-8');
@@ -241,6 +320,8 @@
     resultsSection.style.display = 'none';
     resultsContent.innerHTML = '';
     rawRuleLines = [];
+    metricOutputFiles = 0;
+    setEmailMetricState('idle', 'Waiting for a run', { resetElapsed: true });
     extractBtn.disabled = true;
     fileInput.value = '';
     domainFilterInput.value = '';
@@ -284,4 +365,5 @@
   setupDragAndDrop();
   extractBtn.disabled = true;
   resultsSection.style.display = 'none';
+  renderEmailMetrics();
 })();

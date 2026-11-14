@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile">
+  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile&metrics=2.6.5">
 </head>
 <body>
   <div class="app-shell">
@@ -78,11 +78,11 @@
         <div class="heading-badge"><span class="badge-orbit">✳</span><div><b>Precision mode</b><small>Every parameter in your control</small></div></div>
       </section>
 
-      <section class="metrics-grid" aria-label="Run metrics">
-        <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" id="metric-status">Idle</div><div class="metric-note"><span class="status-dot"></span><span id="status-note">Ready to configure</span></div></article>
-        <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" id="metric-stage">—</div><div class="metric-note">Live pipeline phase</div></article>
-        <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" id="metric-elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
-        <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" id="metric-outputs">0</div><div class="metric-note">Generated in this run</div></article>
+      <section class="metrics-grid" aria-label="RULEST run metrics" data-tool-metrics="rulest">
+        <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" id="metric-status" data-metric="status">Idle</div><div class="metric-note"><span class="status-dot" data-metric-dot></span><span id="status-note" data-metric="note">Ready to configure</span></div></article>
+        <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" id="metric-stage" data-metric="stage">—</div><div class="metric-note">Live pipeline phase</div></article>
+        <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" id="metric-elapsed" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
+        <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" id="metric-outputs" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
       </section>
 
       <div class="content-grid">
@@ -220,6 +220,13 @@
           <div><div class="eyebrow">HASHCAT RULESET OPTIMIZER <span class="eyebrow-line"></span> WORKBENCH</div><h1>Rule Ranker<span class="title-period">.</span></h1><p>Score candidate rules, optimize an existing ruleset with CELF, or analyze ranking CSV files.</p></div>
           <div class="heading-badge"><span class="badge-orbit">⇧</span><div><b>Three workflows</b><small>Ranking · Optimization · Analysis</small></div></div>
         </section>
+        <section class="metrics-grid tool-metrics-grid" aria-label="Rule Ranker run metrics" data-tool-metrics="ranker">
+          <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" data-metric="status">Idle</div><div class="metric-note"><span class="status-dot" data-metric-dot></span><span data-metric="note">Ready to configure</span></div></article>
+          <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for a Ranker job</div><div class="metric-note">Live pipeline phase</div></article>
+          <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
+          <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        </section>
+
 
         <section class="rank-mode-block rank-mode-block-prominent" id="ranker-engine-mode-card" aria-labelledby="rank-mode-heading">
           <div class="rank-mode-header">
@@ -379,6 +386,13 @@
           <div><div class="eyebrow">UNIFIED HASHCAT RULE PROCESSOR <span class="eyebrow-line"></span> TOOLKIT</div><h1>Concentrator<span class="title-period">.</span></h1><p>Extract, generate, normalize and refine Hashcat rule collections using the original Concentrator processing pipeline.</p></div>
           <div class="heading-badge"><span class="badge-orbit">⌘</span><div><b>Concentrator v3.5</b><small>Four processing workflows · CPU / OpenCL</small></div></div>
         </section>
+        <section class="metrics-grid tool-metrics-grid" aria-label="Concentrator run metrics" data-tool-metrics="concentrator">
+          <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" data-metric="status">Idle</div><div class="metric-note"><span class="status-dot" data-metric-dot></span><span data-metric="note">Ready to configure</span></div></article>
+          <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for a Concentrator job</div><div class="metric-note">Live pipeline phase</div></article>
+          <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
+          <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        </section>
+
 
         <section class="panel concentrator-input-panel">
           <div class="panel-heading"><div><span class="section-index">01</span><h2>Rule source files</h2><p>Upload one or more existing Hashcat rule files. Files are combined and analyzed by the original Concentrator loader.</p></div><span class="required-pill">1–32 FILES</span></div>
@@ -477,6 +491,13 @@
           <div><div class="eyebrow">HASHCAT RULE EXTRACTION <span class="eyebrow-line"></span> CPU · MULTIPROCESSING</div><h1>Rulestripper<span class="title-period">.</span></h1><p>Discover rule chains that transform BASE words into TARGET words. Large wordlists stay in shared memory; workers receive only index ranges.</p></div>
           <div class="heading-badge"><span class="badge-orbit">⛓</span><div><b>Spawn-safe engine</b><small>Shared UTF-8 · uint64 offsets</small></div></div>
         </section>
+        <section class="metrics-grid tool-metrics-grid" aria-label="Rulestripper run metrics" data-tool-metrics="rulestripper">
+          <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" data-metric="status">Idle</div><div class="metric-note"><span class="status-dot" data-metric-dot></span><span data-metric="note">Ready to configure</span></div></article>
+          <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for Rulestripper</div><div class="metric-note">Live pipeline phase</div></article>
+          <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
+          <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        </section>
+
         <div class="content-grid utility-tool-grid">
           <div class="primary-column">
             <section class="panel">
@@ -529,6 +550,13 @@
           <div><div class="eyebrow">HASHCAT RULESET CLEANUP <span class="eyebrow-line"></span> FUNCTIONAL SIGNATURES</div><h1>Rule Minimizer<span class="title-period">.</span></h1><p>Remove functionally equivalent Hashcat rules while preserving the first occurrence and original ranking order.</p></div>
           <div class="heading-badge"><span class="badge-orbit">≋</span><div><b>Signature analysis</b><small>Probe-driven deduplication</small></div></div>
         </section>
+        <section class="metrics-grid tool-metrics-grid" aria-label="Rule Minimizer run metrics" data-tool-metrics="minimizer">
+          <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" data-metric="status">Idle</div><div class="metric-note"><span class="status-dot" data-metric-dot></span><span data-metric="note">Ready to configure</span></div></article>
+          <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for Rule Minimizer</div><div class="metric-note">Live pipeline phase</div></article>
+          <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
+          <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        </section>
+
         <div class="content-grid utility-tool-grid">
           <div class="primary-column">
             <section class="panel">
@@ -733,6 +761,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   
-      <script src="/app.js?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile"></script>
+      <script src="/app.js?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile&metrics=2.6.5"></script>
 </body>
 </html>

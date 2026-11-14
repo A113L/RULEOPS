@@ -1192,3 +1192,10 @@
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+
+/* Shared per-tool run metric status indicator. */
+.metrics-grid .status-dot[data-state="running"]{background:var(--accent);box-shadow:0 0 10px #b8f36b80}
+.metrics-grid .status-dot[data-state="paused"]{background:#e6b75b;box-shadow:0 0 9px #e6b75b70}
+.metrics-grid .status-dot[data-state="completed"]{background:#8bdc92;box-shadow:0 0 8px #8bdc9270}
+.metrics-grid .status-dot[data-state="failed"],.metrics-grid .status-dot[data-state="offline"]{background:#ed7777;box-shadow:0 0 8px #ed777770}
+.metrics-grid .status-dot[data-state="stopped"]{background:#e6b75b;box-shadow:0 0 8px #e6b75b70}

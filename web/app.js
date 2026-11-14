@@ -472,21 +472,27 @@ function addLog(entry) {
   $('log-line-count').textContent = `${totalLogEvents.toLocaleString()} EVENTS`;
 }
 
-function renderOutputs(outputs = []) {
-  $('metric-outputs').textContent = outputs.length;
-  $('output-count').textContent = outputs.length;
-  $('ranker-output-count').textContent = outputs.length;
-  $('concentrator-output-count').textContent = outputs.length;
-  if ($('rulestripper-output-count')) $('rulestripper-output-count').textContent = outputs.length;
-  if ($('minimizer-output-count')) $('minimizer-output-count').textContent = outputs.length;
-  ['output-list', 'ranker-output-list', 'concentrator-output-list', 'rulestripper-output-list', 'minimizer-output-list'].forEach((rootId) => {
-    const root = $(rootId); if (!root) return; root.innerHTML = '';
-    if (!outputs.length) {
+function renderOutputs(outputs = [], outputTool = 'rulest') {
+  const outputViews = {
+    rulest: { count: 'output-count', list: 'output-list' },
+    ranker: { count: 'ranker-output-count', list: 'ranker-output-list' },
+    concentrator: { count: 'concentrator-output-count', list: 'concentrator-output-list' },
+    rulestripper: { count: 'rulestripper-output-count', list: 'rulestripper-output-list' },
+    minimizer: { count: 'minimizer-output-count', list: 'minimizer-output-list' },
+  };
+  Object.entries(outputViews).forEach(([tool, ids]) => {
+    const ownedOutputs = tool === outputTool ? outputs : [];
+    const count = $(ids.count);
+    if (count) count.textContent = ownedOutputs.length;
+    const root = $(ids.list);
+    if (!root) return;
+    root.innerHTML = '';
+    if (!ownedOutputs.length) {
       const empty = document.createElement('div'); empty.className = 'empty-output';
-      empty.innerHTML = '<span>▤</span><b>No outputs yet</b><small>Generated files will appear here.</small>';
+      empty.innerHTML = '<span>▤</span><b>No outputs yet</b><small>Generated files for this tool will appear here.</small>';
       root.append(empty); return;
     }
-    outputs.forEach((file) => {
+    ownedOutputs.forEach((file) => {
       const row = document.createElement('div'); row.className = 'output-item';
       const icon = document.createElement('span'); icon.className = 'output-file-icon';
       icon.textContent = file.name.toLowerCase().endsWith('.csv') ? 'CSV' : file.name.toLowerCase().endsWith('.log') ? 'LOG' : 'RULE';
@@ -497,6 +503,55 @@ function renderOutputs(outputs = []) {
       meta.append(name, size); row.append(icon, meta, link); root.append(row);
     });
   });
+}
+
+const TOOL_METRIC_WAITING_STAGES = {
+  rulest: 'Waiting for a run',
+  ranker: 'Waiting for a Ranker job',
+  concentrator: 'Waiting for a Concentrator job',
+  rulestripper: 'Waiting for Rulestripper',
+  minimizer: 'Waiting for Rule Minimizer',
+};
+
+function renderToolMetrics(tool, data) {
+  const panel = document.querySelector(`[data-tool-metrics="${tool}"]`);
+  if (!panel) return;
+  const ownsRun = data.tool === tool;
+  const status = ownsRun ? (data.status || 'idle') : 'idle';
+  const paused = ownsRun && !!data.paused && status === 'running';
+  const running = ownsRun && (status === 'running' || status === 'stopping');
+  const outputs = ownsRun && Array.isArray(data.outputs) ? data.outputs.length : 0;
+  const labels = {
+    idle: 'Idle', running: paused ? 'Paused' : 'Running', stopping: 'Stopping',
+    completed: 'Completed', stopped: 'Stopped', failed: 'Failed', offline: 'Offline',
+  };
+  const notes = {
+    idle: 'Ready to configure',
+    running: paused ? 'Paused at safe checkpoint' : data.pause_requested ? 'Pause requested · checkpoint pending' : 'Engine process is active',
+    stopping: 'Stopping requested · waiting for process exit',
+    completed: 'Run finished successfully',
+    stopped: 'Run stopped · partial results preserved',
+    failed: data.error ? String(data.error) : 'Check engine output below',
+    offline: 'Web interface disconnected',
+  };
+  const value = (name) => panel.querySelector(`[data-metric="${name}"]`);
+  const statusValue = value('status');
+  const noteValue = value('note');
+  const stageValue = value('stage');
+  const elapsedValue = value('elapsed');
+  const outputValue = value('outputs');
+  if (statusValue) statusValue.textContent = labels[status] || 'Idle';
+  if (noteValue) noteValue.textContent = notes[status] || notes.idle;
+  if (stageValue) {
+    const stage = ownsRun && status !== 'idle' && data.stage ? data.stage : TOOL_METRIC_WAITING_STAGES[tool];
+    stageValue.textContent = stage;
+    stageValue.title = stage;
+  }
+  if (elapsedValue) elapsedValue.textContent = ownsRun && data.elapsed != null ? fmtTime(data.elapsed) : '00:00';
+  if (outputValue) outputValue.textContent = String(outputs);
+  panel.dataset.engineState = paused ? 'paused' : running ? 'running' : status;
+  const dot = panel.querySelector('[data-metric-dot]');
+  if (dot) dot.dataset.state = paused ? 'paused' : status;
 }
 function updateLocalEngineBadge(data) {
   const card = $('local-engine-card');
@@ -669,7 +724,8 @@ function renderStatus(data) {
   } else {
     $('terminal-tool-label').textContent = 'rulest-engine / stdout';
   }
-  renderOutputs(data.outputs || []);
+  ['rulest', 'ranker', 'concentrator', 'rulestripper', 'minimizer'].forEach((tool) => renderToolMetrics(tool, data));
+  renderOutputs(data.outputs || [], data.tool || 'rulest');
   const storageView = $('system-view');
   if (storageView && !storageView.hidden) {
     if (Date.now() - lastStorageSummaryAt > 5000) loadRunStorageSummary();

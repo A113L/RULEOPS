@@ -27,19 +27,28 @@ liczbę dispatchów GPU i liczbę przeliczonych challengerów.
   w kopcu. Obliczenia nie zmieniają aktywnego zbioru, więc kolejność sprawdzania
   exact gain nie zmienia kryterium zwycięzcy ani tie-breaku.
 
-## 3. Transfery exact wyników GPU -> CPU
+## 3. Bezkolizyjny zapis exact wyników i transfer GPU -> CPU
 
-`score_exact_batch_kernel` zapisuje zwarte rekordy `uint32 slot + uint8 rule_id`
-we wspólnym buforze. Dla każdego word-chunka host wykonuje jeden odczyt licznika
-oraz dwa odczyty zbiorcze (tablica slotów i tablica lokalnych ID reguł), niezależnie
-od liczby reguł w batchu. Na CPU rekordy są grupowane według ID reguły, po czym
-`np.unique` nadal usuwa duplikaty w obrębie reguły i między word-chunkami.
+`score_exact_batch_kernel` zapisuje wynik każdej pary `(reguła, słowo)` pod
+własnym indeksem w macierzy `uint32` w układzie rule-major. Brak trafienia jest
+oznaczany przez `UINT32_MAX`. Kernel nie używa globalnego licznika `atomic_add`
+ani wspólnego append-bufora, więc zapisy różnych reguł nie konkurują o jeden
+adres pamięci.
 
-Dodatkowa pamięć bufora wynikowego wynosi 1 bajt na maksymalny możliwy hit ponad
-wcześniejsze sloty `uint32` (25% więcej pamięci dla tych buforów). Zamiast
-osobnego kernela pakującego używany jest globalny licznik append w istniejącym
-kernelu exact, więc nie dochodzi dodatkowy dispatch. Raport profilowania podaje
-liczbę zbiorczych kopii D2H oraz szacowaną liczbę unikniętych kopii per-reguła.
+Host pobiera jeden zwarty blok D2H dla całego batcha. Wiersze są już pogrupowane
+według reguły; nie ma dodatkowego bufora identyfikatorów reguł ani globalnego
+`np.argsort`. W każdym wierszu sentinel jest odfiltrowywany, a końcowe
+`np.unique` nadal deduplikuje sloty dla danej reguły przez wszystkie word-chunki.
+Dokładny gain i deterministyczny tie-break CELF pozostają niezmienione.
+
+Kosztem jest transfer macierzy `n_rules x n_words` także wtedy, gdy część
+par nie trafia w aktywny TARGET. Dla typowego pierwszego przebiegu, w którym
+najwyżej oceniane reguły mają niemal pełne trafienia, stały transfer jest
+porównywalny lub mniejszy od poprzedniego strumienia slotów + identyfikatorów,
+a usuwa koszt globalnej kontencji atomowej i sortowania wyników na CPU.
+Profil `exact-result D2H` raportuje teraz jedną kopię macierzy na word-chunk,
+liczbę przesłanych MiB oraz liczbę niepustych wierszy reguł; nie ma odczytu
+licznika trafień.
 
 ## 4. Liczniki GPU
 

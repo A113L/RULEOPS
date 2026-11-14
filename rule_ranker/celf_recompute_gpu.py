@@ -540,15 +540,13 @@ void score_single_and_record_kernel(
     hit_slots[pos] = (unsigned int)slot;
 }}
 
-// Multi-rule exact/deduplicated recording pass. Hits from all rules are
-// appended to one compact result stream rather than copied back from one
-// fixed-capacity segment per rule. `hit_rule_ids[pos]` identifies the
-// candidate-local rule index for `hit_slots[pos]`. There can be at most
-// num_rules_in_batch * num_words records, because each (rule, word) pair
-// contributes at most one hit. The caller groups records by rule and runs
-// np.unique, preserving exact deduplication across words and chunks.
-// One global append counter avoids one D2H copy per rule and adds no kernel
-// launch; the host fetches compact records in two bulk transfers.
+// Multi-rule exact/deduplicated recording pass. Each (rule, word) pair
+// owns one deterministic output cell, so this path needs NO atomics and NO
+// global append counter. A miss is marked with UINT_MAX; successful hits
+// store the cracked-target slot at [rule_idx * num_words + word_idx].
+// The host reads one contiguous n_rules x num_words block and deduplicates
+// each rule's row. This avoids the contended global atomic append stream,
+// the rule-id side buffer, and the host-side argsort/grouping pass.
 __kernel __attribute__((reqd_work_group_size({LOCAL_WORK_SIZE}, 1, 1)))
 void score_exact_batch_kernel(
     __global const unsigned char* base_words_in,
@@ -557,11 +555,8 @@ void score_exact_batch_kernel(
     __global const unsigned int* hash_table_occupied,
     __global const unsigned int* active,
     __global unsigned int* hit_slots,
-    __global unsigned char* hit_rule_ids,
-    __global int* hit_total_count,
     const unsigned int num_words,
     const unsigned int num_rules_in_batch,
-    const unsigned int words_per_rule_cap,
     const unsigned int max_word_len,
     const unsigned int table_mask)
 {{
@@ -571,6 +566,10 @@ void score_exact_batch_kernel(
 
     unsigned int rule_idx = global_id / num_words;
     unsigned int word_idx = global_id % num_words;
+
+    // UINT_MAX cannot be a valid slot: lookup returns a signed int and only
+    // non-negative target indices are accepted below. Write the sentinel only
+    // on misses, so successful (common) matches require just one result store.
 
     unsigned char word[MAX_WORD_LEN];
     unsigned int word_len = 0;
@@ -592,22 +591,26 @@ void score_exact_batch_kernel(
     unsigned char result_temp[MAX_OUTPUT_LEN];
     int out_len = 0, changed = 0;
     apply_hashcat_rule(word, word_len, rule_str, rule_len, result_temp, &out_len, &changed);
-    if (changed <= 0 || out_len <= 0) return;
+    if (changed <= 0 || out_len <= 0) {{
+        hit_slots[global_id] = 0xffffffffU;
+        return;
+    }}
 
     ulong h = fnv1a_hash_64(result_temp, (unsigned int)out_len);
     int slot = lookup_cracked_slot(hash_table, hash_table_occupied, table_mask, h);
-    if (slot < 0) return;
+    if (slot < 0) {{
+        hit_slots[global_id] = 0xffffffffU;
+        return;
+    }}
 
     unsigned int word_pos = (unsigned int)slot >> 5;
     unsigned int bit_pos = (unsigned int)slot & 31U;
-    if ((active[word_pos] & (1U << bit_pos)) == 0) return;  // already covered
-
-    int pos = atomic_add(hit_total_count, 1);
-    unsigned int total_capacity = num_rules_in_batch * words_per_rule_cap;
-    if ((unsigned int)pos < total_capacity) {{
-        hit_slots[(unsigned int)pos] = (unsigned int)slot;
-        hit_rule_ids[(unsigned int)pos] = (unsigned char)rule_idx;
+    if ((active[word_pos] & (1U << bit_pos)) == 0) {{
+        hit_slots[global_id] = 0xffffffffU;
+        return;  // already covered
     }}
+
+    hit_slots[global_id] = (unsigned int)slot;
 }}
 
 // Clears a small, EXPLICIT list of previously-recorded hash-table
@@ -944,37 +947,33 @@ class _GpuScorer(_ResidentWordlistMixin):
         # big structural fix like the batching ones.
         self._single_slots_region_cache = {}
         # Several candidates are exact/deduplicated-scored in one kernel
-        # dispatch. Hits are appended to a compact slot + local-rule-id
-        # stream, preserving per-rule np.unique while avoiding one D2H
-        # copy for each non-empty candidate segment.
+        # dispatch. Every (rule, word) pair writes to its own deterministic
+        # output cell; misses use UINT32_MAX. This removes the contended global
+        # append atomic and avoids CPU sorting/grouping by local rule id.
         requested_exact_batch_cap = max(1, int(os.environ.get('RANKER_EXACT_BATCH', '128')))
         self._exact_words_per_rule_cap = max(1, max_chunk_words)
         # Each (rule, word) pair maps to one work-item. Keep the exact batch
-        # within the kernel's launch limit and within the uint8 rule-id range.
+        # within the kernel's launch and uint32 result-index limits.
         max_exact_rules_per_dispatch = max(
             1, MAX_DISPATCH_ITEMS // self._exact_words_per_rule_cap)
         self.exact_batch_cap = min(requested_exact_batch_cap, 256,
                                    max_exact_rules_per_dispatch)
         self.exact_batch_cap_was_clamped = self.exact_batch_cap != requested_exact_batch_cap
         exact_record_capacity = self._exact_words_per_rule_cap * self.exact_batch_cap
-        if exact_record_capacity > np.iinfo(np.int32).max:
+        if exact_record_capacity > np.iinfo(np.uint32).max:
             raise ValueError(
-                'RANKER_EXACT_BATCH and word chunk size exceed the compact CELF '
-                'record counter capacity; lower RANKER_EXACT_BATCH or --words-batch-size')
-        # Compact output: uint32 slot + uint8 local-rule id per possible hit.
-        # This costs 25% more result-buffer VRAM than segmented slots but
-        # replaces up to exact_batch_cap D2H copies with two bulk transfers.
+                'RANKER_EXACT_BATCH and word chunk size exceed the uint32 CELF '
+                'result-index capacity; lower RANKER_EXACT_BATCH or --words-batch-size')
+        # One uint32 slot per possible (rule, word) pair. A deterministic
+        # row layout replaces the old compact append stream (global atomic
+        # counter + rule-id bytes + CPU argsort). UINT32_MAX marks a miss.
         self.exact_hit_slots_g = cl.Buffer(
             self.context, mf.READ_WRITE,
             exact_record_capacity * np.uint32().itemsize)
-        self.exact_hit_rule_ids_g = cl.Buffer(
-            self.context, mf.READ_WRITE, exact_record_capacity * np.uint8().itemsize)
-        self.exact_hit_counts_g = cl.Buffer(
-            self.context, mf.READ_WRITE, np.int32().itemsize)
-        self._exact_total_count_host = np.empty(1, dtype=np.int32)
         self.exact_batch_chunks = 0
-        self.exact_nonempty_rule_segments = 0
+        self.exact_nonempty_rule_rows = 0
         self.exact_result_d2h_copies = 0
+        self.exact_result_d2h_bytes = 0
         # (rule_idx, slots ndarray) for the most recent SINGLE-rule
         # score_batch() call, if any -- consumed by apply_winner_and_clear()
         # when that same rule turns out to be the round's winner, and
@@ -1171,10 +1170,11 @@ class _GpuScorer(_ResidentWordlistMixin):
     def score_exact_batch(self, rule_indices, wordlist_path, progress_callback=None):
         """Return exact deduplicated gains for up to exact_batch_cap rules.
 
-        The kernel appends compact (rule-id, hit-slot) records to one device
-        buffer. Per chunk the host reads the record count, then the actual
-        slots and rule ids in two bulk D2H transfers. Grouping by rule and
-        np.unique preserve the former per-rule segment semantics.
+        Each rule/word pair owns one uint32 cell in the GPU result buffer.
+        Misses are UINT32_MAX, so the host can read one contiguous matrix and
+        split it into per-rule rows without atomic append contention, a rule-id
+        side buffer, or a global sort. np.unique still deduplicates each rule
+        across all words and chunks before its gain can affect CELF selection.
         """
         n = len(rule_indices)
         self.last_gpu_dispatches = 0
@@ -1183,7 +1183,6 @@ class _GpuScorer(_ResidentWordlistMixin):
         if n > self.exact_batch_cap:
             raise ValueError(
                 f"score_exact_batch got {n} rules, exceeds exact_batch_cap={self.exact_batch_cap}")
-        cap = self._exact_words_per_rule_cap
         rules_batch_np = np.ascontiguousarray(self.encoded[np.asarray(rule_indices, dtype=np.int64)])
         rules_region_g = self.rules_g.get_sub_region(0, n * MAX_RULE_LEN)
         cl.enqueue_copy(self.queue, rules_region_g, rules_batch_np)
@@ -1194,38 +1193,26 @@ class _GpuScorer(_ResidentWordlistMixin):
                        else None)
         chunk_done = 0
         for words_g, num_words in self._iter_word_chunks(wordlist_path):
-            # One hit at most per (rule, word); cap >= num_words by construction.
-            cl.enqueue_fill_buffer(self.queue, self.exact_hit_counts_g, np.int32(0),
-                                   0, np.int32().itemsize)
-            global_size = (int(math.ceil(num_words * n / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
+            pair_count = int(num_words) * int(n)
+            global_size = (int(math.ceil(pair_count / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
             self.exact_batch_kernel(self.queue, global_size, (LOCAL_WORK_SIZE,),
                                      words_g, rules_region_g, self.hash_table_g,
                                      self.hash_table_occupied_g, self.active_g,
-                                     self.exact_hit_slots_g, self.exact_hit_rule_ids_g,
-                                     self.exact_hit_counts_g, np.uint32(num_words),
-                                     np.uint32(n), np.uint32(cap),
-                                     np.uint32(MAX_WORD_LEN), np.uint32(self.hash_table_mask))
+                                     self.exact_hit_slots_g, np.uint32(num_words),
+                                     np.uint32(n), np.uint32(MAX_WORD_LEN),
+                                     np.uint32(self.hash_table_mask))
             self.last_gpu_dispatches += 1
             self.exact_batch_chunks += 1
 
-            cl.enqueue_copy(self.queue, self._exact_total_count_host,
-                            self.exact_hit_counts_g).wait()
-            total_hits = int(self._exact_total_count_host[0])
-            max_hits = n * int(num_words)
-            if total_hits < 0 or total_hits > max_hits:
-                raise RuntimeError(
-                    f"exact batch hit count out of range: {total_hits} (capacity {max_hits})")
-            if total_hits:
-                host_slots = np.empty(total_hits, dtype=np.uint32)
-                host_rule_ids = np.empty(total_hits, dtype=np.uint8)
-                evt_slots = cl.enqueue_copy(self.queue, host_slots, self.exact_hit_slots_g)
-                evt_rule_ids = cl.enqueue_copy(self.queue, host_rule_ids,
-                                                self.exact_hit_rule_ids_g)
-                cl.wait_for_events([evt_slots, evt_rule_ids])
-                self.exact_result_d2h_copies += 2
-                self.exact_nonempty_rule_segments += int(np.unique(host_rule_ids).size)
-                _group_compact_exact_hits(
-                    rule_indices, host_slots, host_rule_ids, slot_parts)
+            # The kernel writes exactly pair_count cells in rule-major order.
+            # One bulk D2H transfer replaces count + slot + rule-id transfers.
+            host_hits = np.empty(pair_count, dtype=np.uint32)
+            cl.enqueue_copy(self.queue, host_hits, self.exact_hit_slots_g).wait()
+            self.exact_result_d2h_copies += 1
+            self.exact_result_d2h_bytes += int(host_hits.nbytes)
+            self.exact_nonempty_rule_rows += _append_exact_hit_rows(
+                rule_indices, host_hits, int(num_words), slot_parts)
+
             chunk_done += 1
             if progress_callback is not None:
                 progress_callback(chunk_done, chunk_total, n, int(num_words))
@@ -1334,25 +1321,38 @@ def _collect_fresh_exact_batch(candidate_heap, fresh_this_round, cap,
     return resolved
 
 
-def _group_compact_exact_hits(rule_indices, host_slots, host_rule_ids, slot_parts):
-    """Group compact (local-rule-id, slot) records into per-rule lists."""
+def _append_exact_hit_rows(rule_indices, host_hits, num_words, slot_parts):
+    """Append valid slots from a rule-major exact-hit matrix.
+
+    The GPU stores one uint32 cell per (rule, word) pair and writes UINT32_MAX
+    for misses. Rows are already grouped by rule, so no rule-id stream or sort
+    is needed. Duplicates are intentionally retained here and removed by the
+    final per-rule np.unique across all word chunks.
+
+    Returns the number of non-empty rule rows.
+    """
     n = len(rule_indices)
-    if len(host_slots) != len(host_rule_ids):
-        raise ValueError("compact exact-hit slot and rule-id arrays differ in length")
-    if len(host_rule_ids) == 0:
-        return
-    if int(host_rule_ids.max()) >= n:
-        raise ValueError("compact exact-hit record contains an invalid rule id")
-    order = np.argsort(host_rule_ids, kind="stable")
-    sorted_slots = host_slots[order]
-    counts = np.bincount(host_rule_ids.astype(np.int64, copy=False), minlength=n)
-    offsets = np.empty(n + 1, dtype=np.int64)
-    offsets[0] = 0
-    np.cumsum(counts, out=offsets[1:])
+    num_words = int(num_words)
+    if num_words < 0:
+        raise ValueError("num_words must be non-negative")
+    hits = np.asarray(host_hits, dtype=np.uint32)
+    expected = n * num_words
+    if hits.size != expected:
+        raise ValueError(
+            f"exact-hit matrix has {hits.size} cells; expected {expected}")
+    if expected == 0:
+        return 0
+
+    rows = hits.reshape(n, num_words)
+    miss_sentinel = np.uint32(0xFFFFFFFF)
+    nonempty = 0
     for local_i, ridx in enumerate(rule_indices):
-        left, right = int(offsets[local_i]), int(offsets[local_i + 1])
-        if right > left:
-            slot_parts[int(ridx)].append(sorted_slots[left:right])
+        row_hits = rows[local_i]
+        valid = row_hits[row_hits != miss_sentinel]
+        if valid.size:
+            slot_parts[int(ridx)].append(valid)
+            nonempty += 1
+    return nonempty
 
 
 def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
@@ -1847,14 +1847,15 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 f"{exact_resolve_cap} to respect MAX_DISPATCH_ITEMS."))
         exact_chunks = int(getattr(scorer, 'exact_batch_chunks', 0))
         result_copies = int(getattr(scorer, 'exact_result_d2h_copies', 0))
-        prior_segment_copies = int(getattr(scorer, 'exact_nonempty_rule_segments', 0))
+        nonempty_rows = int(getattr(scorer, 'exact_nonempty_rule_rows', 0))
+        result_bytes = int(getattr(scorer, 'exact_result_d2h_bytes', 0))
         if exact_chunks:
-            saved_copies = max(0, prior_segment_copies - result_copies)
+            result_mib = result_bytes / (1024.0 * 1024.0)
             log(dim(
-                f"[CELF profile] exact-result D2H: {result_copies:,} bulk copies "
-                f"for {exact_chunks:,} chunks; {prior_segment_copies:,} former "
-                f"per-rule copies consolidated (estimated {saved_copies:,} copies avoided; "
-                "count readback is unchanged)."))
+                f"[CELF profile] exact-result D2H: {result_copies:,} rule-major "
+                f"matrix copies for {exact_chunks:,} chunks; "
+                f"{result_mib:.1f} MiB transferred; "
+                f"{nonempty_rows:,} non-empty rule rows; no hit-count readback."))
 
         total_time = sum(t for _, t in prof.values())
         log(f"{blue('--- CELF stage breakdown (RANKER_GREEDY_PROFILE) ---')}")

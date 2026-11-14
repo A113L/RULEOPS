@@ -67,7 +67,7 @@ import warnings
 
 import numpy as np
 import pyopencl as cl
-from .progress import ProgressBar
+from .progress import ProgressBar, RollingRate
 
 from .hashing import build_open_addressing_table_uint64, table_size_for_count
 
@@ -602,6 +602,86 @@ void score_exact_batch_kernel(
     hit_slots[rule_idx * words_per_rule_cap + (unsigned int)pos] = (unsigned int)slot;
 }}
 
+// Exact per-rule deduplication for the common single-word-chunk case.
+// Each rule owns a power-of-two open-addressing table with capacity >= 2x
+// num_words, so there can never be more unique inserts than the table holds.
+// Only the per-rule unique counters are copied back to the host; hit slots
+// stay on the GPU and no CPU np.unique() is needed for this path.
+__kernel __attribute__((reqd_work_group_size({LOCAL_WORK_SIZE}, 1, 1)))
+void score_exact_gpu_unique_batch_kernel(
+    __global const unsigned char* base_words_in,
+    __global const unsigned char* rules_in,
+    __global const ulong* hash_table,
+    __global const unsigned int* hash_table_occupied,
+    __global const unsigned int* active,
+    __global int* unique_slots,
+    __global unsigned int* unique_hit_list,
+    __global int* rule_unique_counts,
+    const unsigned int num_words,
+    const unsigned int num_rules_in_batch,
+    const unsigned int unique_table_capacity,
+    const unsigned int words_per_rule_cap,
+    const unsigned int max_word_len,
+    const unsigned int table_mask)
+{{
+    unsigned int global_id = get_global_id(0);
+    unsigned int total = num_words * num_rules_in_batch;
+    if (global_id >= total) return;
+
+    unsigned int rule_idx = global_id / num_words;
+    unsigned int word_idx = global_id % num_words;
+
+    unsigned char word[MAX_WORD_LEN];
+    unsigned int word_len = 0;
+    for (unsigned int i = 0; i < max_word_len; i++) {{
+        unsigned char c = base_words_in[word_idx * max_word_len + i];
+        if (c == 0) break;
+        word[i] = c; word_len++;
+    }}
+
+    unsigned int rule_start = rule_idx * MAX_RULE_LEN;
+    unsigned char rule_str[MAX_RULE_LEN];
+    unsigned int rule_len = 0;
+    for (unsigned int i = 0; i < MAX_RULE_LEN; i++) {{
+        unsigned char c = rules_in[rule_start + i];
+        if (c == 0) break;
+        rule_str[i] = c; rule_len++;
+    }}
+
+    unsigned char result_temp[MAX_OUTPUT_LEN];
+    int out_len = 0, changed = 0;
+    apply_hashcat_rule(word, word_len, rule_str, rule_len, result_temp, &out_len, &changed);
+    if (changed <= 0 || out_len <= 0) return;
+
+    ulong h = fnv1a_hash_64(result_temp, (unsigned int)out_len);
+    int slot = lookup_cracked_slot(hash_table, hash_table_occupied, table_mask, h);
+    if (slot < 0) return;
+
+    unsigned int word_pos = (unsigned int)slot >> 5;
+    unsigned int bit_pos = (unsigned int)slot & 31U;
+    if ((active[word_pos] & (1U << bit_pos)) == 0) return;
+
+    unsigned int mask = unique_table_capacity - 1U;
+    unsigned int base = rule_idx * unique_table_capacity;
+    unsigned int pos = ((unsigned int)slot * 2654435761U) & mask;
+    for (unsigned int probe = 0; probe < unique_table_capacity; probe++) {{
+        int prior = atomic_cmpxchg(
+            (volatile __global int*)&unique_slots[base + pos], -1, slot);
+        if (prior == -1) {{
+            int unique_pos = atomic_add(
+                (volatile __global int*)&rule_unique_counts[rule_idx], 1);
+            unique_hit_list[rule_idx * words_per_rule_cap + (unsigned int)unique_pos] =
+                (unsigned int)slot;
+            return;
+        }}
+        if (prior == slot) return;
+        pos = (pos + 1U) & mask;
+    }}
+    // This is unreachable when capacity >= 2 * num_words. Keep a visible
+    // negative count as a defensive signal rather than silently undercount.
+    atomic_xchg((volatile __global int*)&rule_unique_counts[rule_idx], -1);
+}}
+
 // Compact only successful entries. rule_offsets is an exclusive prefix sum
 // of per-rule hit counts (length num_rules + 1). One work-item handles one
 // actual hit and binary-searches its source rule segment.
@@ -836,15 +916,61 @@ def _build_open_addressing_table(cracked_hashes_sorted, hash_table_size, hash_ta
     return hash_table, occupied_words
 
 
+def _requested_exact_batch_cap():
+    """Configured fresh exact-score batch size (default tuned to 256)."""
+    return max(1, int(os.environ.get("RANKER_EXACT_BATCH", "256")))
+
+
+def _unique_exact_slots(parts):
+    """Deduplicate per-rule hit segments without copying a single segment."""
+    if not parts:
+        return np.zeros(0, dtype=np.uint32)
+    if len(parts) == 1:
+        return np.unique(parts[0])
+    return np.unique(np.concatenate(parts))
+
+
+def _exact_gpu_unique_plan(num_words, batch_cap, device):
+    """Return (capacity, bytes) if a per-rule GPU set safely fits, else (0, 0).
+
+    The hash table is sized for at most one insertion per input word and a
+    maximum 50% load factor. Budget the hash table, unique-hit output and
+    winner cache together: at most 1/16 of reported global memory and never
+    above 512 MiB. Also respect max_mem_alloc_size for the largest allocation.
+    """
+    num_words = max(0, int(num_words))
+    batch_cap = max(1, int(batch_cap))
+    if not num_words:
+        return 0, 0
+    capacity = 1 << max(1, (2 * num_words - 1).bit_length())
+    item_bytes = np.dtype(np.int32).itemsize
+    table_bytes = capacity * batch_cap * item_bytes
+    # Include the unique-slot output and persistent winner cache in the
+    # aggregate budget. They are separate allocations but consume the same
+    # physical device memory as the per-rule hash tables.
+    output_bytes = num_words * batch_cap * np.dtype(np.uint32).itemsize
+    winner_bytes = num_words * np.dtype(np.uint32).itemsize
+    total_required = table_bytes + output_bytes + winner_bytes
+    try:
+        global_mem = int(device.global_mem_size)
+        max_alloc = int(device.max_mem_alloc_size)
+    except (AttributeError, TypeError, ValueError):
+        return 0, 0
+    budget = min(global_mem // 16, 512 * 1024 * 1024)
+    if table_bytes > max_alloc or total_required > budget:
+        return 0, 0
+    return capacity, table_bytes
+
+
 class _GpuScorer(_ResidentWordlistMixin):
     """Owns the OpenCL context/buffers for one celf_select_recompute_gpu()
     run. `active` (the not-yet-covered bitmap) and `encoded` rules live
-    on the GPU for the whole run; only word batches stream through (see
-    _ResidentWordlistMixin), so the only thing that scales with n_rules
-    is a small on-device buffer sized for one rule dispatch batch
-    (rule_batch_size rows); the buffer holds int32 SCALARS per rule,
-    not a full per-rule coverage row, so it is ~W/32 times smaller for the same
-    rule_batch_size."""
+    on the GPU for the whole run; word batches stream or remain resident
+    through _ResidentWordlistMixin. Exact scoring allocates temporary
+    per-rule scratch only for one bounded batch: either a compact hit stream
+    or (for a single resident word chunk, when memory permits) a bounded GPU
+    hash set used to return exact unique counts without large D2H transfers.
+    No per-candidate coverage matrix is retained."""
 
     def __init__(self, encoded_rules, num_cracked, cracked_hashes_sorted,
                  rule_batch_size, words_per_gpu_batch, device_id=None,
@@ -880,9 +1006,9 @@ class _GpuScorer(_ResidentWordlistMixin):
 
         platform, device = select_device(device_id)
         self.context = cl.Context([device])
+        self.exact_profiling_enabled = os.environ.get("RANKER_GREEDY_PROFILE") == "1"
         queue_properties = (cl.command_queue_properties.PROFILING_ENABLE
-                            if os.environ.get("RANKER_GREEDY_PROFILE") == "1"
-                            else 0)
+                            if self.exact_profiling_enabled else 0)
         self.queue = cl.CommandQueue(self.context, properties=queue_properties)
         src = get_recompute_kernel_source(num_cracked, self.hash_table_size)
         prg = _build_opencl_program(self.context, src)
@@ -890,6 +1016,7 @@ class _GpuScorer(_ResidentWordlistMixin):
         self.clear_kernel = prg.apply_and_clear_kernel
         self.record_kernel = prg.score_single_and_record_kernel
         self.exact_batch_kernel = prg.score_exact_batch_kernel
+        self.exact_gpu_unique_kernel = prg.score_exact_gpu_unique_batch_kernel
         self.exact_compact_kernel = prg.compact_exact_hits_kernel
         self.clear_recorded_kernel = prg.clear_recorded_slots_kernel
 
@@ -964,10 +1091,10 @@ class _GpuScorer(_ResidentWordlistMixin):
         # expected win here is small (low single-digit %), not another
         # big structural fix like the batching ones.
         self._single_slots_region_cache = {}
-        # Exact batches use a separate append counter and bounded hit segment
-        # per rule. A GPU compaction pass packs only actual hits before the
-        # single bulk result readback; np.unique remains per rule on the host.
-        requested_exact_batch_cap = max(1, int(os.environ.get('RANKER_EXACT_BATCH', '128')))
+        # Exact batches use either per-rule GPU hash sets (single resident
+        # chunk) or a separate append counter and bounded hit segments. The
+        # latter are compacted before D2H and deduplicated per rule on CPU.
+        requested_exact_batch_cap = _requested_exact_batch_cap()
         self._exact_words_per_rule_cap = max(1, max_chunk_words)
         # Each (rule, word) pair maps to one work-item. Keep the exact batch
         # within the kernel's launch and uint32 result-index limits.
@@ -981,29 +1108,90 @@ class _GpuScorer(_ResidentWordlistMixin):
             raise ValueError(
                 'RANKER_EXACT_BATCH and word chunk size exceed the uint32 CELF '
                 'result-index capacity; lower RANKER_EXACT_BATCH or --words-batch-size')
-        # One bounded segment per rule. A rule produces at most one slot per
-        # word, so each segment has _exact_words_per_rule_cap entries.
-        self.exact_hit_slots_g = cl.Buffer(
-            self.context, mf.READ_WRITE,
-            exact_record_capacity * np.uint32().itemsize)
-        self.exact_compact_hit_slots_g = cl.Buffer(
-            self.context, mf.READ_WRITE,
-            exact_record_capacity * np.uint32().itemsize)
+        # For one resident word chunk, exact duplicates can be removed on
+        # the GPU with a per-rule open-addressed set. This replaces large
+        # hit-result D2H streams + host np.unique() with only a small count
+        # vector. Multi-chunk wordlists retain the cross-chunk-safe compact
+        # stream path below.
+        resident_chunks = (self._word_chunks_gpu if self._word_chunks_gpu is not None
+                           else self._word_chunks_host)
+        single_chunk_words = (int(resident_chunks[0][1])
+                              if resident_chunks is not None and len(resident_chunks) == 1
+                              else 0)
+        self.exact_gpu_unique_capacity = 0
+        self.exact_gpu_unique_bytes = 0
+        self.exact_gpu_unique_total_bytes = 0
+        self.exact_gpu_unique_enabled = False
+        if os.environ.get("RANKER_EXACT_GPU_DEDUP", "1").strip().lower() not in ("0", "false", "no", "off"):
+            capacity, required = _exact_gpu_unique_plan(
+                single_chunk_words, self.exact_batch_cap, device)
+            if capacity:
+                try:
+                    unique_table_buffer = cl.Buffer(
+                        self.context, mf.READ_WRITE, required)
+                    unique_hits_buffer = cl.Buffer(
+                        self.context, mf.READ_WRITE,
+                        exact_record_capacity * np.uint32().itemsize)
+                    winner_hits_buffer = cl.Buffer(
+                        self.context, mf.READ_WRITE,
+                        self._exact_words_per_rule_cap * np.uint32().itemsize)
+                except Exception as exc:
+                    # A driver may have less allocatable memory than its
+                    # advertised global-memory budget. Release partial scratch
+                    # allocations and retain the compact exact fallback.
+                    unique_table_buffer = None
+                    unique_hits_buffer = None
+                    winner_hits_buffer = None
+                    log(yellow(
+                        f"[CELF profile] GPU exact-dedup scratch unavailable; "
+                        f"using compact D2H fallback ({exc})."))
+                else:
+                    self.exact_gpu_unique_slots_g = unique_table_buffer
+                    self.exact_hit_slots_g = unique_hits_buffer
+                    self.exact_winner_slots_g = winner_hits_buffer
+                    self.exact_compact_hit_slots_g = None
+                    self.exact_rule_offsets_g = None
+                    self.exact_gpu_unique_capacity = capacity
+                    self.exact_gpu_unique_bytes = required
+                    self.exact_gpu_unique_total_bytes = (
+                        required + exact_record_capacity * np.uint32().itemsize
+                        + self._exact_words_per_rule_cap * np.uint32().itemsize)
+                    self.exact_gpu_unique_enabled = True
+        if not self.exact_gpu_unique_enabled:
+            # One bounded segment per rule. A rule produces at most one slot
+            # per word, so each segment has _exact_words_per_rule_cap entries.
+            self.exact_hit_slots_g = cl.Buffer(
+                self.context, mf.READ_WRITE,
+                exact_record_capacity * np.uint32().itemsize)
+            self.exact_compact_hit_slots_g = cl.Buffer(
+                self.context, mf.READ_WRITE,
+                exact_record_capacity * np.uint32().itemsize)
+            self.exact_rule_offsets_g = cl.Buffer(
+                self.context, mf.READ_ONLY,
+                (self.exact_batch_cap + 1) * np.uint32().itemsize)
         self.exact_rule_hit_counts_g = cl.Buffer(
             self.context, mf.READ_WRITE,
             self.exact_batch_cap * np.int32().itemsize)
-        self.exact_rule_offsets_g = cl.Buffer(
-            self.context, mf.READ_ONLY,
-            (self.exact_batch_cap + 1) * np.uint32().itemsize)
         self._exact_counts_host = np.empty(self.exact_batch_cap, dtype=np.int32)
         self._exact_offsets_host = np.empty(self.exact_batch_cap + 1, dtype=np.uint32)
         self.exact_batch_chunks = 0
+        self.exact_gpu_unique_batches = 0
+        self.exact_winner_d2d_copies = 0
+        self.exact_winner_d2d_bytes = 0
+        self._last_exact_batch_rule_positions = None
+        self._last_exact_batch_counts = None
+        self._last_gpu_recorded_hits = None
+        self._last_winner_d2d_event = None
         self.exact_nonempty_rule_rows = 0
         self.exact_count_d2h_copies = 0
         self.exact_count_d2h_bytes = 0
         self.exact_compaction_launches = 0
         self.exact_result_d2h_copies = 0
         self.exact_result_d2h_bytes = 0
+        # Fine-grained timings for the exact-score hot path. GPU event times
+        # are device execution/transfer durations; *_wait_wall includes any
+        # queued work that had to finish before the readback completed.
+        self.exact_stage_profile = {}
         # (rule_idx, slots ndarray) for the most recent SINGLE-rule
         # score_batch() call, if any -- consumed by apply_winner_and_clear()
         # when that same rule turns out to be the round's winner, and
@@ -1192,20 +1380,88 @@ class _GpuScorer(_ResidentWordlistMixin):
         # a rule that happened to re-cover already-picked ground many
         # times over could out-rank a rule with genuinely higher unique
         # coverage.
-        slots = (np.unique(np.concatenate(slot_parts)) if slot_parts
-                 else np.zeros(0, dtype=np.uint32))
+        slots = _unique_exact_slots(slot_parts)
         total_gain = int(slots.shape[0])
         return total_gain, slots
 
-    def score_exact_batch(self, rule_indices, wordlist_path, progress_callback=None):
-        """Return exact deduplicated gains using per-rule GPU segments.
+    def _profile_clock(self):
+        return time.perf_counter() if self.exact_profiling_enabled else 0.0
 
-        Stage 1 counts and records hits into independent bounded segments, one
-        per rule. Stage 2 reads the small count vector, builds rule offsets and
-        launches a GPU compaction kernel over actual hits only. Stage 3 performs
-        one contiguous D2H read of the compact hit stream for this word chunk.
-        Exact per-rule np.unique across all chunks is unchanged.
+    def _record_exact_stage(self, name, seconds):
+        if not self.exact_profiling_enabled:
+            return
+        entry = self.exact_stage_profile.setdefault(name, [0, 0.0])
+        entry[0] += 1
+        entry[1] += max(0.0, float(seconds))
+
+    @staticmethod
+    def _event_seconds(event):
+        """Return an OpenCL event duration in seconds when profiling exists."""
+        if event is None:
+            return None
+        try:
+            profile = event.profile
+            return max(0.0, (int(profile.end) - int(profile.start)) / 1_000_000_000.0)
+        except Exception:
+            # Profiling is optional; older drivers may not expose event timing.
+            return None
+
+    def record_exact_batch_winner(self, rule_idx):
+        """Preserve one current batch winner's unique slots on the GPU.
+
+        The per-rule hash table/list scratch is reused by the next exact batch.
+        Copy only the selected rule's unique slot list D2D to a dedicated
+        buffer, so apply_winner_and_clear can use the recorded-slot kernel
+        without a host hit transfer or a second full wordlist pass.
         """
+        if not self.exact_gpu_unique_enabled:
+            raise RuntimeError("GPU exact-winner capture requires GPU exact deduplication")
+        positions = self._last_exact_batch_rule_positions or {}
+        local_idx = positions.get(int(rule_idx))
+        if local_idx is None or self._last_exact_batch_counts is None:
+            raise RuntimeError(f"No exact GPU batch result is available for rule {rule_idx}")
+        count = int(self._last_exact_batch_counts[local_idx])
+        if count < 0 or count > self._exact_words_per_rule_cap:
+            raise RuntimeError(f"Invalid exact winner hit count for rule {rule_idx}: {count}")
+        if count:
+            previous_copy = self._event_seconds(self._last_winner_d2d_event)
+            if previous_copy is not None:
+                self._record_exact_stage("winner_slots_d2d_gpu", previous_copy)
+            byte_count = count * np.dtype(np.uint32).itemsize
+            src_offset = (
+                local_idx * self._exact_words_per_rule_cap * np.dtype(np.uint32).itemsize)
+            # Use byte offsets instead of get_sub_region(): OpenCL sub-buffer
+            # origins must satisfy CL_DEVICE_MEM_BASE_ADDR_ALIGN, while a
+            # rule segment stride (words_per_rule * 4) is not necessarily
+            # aligned. A direct buffer copy accepts arbitrary byte offsets.
+            # Same in-order queue: this copy completes before any later batch
+            # reset or winner-clear kernel, without a host synchronization.
+            self._last_winner_d2d_event = cl.enqueue_copy(
+                self.queue, self.exact_winner_slots_g, self.exact_hit_slots_g,
+                byte_count=byte_count, src_offset=src_offset, dst_offset=0)
+            self.exact_winner_d2d_copies += 1
+            self.exact_winner_d2d_bytes += byte_count
+        if count == 0:
+            self._last_winner_d2d_event = None
+        self._last_single_hits = None
+        self._last_gpu_recorded_hits = (int(rule_idx), count)
+        return count
+
+    def score_exact_batch(self, rule_indices, wordlist_path, progress_callback=None):
+        """Return exact deduplicated gains for a batch of candidate rules.
+
+        For one resident word chunk, a bounded per-rule GPU hash set computes
+        exact unique counts directly; only the small count vector is copied to
+        the host, avoiding hit-stream D2H and CPU np.unique. Multi-chunk inputs
+        retain the compact hit-stream fallback so duplicates spanning chunks
+        are still removed exactly.
+
+        With RANKER_GREEDY_PROFILE=1, collect separate CPU, synchronization,
+        kernel and transfer timings. Readback wait durations are intentionally
+        reported separately from GPU event durations because the former include
+        waiting for earlier queued work and must not be summed with device times.
+        """
+        batch_started = self._profile_clock()
         n = len(rule_indices)
         self.last_gpu_dispatches = 0
         if n == 0:
@@ -1213,9 +1469,87 @@ class _GpuScorer(_ResidentWordlistMixin):
         if n > self.exact_batch_cap:
             raise ValueError(
                 f"score_exact_batch got {n} rules, exceeds exact_batch_cap={self.exact_batch_cap}")
+
+        t0 = self._profile_clock()
         rules_batch_np = np.ascontiguousarray(self.encoded[np.asarray(rule_indices, dtype=np.int64)])
         rules_region_g = self.rules_g.get_sub_region(0, n * MAX_RULE_LEN)
-        cl.enqueue_copy(self.queue, rules_region_g, rules_batch_np)
+        rules_copy_event = cl.enqueue_copy(self.queue, rules_region_g, rules_batch_np)
+        self._record_exact_stage("rules_pack_and_enqueue_cpu", self._profile_clock() - t0)
+        rules_event_seconds = (self._event_seconds(rules_copy_event)
+                                if self.exact_profiling_enabled else None)
+        if rules_event_seconds is not None:
+            self._record_exact_stage("rules_h2d_gpu", rules_event_seconds)
+
+        if self.exact_gpu_unique_enabled:
+            out = {}
+            for words_g, num_words in self._iter_word_chunks(wordlist_path):
+                num_words = int(num_words)
+                if num_words * n > MAX_DISPATCH_ITEMS:
+                    raise RuntimeError(
+                        "GPU exact-dedup batch exceeded MAX_DISPATCH_ITEMS after planning")
+                # Only the active n rule segments need clearing. The buffer
+                # is sized to exact_batch_cap, but late CELF rounds often
+                # resolve smaller batches.
+                table_bytes = (
+                    self.exact_gpu_unique_capacity * n * np.dtype(np.int32).itemsize)
+                t0 = self._profile_clock()
+                unique_reset_event = cl.enqueue_fill_buffer(
+                    self.queue, self.exact_gpu_unique_slots_g, np.int32(-1),
+                    0, table_bytes)
+                count_fill_event = cl.enqueue_fill_buffer(
+                    self.queue, self.exact_rule_hit_counts_g, np.int32(0),
+                    0, n * np.int32().itemsize)
+                self._record_exact_stage("exact_unique_reset_enqueue_cpu", self._profile_clock() - t0)
+
+                t0 = self._profile_clock()
+                global_size = (
+                    int(math.ceil((num_words * n) / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
+                exact_event = self.exact_gpu_unique_kernel(
+                    self.queue, global_size, (LOCAL_WORK_SIZE,),
+                    words_g, rules_region_g, self.hash_table_g,
+                    self.hash_table_occupied_g, self.active_g,
+                    self.exact_gpu_unique_slots_g, self.exact_hit_slots_g,
+                    self.exact_rule_hit_counts_g,
+                    np.uint32(num_words), np.uint32(n),
+                    np.uint32(self.exact_gpu_unique_capacity),
+                    np.uint32(self._exact_words_per_rule_cap),
+                    np.uint32(MAX_WORD_LEN), np.uint32(self.hash_table_mask))
+                self._record_exact_stage("exact_kernel_enqueue_cpu", self._profile_clock() - t0)
+                self.last_gpu_dispatches += 1
+                self.exact_batch_chunks += 1
+                self.exact_gpu_unique_batches += 1
+
+                host_counts = self._exact_counts_host[:n]
+                t0 = self._profile_clock()
+                count_copy_event = cl.enqueue_copy(
+                    self.queue, host_counts, self.exact_rule_hit_counts_g)
+                count_copy_event.wait()
+                self._record_exact_stage("count_readback_wait_wall", self._profile_clock() - t0)
+                if self.exact_profiling_enabled:
+                    for stage, event in (("exact_unique_reset_gpu", unique_reset_event),
+                                         ("count_reset_gpu", count_fill_event),
+                                         ("exact_kernel_gpu", exact_event),
+                                         ("count_d2h_gpu", count_copy_event)):
+                        elapsed = self._event_seconds(event)
+                        if elapsed is not None:
+                            self._record_exact_stage(stage, elapsed)
+                self.exact_count_d2h_copies += 1
+                self.exact_count_d2h_bytes += int(host_counts.nbytes)
+                if np.any(host_counts < 0) or np.any(host_counts > num_words):
+                    raise RuntimeError(
+                        "GPU exact deduplication returned an invalid per-rule unique count")
+                self.exact_nonempty_rule_rows += int(np.count_nonzero(host_counts))
+                self._last_exact_batch_rule_positions = {
+                    int(ridx): local_i for local_i, ridx in enumerate(rule_indices)
+                }
+                self._last_exact_batch_counts = host_counts.copy()
+                for local_i, ridx in enumerate(rule_indices):
+                    out[int(ridx)] = (int(host_counts[local_i]), None)
+                if progress_callback is not None:
+                    progress_callback(1, 1, n, num_words)
+            self._record_exact_stage(
+                "score_exact_batch_total_wall", self._profile_clock() - batch_started)
+            return out
 
         slot_parts = {int(ridx): [] for ridx in rule_indices}
         chunk_total = (len(self._word_chunks_gpu) if self._word_chunks_gpu is not None
@@ -1225,11 +1559,13 @@ class _GpuScorer(_ResidentWordlistMixin):
         for words_g, num_words in self._iter_word_chunks(wordlist_path):
             num_words = int(num_words)
             pair_count = num_words * n
-            cl.enqueue_fill_buffer(
+
+            t0 = self._profile_clock()
+            count_fill_event = cl.enqueue_fill_buffer(
                 self.queue, self.exact_rule_hit_counts_g, np.int32(0), 0,
                 n * np.int32().itemsize)
             global_size = (int(math.ceil(pair_count / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
-            self.exact_batch_kernel(
+            exact_event = self.exact_batch_kernel(
                 self.queue, global_size, (LOCAL_WORK_SIZE,),
                 words_g, rules_region_g, self.hash_table_g,
                 self.hash_table_occupied_g, self.active_g,
@@ -1237,47 +1573,75 @@ class _GpuScorer(_ResidentWordlistMixin):
                 np.uint32(num_words), np.uint32(n),
                 np.uint32(self._exact_words_per_rule_cap),
                 np.uint32(MAX_WORD_LEN), np.uint32(self.hash_table_mask))
+            self._record_exact_stage("exact_kernel_enqueue_cpu", self._profile_clock() - t0)
             self.last_gpu_dispatches += 1
             self.exact_batch_chunks += 1
 
             # Small control readback: n counters, not an n x num_words matrix.
             host_counts = self._exact_counts_host[:n]
-            cl.enqueue_copy(self.queue, host_counts,
-                            self.exact_rule_hit_counts_g).wait()
+            t0 = self._profile_clock()
+            count_copy_event = cl.enqueue_copy(
+                self.queue, host_counts, self.exact_rule_hit_counts_g)
+            count_copy_event.wait()
+            self._record_exact_stage("count_readback_wait_wall", self._profile_clock() - t0)
+            if self.exact_profiling_enabled:
+                for stage, event in (("count_reset_gpu", count_fill_event),
+                                     ("exact_kernel_gpu", exact_event),
+                                     ("count_d2h_gpu", count_copy_event)):
+                    elapsed = self._event_seconds(event)
+                    if elapsed is not None:
+                        self._record_exact_stage(stage, elapsed)
             self.exact_count_d2h_copies += 1
             self.exact_count_d2h_bytes += int(host_counts.nbytes)
             if np.any(host_counts < 0) or np.any(host_counts > num_words):
                 raise RuntimeError(
                     "GPU exact scoring returned an invalid per-rule hit count")
 
+            t0 = self._profile_clock()
             offsets = self._exact_offsets_host[:n + 1]
             offsets[0] = 0
             offsets[1:] = np.cumsum(host_counts, dtype=np.uint64).astype(np.uint32)
             total_hits = int(offsets[n])
+            self._record_exact_stage("prefix_offsets_cpu", self._profile_clock() - t0)
             if total_hits:
                 # Upload the small prefix vector, then compact only the
                 # actual hits. Binary search maps each packed index back to
                 # its rule-local source segment without a rule-id side array.
-                cl.enqueue_copy(self.queue, self.exact_rule_offsets_g, offsets)
+                t0 = self._profile_clock()
+                offsets_copy_event = cl.enqueue_copy(
+                    self.queue, self.exact_rule_offsets_g, offsets)
                 compact_global = (
                     int(math.ceil(total_hits / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
-                self.exact_compact_kernel(
+                compact_event = self.exact_compact_kernel(
                     self.queue, compact_global, (LOCAL_WORK_SIZE,),
                     self.exact_hit_slots_g, self.exact_rule_offsets_g,
                     self.exact_compact_hit_slots_g, np.uint32(n),
                     np.uint32(self._exact_words_per_rule_cap),
                     np.uint32(total_hits))
+                self._record_exact_stage("compaction_enqueue_cpu", self._profile_clock() - t0)
                 self.last_gpu_dispatches += 1
                 self.exact_compaction_launches += 1
 
                 # Exactly one bulk D2H result read per non-empty word chunk.
                 host_compact = np.empty(total_hits, dtype=np.uint32)
-                cl.enqueue_copy(self.queue, host_compact,
-                                self.exact_compact_hit_slots_g).wait()
+                t0 = self._profile_clock()
+                result_copy_event = cl.enqueue_copy(
+                    self.queue, host_compact, self.exact_compact_hit_slots_g)
+                result_copy_event.wait()
+                self._record_exact_stage("result_readback_wait_wall", self._profile_clock() - t0)
+                if self.exact_profiling_enabled:
+                    for stage, event in (("offsets_h2d_gpu", offsets_copy_event),
+                                         ("compaction_kernel_gpu", compact_event),
+                                         ("result_d2h_gpu", result_copy_event)):
+                        elapsed = self._event_seconds(event)
+                        if elapsed is not None:
+                            self._record_exact_stage(stage, elapsed)
                 self.exact_result_d2h_copies += 1
                 self.exact_result_d2h_bytes += int(host_compact.nbytes)
+                t0 = self._profile_clock()
                 self.exact_nonempty_rule_rows += _append_compacted_exact_hits(
                     rule_indices, host_compact, host_counts, slot_parts)
+                self._record_exact_stage("split_hits_cpu", self._profile_clock() - t0)
 
             chunk_done += 1
             if progress_callback is not None:
@@ -1287,8 +1651,13 @@ class _GpuScorer(_ResidentWordlistMixin):
         for ridx in rule_indices:
             ridx = int(ridx)
             parts = slot_parts[ridx]
-            slots = np.unique(np.concatenate(parts)) if parts else np.zeros(0, dtype=np.uint32)
+            t0 = self._profile_clock()
+            # The common resident-wordlist path has one chunk. The helper
+            # avoids concatenating a single segment into a needless copy.
+            slots = _unique_exact_slots(parts)
+            self._record_exact_stage("unique_cpu", self._profile_clock() - t0)
             out[ridx] = (int(slots.shape[0]), slots)
+        self._record_exact_stage("score_exact_batch_total_wall", self._profile_clock() - batch_started)
         return out
 
     def apply_winner_and_clear(self, rule_idx, rule_str, wordlist_path):
@@ -1313,6 +1682,29 @@ class _GpuScorer(_ResidentWordlistMixin):
         rescored), or a round whose winner came from a multi-rule
         rescore batch (no per-rule recording happens there)."""
         self.last_gpu_dispatches = 0
+        if (self._last_gpu_recorded_hits is not None
+                and self._last_gpu_recorded_hits[0] == rule_idx):
+            _, n_hits = self._last_gpu_recorded_hits
+            self._last_gpu_recorded_hits = None
+            if n_hits == 0:
+                return 0
+            cl.enqueue_fill_buffer(self.queue, self.cleared_count_g, np.int32(0), 0,
+                                    np.int32().itemsize)
+            global_size = (int(math.ceil(n_hits / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
+            self.clear_recorded_kernel(
+                self.queue, global_size, (LOCAL_WORK_SIZE,),
+                self.active_g, self.exact_winner_slots_g, self.cleared_count_g,
+                np.uint32(n_hits))
+            self.last_gpu_dispatches += 1
+            host_count = np.zeros(1, dtype=np.int32)
+            cl.enqueue_copy(self.queue, host_count, self.cleared_count_g).wait()
+            winner_copy_seconds = self._event_seconds(self._last_winner_d2d_event)
+            if winner_copy_seconds is not None:
+                self._record_exact_stage("winner_slots_d2d_gpu", winner_copy_seconds)
+            self._last_winner_d2d_event = None
+            return int(host_count[0])
+
+        self._last_gpu_recorded_hits = None
         if self._last_single_hits is not None and self._last_single_hits[0] == rule_idx:
             _, slots = self._last_single_hits
             self._last_single_hits = None
@@ -1448,11 +1840,12 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
     so a batch does not split into multiple kernel launches unnecessarily.
 
     RANKER_EXACT_BATCH controls how many lazily-promoted candidates are
-    resolved to exact, deduplicated gains together (default 128). It is
-    clamped to 256 (the uint8 local-rule-id limit) and to the same dispatch
-    ceiling. The compact exact-hit result stream uses one uint32 slot plus
-    one uint8 local rule id per possible hit. The defaults can be overridden
-    through the corresponding environment variables.
+    resolved to exact, deduplicated gains together (default 256). It is
+    clamped to 256 and to the same dispatch ceiling. For a single resident
+    word chunk, exact unique counts are computed with a per-rule GPU hash set
+    and only counters are copied to the host; multi-chunk lists use the
+    compact hit-stream fallback to preserve cross-chunk deduplication. The
+    GPU-dedup path can be disabled with RANKER_EXACT_GPU_DEDUP=0.
 
     These are tuning defaults based on the supplied profile, not a claim
     that a new RTX 3060 Ti benchmark has already confirmed a speedup.
@@ -1616,9 +2009,16 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
     first_round_elapsed = None
     first_round_dispatches = 0
     first_round_rescored = 0
+    post_first_winner_started_at = None
+    post_first_winner_rescored = 0
+    post_first_winner_rescore_rate = RollingRate(
+        window_seconds=30.0, min_elapsed_seconds=10.0
+    )
 
-    pbar = ProgressBar(total=limit, desc=cyan("CELF"),
-                unit="rule", bar_width=14)
+    pbar = ProgressBar(
+        total=limit, desc=cyan("CELF"), unit="rule", bar_width=14,
+        rate_window_seconds=30.0, rate_min_elapsed_seconds=10.0,
+    )
 
     def _can_beat(bound, idx, cur_priority, cur_idx):
         p = bound / costs[idx]
@@ -1638,26 +2038,43 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
         """
         def _report(done, total, batch_n, words_n):
             chunk_text = f"{done}/{total}" if total else f"{done}/?"
+            now = time.monotonic()
             # The scorer updates last_gpu_dispatches as each kernel is
             # launched. Include those in-flight launches before the scoring
             # method returns and the outer loop folds them into this round.
             live_dispatches = dispatches_this_pick + int(
                 getattr(scorer, 'last_gpu_dispatches', 0))
+            if post_first_winner_started_at is None:
+                rescored_rate_text = "--"
+            else:
+                in_flight_rescored = (
+                    int(math.ceil(batch_n * min(1.0, done / total)))
+                    if round_num > 1 and total else (batch_n if round_num > 1 else 0)
+                )
+                observed_rescored = (
+                    post_first_winner_rescored + rescored_this_pick + in_flight_rescored
+                )
+                post_first_winner_rescore_rate.set_count(observed_rescored, now=now)
+                rescored_rate = post_first_winner_rescore_rate.rate(now=now)
+                rescored_rate_text = (
+                    f"{rescored_rate:,.1f}" if rescored_rate is not None else "--"
+                )
             postfix = (
                 f"round={round_num} | stage={stage}:{chunk_text} "
                 f"| selected={len(selected)}/{limit} | batch={batch_n} "
                 f"| gpu_dispatches={live_dispatches} "
-                f"| rescored={rescored_this_pick}"
+                f"| rescored={rescored_this_pick} "
+                f"| rescored/s={rescored_rate_text}"
             )
             pbar.set_postfix_str(postfix, refresh=False)
-            now = time.monotonic()
             if now - round_progress_log_state["last_log_at"] >= 8.0:
                 log(
                     f"CELF round {round_num}: {stage} {chunk_text} chunks; "
                     f"batch={batch_n} rules, words/chunk={words_n:,}, "
                     f"selected={len(selected)}/{limit}, "
                     f"gpu_dispatches={live_dispatches}, "
-                    f"rescored={rescored_this_pick}."
+                    f"rescored={rescored_this_pick}, "
+                    f"rescored/s={rescored_rate_text}."
                 )
                 round_progress_log_state["last_log_at"] = now
         return _report
@@ -1782,20 +2199,44 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 rescored_this_pick += len(resolve_batch)
                 total_rescored_rules += len(resolve_batch)
 
+                batch_best_idx = None
+                batch_best_gain = 0
+                batch_best_priority = float("-inf")
                 for ridx in resolve_batch:
-                    gain, slots = exact[ridx]
+                    gain = int(exact[ridx][0])
                     priority = gain / costs[ridx]
-                    if priority > best_priority or (
-                        priority == best_priority and ridx < best_idx
-                    ):
-                        if best_gain > 0:
-                            heapq.heappush(
-                                candidate_heap, (-best_priority, best_idx, best_gain))
-                        best_idx, best_gain, best_priority = ridx, gain, priority
-                        if slots is not None:
-                            scorer._last_single_hits = (ridx, slots)
-                    elif gain > 0:
-                        heapq.heappush(candidate_heap, (-priority, ridx, gain))
+                    if (batch_best_idx is None or priority > batch_best_priority
+                            or (priority == batch_best_priority and ridx < batch_best_idx)):
+                        batch_best_idx = int(ridx)
+                        batch_best_gain = gain
+                        batch_best_priority = priority
+
+                batch_replaced_best = (
+                    batch_best_idx is not None
+                    and _can_beat(batch_best_gain, batch_best_idx, best_priority, best_idx)
+                )
+                if batch_replaced_best:
+                    if best_gain > 0:
+                        heapq.heappush(
+                            candidate_heap, (-best_priority, best_idx, best_gain))
+                    best_idx = batch_best_idx
+                    best_gain = batch_best_gain
+                    best_priority = batch_best_priority
+                    winner_slots = exact[batch_best_idx][1]
+                    if winner_slots is not None:
+                        scorer._last_single_hits = (batch_best_idx, winner_slots)
+                    elif getattr(scorer, "exact_gpu_unique_enabled", False):
+                        scorer.record_exact_batch_winner(batch_best_idx)
+
+                # Every other exact candidate remains eligible in a later
+                # round with its now-tight (exact) heap priority.
+                for ridx in resolve_batch:
+                    ridx = int(ridx)
+                    if batch_replaced_best and ridx == batch_best_idx:
+                        continue
+                    gain = int(exact[ridx][0])
+                    if gain > 0:
+                        heapq.heappush(candidate_heap, (-gain / costs[ridx], ridx, gain))
                 continue
 
             batch = []
@@ -1857,6 +2298,12 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
         round_elapsed = time.time() - round_t0
         round_t0 = time.time()
         if round_num == 1:
+            post_first_winner_started_at = time.monotonic()
+            post_first_winner_rescored = 0
+            post_first_winner_rescore_rate.reset(
+                initial_count=0, now=post_first_winner_started_at
+            )
+            pbar.reset_rate_window(refresh=False)
             log(
                 f"CELF first round committed: winner={best_idx}, gain={best_gain:,}, "
                 f"elapsed={round_elapsed:.1f}s, gpu_dispatches={dispatches_this_pick:,}, "
@@ -1882,8 +2329,28 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                     f"seed_exact=1, total_rescored={first_round_rescored:,}, "
                     f"gpu_dispatches={first_round_dispatches:,}."
                 )
+        if round_num > 1 and post_first_winner_started_at is not None:
+            post_first_winner_rescored += rescored_this_pick
+        if post_first_winner_started_at is not None:
+            post_first_winner_rescore_rate.set_count(
+                post_first_winner_rescored, now=time.monotonic()
+            )
+            rescored_rate = post_first_winner_rescore_rate.rate()
+            rescored_rate_text = (
+                f"{rescored_rate:,.1f}" if rescored_rate is not None else "--"
+            )
+            post_elapsed = max(0.001, time.monotonic() - post_first_winner_started_at)
+            avg_rule_rate_text = (
+                f"{max(0, len(selected) - 1) / post_elapsed:,.1f}"
+                if post_elapsed >= 1.0 and len(selected) > 1 else "--"
+            )
+        else:
+            rescored_rate_text = "--"
+            avg_rule_rate_text = "--"
         pbar.set_postfix({
             "round": round_num,
+            "rescored/s": rescored_rate_text,
+            "avg_rule/s": avg_rule_rate_text,
             "gpu_dispatches": dispatches_this_pick,
             "rescored": rescored_this_pick,
             "heap": n_active,
@@ -1914,13 +2381,17 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
         if exact_chunks:
             result_mib = result_bytes / (1024.0 * 1024.0)
             count_mib = count_bytes / (1024.0 * 1024.0)
+            winner_d2d_bytes = int(getattr(scorer, 'exact_winner_d2d_bytes', 0))
+            winner_d2d_copies = int(getattr(scorer, 'exact_winner_d2d_copies', 0))
             log(dim(
                 f"[CELF profile] exact-result D2H: {result_copies:,} compact "
                 f"bulk reads / {compact_launches:,} GPU compactions; "
                 f"{result_mib:.1f} MiB hit data; counters: {count_copies:,} "
                 f"small reads, {count_mib:.3f} MiB; "
                 f"{nonempty_rows:,} non-empty rule rows across "
-                f"{exact_chunks:,} chunks."))
+                f"{exact_chunks:,} chunks; winner-slot D2D cache: "
+                f"{winner_d2d_copies:,} copies, "
+                f"{winner_d2d_bytes / (1024.0 * 1024.0):.1f} MiB."))
 
         total_time = sum(t for _, t in prof.values())
         log(f"{blue('--- CELF stage breakdown (RANKER_GREEDY_PROFILE) ---')}")
@@ -1944,11 +2415,19 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
             )
             log(dim(resolve_msg))
             if len(sizes) and at_cap / len(sizes) > 0.3:
-                hint_msg = (
-                    "[CELF profile] >30% of fresh-resolve batches hit exact_batch_cap -- "
-                    f"try a higher RANKER_EXACT_BATCH (currently {exact_resolve_cap}) "
-                    "to cut dispatch count further."
-                )
+                if exact_resolve_cap < 256:
+                    hint_msg = (
+                        "[CELF profile] >30% of fresh-resolve batches hit exact_batch_cap -- "
+                        f"test a higher RANKER_EXACT_BATCH (currently {exact_resolve_cap}, "
+                        "supported maximum 256) to reduce dispatch count."
+                    )
+                else:
+                    hint_msg = (
+                        "[CELF profile] >30% of fresh-resolve batches hit the supported "
+                        "RANKER_EXACT_BATCH maximum (256); further gains require reducing "
+                        "per-batch overhead or changing the scoring/compaction path, not "
+                        "raising this setting."
+                    )
                 log(yellow(hint_msg))
             elif len(sizes) and sizes.mean() < max(2, exact_resolve_cap / 4):
                 hint_msg = (
@@ -1957,6 +2436,46 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                     "bottleneck here; look at batch_tighten/upper_bound_pass instead."
                 )
                 log(dim(hint_msg))
+
+        if getattr(scorer, 'exact_gpu_unique_enabled', False):
+            unique_batches = int(getattr(scorer, 'exact_gpu_unique_batches', 0))
+            log(dim(
+                f"[CELF profile] exact dedup: GPU per-rule open-addressing, "
+                f"batches={unique_batches:,}, capacity={scorer.exact_gpu_unique_capacity:,} "
+                f"slots/rule, table={scorer.exact_gpu_unique_bytes / (1024.0 * 1024.0):.1f} MiB, "
+                f"total scratch={getattr(scorer, 'exact_gpu_unique_total_bytes', scorer.exact_gpu_unique_bytes) / (1024.0 * 1024.0):.1f} MiB "
+                f"for batch cap={scorer.exact_batch_cap}; result-slot D2H and CPU unique "
+                "are bypassed for the single-chunk path."))
+        else:
+            log(dim(
+                "[CELF profile] exact dedup: compact result D2H + CPU unique "
+                "(GPU unique path unavailable/disabled or multiple word chunks)."))
+
+        exact_stage_profile = getattr(scorer, 'exact_stage_profile', {})
+        if exact_stage_profile:
+            log(f"{blue('--- exact scoring internals (RANKER_GREEDY_PROFILE) ---')}")
+            exact_stage_order = (
+                "rules_pack_and_enqueue_cpu", "rules_h2d_gpu",
+                "exact_unique_reset_enqueue_cpu", "exact_unique_reset_gpu",
+                "count_reset_gpu", "exact_kernel_enqueue_cpu", "exact_kernel_gpu",
+                "count_d2h_gpu", "count_readback_wait_wall",
+                "prefix_offsets_cpu", "compaction_enqueue_cpu",
+                "offsets_h2d_gpu", "compaction_kernel_gpu", "result_d2h_gpu",
+                "result_readback_wait_wall", "winner_slots_d2d_gpu",
+                "split_hits_cpu", "unique_cpu",
+                "score_exact_batch_total_wall",
+            )
+            for name in exact_stage_order:
+                if name not in exact_stage_profile:
+                    continue
+                calls, secs = exact_stage_profile[name]
+                avg_ms = secs / calls * 1000.0 if calls else 0.0
+                log(f"  {cyan(name):<34} calls={calls:>8,}  total={secs:>8.2f}s "
+                    f"avg={avg_ms:>7.3f}ms")
+            log(dim(
+                "[CELF profile] GPU event durations are device-side timings; "
+                "*_wait_wall includes synchronization with previously queued work "
+                "and is not additive to GPU event durations."))
 
         if "batch_tighten" in prof and "fresh_resolve_exact_batch" in prof:
             bt_count, bt_secs = prof["batch_tighten"]

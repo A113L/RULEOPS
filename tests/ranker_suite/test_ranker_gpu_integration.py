@@ -81,6 +81,15 @@ def test_celf_gpu_reference_device_executes_kernels(monkeypatch, tmp_path, real_
     gains = scorer.score_batch(np.array([0, 1], dtype=np.int64), str(wordlist))
     assert gains.tolist() == [2, 0]
 
+    # Exercise the batch-exact GPU dedup kernel on the same one-chunk list.
+    exact = scorer.score_exact_batch(np.array([0, 1], dtype=np.int64), str(wordlist))
+    assert exact[0][0] == 2
+    assert exact[1][0] == 0
+    if scorer.exact_gpu_unique_enabled:
+        assert exact[0][1] is None  # slots stay on GPU; only exact counts return
+        # Exercise winner-slot D2D caching and the recorded-slot clear path.
+        scorer.record_exact_batch_winner(0)
+
     cleared = scorer.apply_winner_and_clear(0, "l", str(wordlist))
     assert cleared == 2
     assert scorer.remaining_active_count() == 1

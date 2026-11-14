@@ -53,8 +53,25 @@ scoring oraz compaction.
   runtime OpenCL.
 - Wygenerowane źródło OpenCL przechodzi
   `clang -x cl -cl-std=CL1.2 -fsyntax-only`.
-- Pełne `pytest -q` nie może zebrać jednego modułu testowego z dostarczonego
-  archiwum: `tests/test_license_issuer_auth.py` importuje brakujący
-  `license_admin`. Nie jest to błąd testów zmienionego modułu.
+- Nieaktualne testy dawnego modułu licencjonowania zostały usunięte z bieżącej
+  wersji projektu; licencjonowanie nie należy już do tego wydania.
 - Nie wykonano benchmarku na karcie docelowej; przyspieszenie wymaga pomiaru
   na tym samym zbiorze danych i GPU co bazowy przebieg ~13 min.
+
+## Aktualna ścieżka exact scoring dla jednego chunka
+
+Dla wordlisty mieszczącej się w jednym rezydentnym chunku dokładny gain jest
+obliczany z użyciem osobnej, otwartej tablicy hashującej na GPU dla każdej
+reguły. Tablice mają pojemność co najmniej dwukrotnie większą od liczby słów.
+GPU zwraca do CPU wyłącznie mały wektor liczników unikalnych slotów; pełne listy
+trafień pozostają na GPU. Po wybraniu najlepszego kandydata z batcha jego
+sloty są kopiowane D2D do bufora zwycięzcy, używanego bez ponownego przejścia
+wordlisty przez `apply_winner_and_clear`.
+
+Dla wordlist wielochunkowych pozostaje dotychczasowa ścieżka kompaktowych
+wyników i deduplikacji CPU, ponieważ duplikaty mogą występować pomiędzy
+chunkami. Ścieżkę GPU można wyłączyć przez `RANKER_EXACT_GPU_DEDUP=0`.
+
+Metryki postępu CELF oddzielają całkowity elapsed od tempa i ETA liczonego od
+pierwszego zwycięzcy. Dodatkowo raportowane jest `rescored/s`, czyli tempo
+ponownego dokładnego przeliczania kandydatów po pierwszej rundzie.

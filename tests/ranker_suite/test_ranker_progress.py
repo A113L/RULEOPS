@@ -95,3 +95,89 @@ def test_ranker_log_uses_progress_aware_line_writer(monkeypatch):
     assert "rescored=9985\x1b[K\r\x1b[K\n" in output
     assert "round 1: exact-resolve complete\n" in output
     assert "rescored=9985[CELF]" not in output
+
+
+def test_progress_can_reset_rate_window_without_resetting_total_elapsed(monkeypatch):
+    import rule_ranker.progress as progress_module
+
+    now = [10.0]
+    monkeypatch.setattr(progress_module.time, "monotonic", lambda: now[0])
+    stream = io.StringIO()
+    pbar = ProgressBar(100, "CELF", "rule", stream=stream, heartbeat=False)
+    pbar.update(10, refresh=False)
+    now[0] = 20.0
+    pbar.reset_rate_window(refresh=False)
+    pbar.update(5, refresh=False)
+    now[0] = 25.0
+
+    line = pbar._build_line()
+    assert "15/100" in line
+    assert "00:15" in line  # end-to-end elapsed clock was not reset
+    assert "ETA 01:25" in line
+    assert "1.0 rule/s" in line  # rate counts only the five post-reset items
+    pbar.close()
+
+
+def test_rolling_rate_uses_exact_window_boundary_and_minimum_sample_time(monkeypatch):
+    import rule_ranker.progress as progress_module
+
+    now = [0.0]
+    monkeypatch.setattr(progress_module.time, "monotonic", lambda: now[0])
+    rate = progress_module.RollingRate(
+        window_seconds=30.0, min_elapsed_seconds=10.0
+    )
+
+    now[0] = 1.0
+    rate.set_count(100)
+    assert rate.rate() is None  # suppress unstable rates during warm-up
+
+    now[0] = 10.0
+    assert rate.rate() == 10.0
+
+    now[0] = 20.0
+    rate.set_count(400)
+    now[0] = 40.0
+    assert rate.rate() == 10.0  # (400 - 100) / the exact 30-second window
+
+    # Once increments stop, throughput decays to zero as the old work ages out.
+    now[0] = 51.0
+    assert rate.rate() == 0.0
+
+
+def test_progress_bar_can_use_rolling_rate_for_rate_and_eta(monkeypatch):
+    import rule_ranker.progress as progress_module
+
+    now = [0.0]
+    monkeypatch.setattr(progress_module.time, "monotonic", lambda: now[0])
+    stream = io.StringIO()
+    pbar = ProgressBar(1000, "CELF", "rule", stream=stream, heartbeat=False,
+                       rate_window_seconds=30.0, rate_min_elapsed_seconds=10.0)
+    now[0] = 1.0
+    pbar.update(100, refresh=False)
+    now[0] = 9.0
+    assert "ETA --:--" in pbar._build_line()
+    assert "-- rule/s" in pbar._build_line()
+
+    now[0] = 10.0
+    pbar.update(100, refresh=False)
+    line = pbar._build_line()
+    assert "20.0 rule/s" in line
+    assert "ETA 00:40" in line
+
+    # Reset the moving window without resetting total elapsed or progress.
+    now[0] = 20.0
+    pbar.reset_rate_window(refresh=False)
+    now[0] = 21.0
+    pbar.update(50, refresh=False)
+    now[0] = 30.0
+    line = pbar._build_line()
+    assert "250/1,000" in line
+    assert "00:30" in line
+    assert "5.0 rule/s" in line
+
+    # A genuinely idle window is reported as zero, not as the old average.
+    now[0] = 61.0
+    line = pbar._build_line()
+    assert "0.0 rule/s" in line
+    assert "ETA --:--" in line
+    pbar.close()

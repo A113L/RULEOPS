@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import weakref
+from collections import deque
 from typing import Optional, TextIO
 
 
@@ -52,6 +53,66 @@ def write_log_line(message: object, *, stream: Optional[TextIO] = None) -> None:
         bar.refresh(force=True)
 
 
+class RollingRate:
+    """Track a cumulative counter over a bounded, moving time window.
+
+    ``rate()`` returns ``None`` until ``min_elapsed_seconds`` of observations
+    are available. The sample immediately before the window boundary is kept
+    as the baseline, so sparse updates do not create artificially short windows.
+    """
+
+    def __init__(
+        self,
+        window_seconds: float = 30.0,
+        min_elapsed_seconds: float = 10.0,
+        *,
+        initial_count: int = 0,
+    ) -> None:
+        self.window_seconds = max(0.1, float(window_seconds))
+        self.min_elapsed_seconds = min(
+            self.window_seconds, max(0.0, float(min_elapsed_seconds))
+        )
+        self._lock = threading.RLock()
+        self.reset(initial_count=initial_count)
+
+    def reset(self, *, initial_count: int = 0, now: Optional[float] = None) -> None:
+        timestamp = time.monotonic() if now is None else float(now)
+        with self._lock:
+            self.start_time = timestamp
+            self.current_count = max(0, int(initial_count))
+            self._samples = deque([(timestamp, self.current_count)])
+
+    def set_count(self, count: int, *, now: Optional[float] = None) -> None:
+        timestamp = time.monotonic() if now is None else float(now)
+        with self._lock:
+            value = max(self.current_count, int(count))
+            if value == self.current_count:
+                return
+            self.current_count = value
+            self._samples.append((timestamp, value))
+
+    def rate(self, *, now: Optional[float] = None) -> Optional[float]:
+        timestamp = time.monotonic() if now is None else float(now)
+        with self._lock:
+            elapsed = max(0.0, timestamp - self.start_time)
+            if elapsed < self.min_elapsed_seconds:
+                return None
+
+            cutoff = max(self.start_time, timestamp - self.window_seconds)
+            # Keep the newest sample at or before cutoff as the rate baseline.
+            while len(self._samples) > 1 and self._samples[1][0] <= cutoff:
+                self._samples.popleft()
+
+            _baseline_time, baseline_count = self._samples[0]
+            sample_elapsed = timestamp - cutoff
+            if sample_elapsed < self.min_elapsed_seconds or sample_elapsed <= 0.0:
+                return None
+            # The cumulative counter is piecewise constant between observations.
+            # Use its value at the exact left edge of the window, not the timestamp
+            # of the older observation that supplied that value.
+            return max(0, self.current_count - baseline_count) / sample_elapsed
+
+
 class ProgressBar:
     """Single-line progress bar with throttled, in-place terminal updates.
 
@@ -71,6 +132,8 @@ class ProgressBar:
         bar_width: int = 24,
         enabled: bool = True,
         heartbeat: bool = True,
+        rate_window_seconds: Optional[float] = None,
+        rate_min_elapsed_seconds: float = 10.0,
     ) -> None:
         self.stream = stream or sys.stdout
         self.total = max(1, int(total))
@@ -82,6 +145,19 @@ class ProgressBar:
         self.n = 0
         self.postfix = ""
         self.start_time = time.monotonic()
+        # Total elapsed time remains anchored to start_time. The rate window
+        # can be reset at phase boundaries (CELF's first winner) without
+        # falsifying the displayed end-to-end elapsed duration.
+        self.rate_start_time = self.start_time
+        self.rate_start_n = 0
+        self.rate_tracker = (
+            RollingRate(
+                rate_window_seconds,
+                rate_min_elapsed_seconds,
+                initial_count=self.n,
+            )
+            if rate_window_seconds is not None else None
+        )
         self.last_render = 0.0
         self.closed = False
         self._lock = threading.RLock()
@@ -127,15 +203,29 @@ class ProgressBar:
             self.stream.flush()
 
     def _build_line(self) -> str:
-        elapsed = max(0.0, time.monotonic() - self.start_time)
-        rate = self.n / elapsed if elapsed > 0 else 0.0
+        now = time.monotonic()
+        elapsed = max(0.0, now - self.start_time)
+        rate_elapsed = max(0.0, now - self.rate_start_time)
+        rate_items = max(0, self.n - self.rate_start_n)
+        rate_available = True
+        if self.rate_tracker is None:
+            rate = rate_items / rate_elapsed if rate_elapsed > 0 else 0.0
+            rate_available = rate > 0.0
+        else:
+            self.rate_tracker.set_count(self.n, now=now)
+            measured_rate = self.rate_tracker.rate(now=now)
+            rate_available = measured_rate is not None
+            rate = measured_rate if measured_rate is not None else 0.0
         fraction = min(1.0, max(0.0, self.n / self.total))
         filled = int(round(self.bar_width * fraction))
         filled = min(self.bar_width, max(0, filled))
         bar = "#" * filled + "-" * (self.bar_width - filled)
         remaining = max(0, self.total - self.n)
         eta = remaining / rate if rate > 0 else float("nan")
-        rate_text = f"{rate:,.1f} {self.unit}/s" if rate > 0 else f"-- {self.unit}/s"
+        rate_text = (
+            f"{rate:,.1f} {self.unit}/s"
+            if rate_available else f"-- {self.unit}/s"
+        )
         postfix = f" | {self.postfix}" if self.postfix else ""
         return (
             f"{self.desc} [{bar}] {fraction * 100:5.1f}% "
@@ -163,8 +253,8 @@ class ProgressBar:
             if len(suffix) > max_chars - 24:
                 tokens = suffix.split()
                 # Preserve stage/round context and the final counters.
-                if len(tokens) > 5:
-                    suffix = " ".join(tokens[:3] + tokens[-2:])
+                if len(tokens) > 6:
+                    suffix = " ".join(tokens[:3] + tokens[-3:])
             prefix_budget = max_chars - len(suffix) - 3
             if prefix_budget >= 12:
                 return prefix[:prefix_budget] + "..." + suffix
@@ -195,6 +285,8 @@ class ProgressBar:
             if self.closed:
                 return
             self.n += max(0, int(value))
+            if self.rate_tracker is not None:
+                self.rate_tracker.set_count(self.n)
         if refresh:
             self.refresh()
 
@@ -203,6 +295,23 @@ class ProgressBar:
             if self.closed:
                 return
             self.total = max(1, int(total), self.n)
+        if refresh:
+            self.refresh(force=True)
+
+    def reset_rate_window(self, *, refresh: bool = True) -> None:
+        """Start a new throughput/ETA window without resetting progress.
+
+        The overall elapsed clock and current progress count are preserved.
+        This is useful when an initial setup phase should not dilute the rate
+        of the steady-state work that follows it.
+        """
+        with self._lock:
+            if self.closed:
+                return
+            self.rate_start_time = time.monotonic()
+            self.rate_start_n = self.n
+            if self.rate_tracker is not None:
+                self.rate_tracker.reset(initial_count=self.n, now=self.rate_start_time)
         if refresh:
             self.refresh(force=True)
 

@@ -261,7 +261,7 @@ def test_opencl_source_keeps_fnv1a64_as_uint64_before_lookup():
     # CELF uses FNV-1a-64. Truncating the kernel result to uint32 makes
     # every lookup effectively search for the low 32 bits in a uint64 table,
     # which can turn a valid cracked universe into zero hits.
-    assert src.count('ulong h = fnv1a_hash_64(result_temp, (unsigned int)out_len);') == 4
+    assert src.count('ulong h = fnv1a_hash_64(result_temp, (unsigned int)out_len);') == 5
     assert src.count('unsigned int h = fnv1a_hash_64(result_temp, (unsigned int)out_len);') == 0
 
 
@@ -427,6 +427,89 @@ def test_exact_batch_kernel_uses_per_rule_segments_and_gpu_compaction():
     assert "compact_hit_slots[packed_idx]" in compact_kernel
 
 
+def test_gpu_exact_dedup_kernel_hashes_per_rule_and_returns_unique_counts():
+    source = crg.get_recompute_kernel_source(num_cracked=8, hash_table_size=16)
+    start = source.index("void score_exact_gpu_unique_batch_kernel(")
+    end = source.index("// Compact only successful entries", start)
+    kernel = source[start:end]
+
+    assert "unique_table_capacity - 1U" in kernel
+    assert "atomic_cmpxchg" in kernel
+    assert "if (prior == slot) return" in kernel
+    assert "rule_unique_counts[rule_idx]" in kernel
+    assert "unique_hit_list[rule_idx * words_per_rule_cap" in kernel
+    assert "atomic_add" in kernel
+
+
+def test_exact_gpu_unique_plan_respects_memory_budget():
+    from types import SimpleNamespace
+
+    device = SimpleNamespace(
+        global_mem_size=8 * 1024**3,
+        max_mem_alloc_size=2 * 1024**3,
+    )
+    capacity, required = crg._exact_gpu_unique_plan(79_857, 256, device)
+    assert capacity == 262_144
+    assert required == 256 * 262_144 * 4
+
+    # A much larger chunk would exceed the conservative 512 MiB budget.
+    assert crg._exact_gpu_unique_plan(600_000, 256, device) == (0, 0)
+
+    # Budget the hit-list and winner-cache allocations too, not just the hash
+    # table. At 4 GiB the table alone fits the 1/16 budget, but all scratch
+    # allocations together do not.
+    smaller_device = SimpleNamespace(
+        global_mem_size=4 * 1024**3,
+        max_mem_alloc_size=2 * 1024**3,
+    )
+    assert crg._exact_gpu_unique_plan(79_857, 256, smaller_device) == (0, 0)
+
+
+def test_exact_gpu_unique_plan_falls_back_when_device_memory_is_unknown():
+    from types import SimpleNamespace
+
+    assert crg._exact_gpu_unique_plan(79_857, 256, SimpleNamespace()) == (0, 0)
+
+
+def test_record_exact_batch_winner_uses_byte_offsets_not_subbuffers(monkeypatch):
+    from types import SimpleNamespace
+
+    class Buffer:
+        def get_sub_region(self, *_args, **_kwargs):
+            raise AssertionError("D2D winner caching must not create aligned sub-buffers")
+
+    captured = {}
+
+    def fake_enqueue_copy(queue, dst, src, **kwargs):
+        captured.update(queue=queue, dst=dst, src=src, **kwargs)
+        return object()
+
+    monkeypatch.setattr(crg, "cl", SimpleNamespace(enqueue_copy=fake_enqueue_copy))
+    scorer = object.__new__(crg._GpuScorer)
+    scorer.exact_gpu_unique_enabled = True
+    scorer._last_exact_batch_rule_positions = {41: 2}
+    scorer._last_exact_batch_counts = np.asarray([0, 2, 3], dtype=np.int32)
+    scorer._exact_words_per_rule_cap = 17
+    scorer.exact_hit_slots_g = Buffer()
+    scorer.exact_winner_slots_g = Buffer()
+    scorer.queue = object()
+    scorer._last_winner_d2d_event = None
+    scorer.exact_winner_d2d_copies = 0
+    scorer.exact_winner_d2d_bytes = 0
+    scorer._last_single_hits = (41, np.asarray([1, 2], dtype=np.uint32))
+    scorer._last_gpu_recorded_hits = None
+    scorer.exact_profiling_enabled = False
+
+    assert scorer.record_exact_batch_winner(41) == 3
+    assert captured["src_offset"] == 2 * 17 * 4
+    assert captured["byte_count"] == 3 * 4
+    assert captured["dst_offset"] == 0
+    assert captured["src"] is scorer.exact_hit_slots_g
+    assert captured["dst"] is scorer.exact_winner_slots_g
+    assert scorer._last_gpu_recorded_hits == (41, 3)
+    assert scorer._last_single_hits is None
+
+
 class TestOpenCLBuildWarnings:
     def test_opencl_build_suppresses_only_pyopencl_compiler_notice(self, monkeypatch):
         import warnings
@@ -483,6 +566,9 @@ def test_celf_profile_reports_candidate_landscape_and_first_round_work(monkeypat
         def set_postfix(self, *_args, **_kwargs):
             pass
 
+        def reset_rate_window(self, *_args, **_kwargs):
+            pass
+
         def close(self):
             pass
 
@@ -493,6 +579,23 @@ def test_celf_profile_reports_candidate_landscape_and_first_round_work(monkeypat
             self.active = set(range(10))
             self.calls = 0
             self.last_gpu_dispatches = 1
+            self.exact_stage_profile = {
+                "exact_kernel_gpu": [4, 0.125],
+                "unique_cpu": [12, 0.250],
+            }
+            self.exact_batch_cap = 128
+            self.exact_gpu_unique_enabled = True
+            self.exact_gpu_unique_capacity = 8
+            self.exact_gpu_unique_bytes = 256
+            self.exact_gpu_unique_batches = 1
+            self.recorded_exact_winners = []
+
+        def record_exact_batch_winner(self, rule_idx):
+            self.recorded_exact_winners.append(int(rule_idx))
+
+        def score_exact_batch(self, rule_indices, _wordlist_path, progress_callback=None):
+            exact = {0: 5, 1: 6, 2: 4, 3: 0}
+            return {int(idx): (exact[int(idx)], None) for idx in rule_indices}
 
         def score_batch(self, rule_indices, _wordlist_path):
             indices = [int(i) for i in rule_indices]
@@ -514,7 +617,13 @@ def test_celf_profile_reports_candidate_landscape_and_first_round_work(monkeypat
         def remaining_active_count(self):
             return len(self.active)
 
-    monkeypatch.setattr(crg, "_GpuScorer", _ProfileScorer)
+    scorer_instances = []
+    def _make_profile_scorer(*args, **kwargs):
+        instance = _ProfileScorer(*args, **kwargs)
+        scorer_instances.append(instance)
+        return instance
+
+    monkeypatch.setattr(crg, "_GpuScorer", _make_profile_scorer)
     rules = ["seed", "winner", "challenger", "no-hit"]
     selected = crg.celf_select_recompute_gpu(
         rules,
@@ -528,6 +637,7 @@ def test_celf_profile_reports_candidate_landscape_and_first_round_work(monkeypat
     )
 
     assert selected == [("winner", 6)]
+    assert scorer_instances[0].recorded_exact_winners == [1]
     log_text = "\n".join(messages)
     assert "candidate pool: total=4, active=3 (75.00%), zero-hit=1" in log_text
     assert "top-1 priority upper bound: rule=0, raw_hits=10" in log_text
@@ -538,3 +648,53 @@ def test_celf_profile_reports_candidate_landscape_and_first_round_work(monkeypat
     assert "upper_bounds_tightened=2" in log_text
     assert "seed_exact=1" in log_text
     assert "winner_after_celf=" in log_text
+    assert "exact scoring internals" in log_text
+    assert "exact_kernel_gpu" in log_text
+    assert "unique_cpu" in log_text
+    assert "not additive to GPU event durations" in log_text
+
+
+def test_exact_batch_default_is_256_and_environment_override_is_respected(monkeypatch):
+    monkeypatch.delenv("RANKER_EXACT_BATCH", raising=False)
+    assert crg._requested_exact_batch_cap() == 256
+    monkeypatch.setenv("RANKER_EXACT_BATCH", "192")
+    assert crg._requested_exact_batch_cap() == 192
+    monkeypatch.setenv("RANKER_EXACT_BATCH", "0")
+    assert crg._requested_exact_batch_cap() == 1
+
+
+def test_unique_exact_slots_skips_concat_for_single_chunk(monkeypatch):
+    slots = np.asarray([9, 3, 9, 4], dtype=np.uint32)
+
+    def fail_concat(*_args, **_kwargs):
+        raise AssertionError("single chunk must not be concatenated")
+
+    monkeypatch.setattr(crg.np, "concatenate", fail_concat)
+    assert np.array_equal(crg._unique_exact_slots([slots]), [3, 4, 9])
+    assert crg._unique_exact_slots([]).dtype == np.uint32
+
+
+def test_unique_exact_slots_still_merges_and_deduplicates_multiple_chunks():
+    parts = [np.asarray([8, 2, 8], dtype=np.uint32),
+             np.asarray([2, 5], dtype=np.uint32)]
+    assert np.array_equal(crg._unique_exact_slots(parts), [2, 5, 8])
+
+
+def test_exact_event_profile_duration_is_reported_in_seconds():
+    class _Profile:
+        start = 1_000_000
+        end = 4_500_000
+
+    class _Event:
+        profile = _Profile()
+
+    assert crg._GpuScorer._event_seconds(_Event()) == pytest.approx(0.0035)
+
+
+def test_exact_event_profile_duration_is_optional_for_unprofiled_events():
+    class _Event:
+        @property
+        def profile(self):
+            raise RuntimeError("profiling not enabled")
+
+    assert crg._GpuScorer._event_seconds(_Event()) is None

@@ -27,28 +27,29 @@ liczbę dispatchów GPU i liczbę przeliczonych challengerów.
   w kopcu. Obliczenia nie zmieniają aktywnego zbioru, więc kolejność sprawdzania
   exact gain nie zmienia kryterium zwycięzcy ani tie-breaku.
 
-## 3. Bezkolizyjny zapis exact wyników i transfer GPU -> CPU
+## 3. Exact scoring: liczniki per reguła, kompakcja GPU i transfer GPU -> CPU
 
-`score_exact_batch_kernel` zapisuje wynik każdej pary `(reguła, słowo)` pod
-własnym indeksem w macierzy `uint32` w układzie rule-major. Brak trafienia jest
-oznaczany przez `UINT32_MAX`. Kernel nie używa globalnego licznika `atomic_add`
-ani wspólnego append-bufora, więc zapisy różnych reguł nie konkurują o jeden
-adres pamięci.
+`score_exact_batch_kernel` zapisuje trafienia w osobnych segmentach dla każdej
+reguły. Każda reguła ma własny `atomic_add` na swoim liczniku; nie ma jednego
+licznika współdzielonego przez cały batch. Pojemność segmentu odpowiada
+maksymalnej liczbie słów w chunku, więc reguła nie może zapisać więcej niż
+jedno trafienie na pozycję słowa.
 
-Host pobiera jeden zwarty blok D2H dla całego batcha. Wiersze są już pogrupowane
-według reguły; nie ma dodatkowego bufora identyfikatorów reguł ani globalnego
-`np.argsort`. W każdym wierszu sentinel jest odfiltrowywany, a końcowe
-`np.unique` nadal deduplikuje sloty dla danej reguły przez wszystkie word-chunki.
-Dokładny gain i deterministyczny tie-break CELF pozostają niezmienione.
+Po scoringu host odczytuje mały wektor liczników i buduje prefiksowe offsety.
+`compact_exact_hits_kernel` przepisuje tylko faktyczne trafienia do zwartego
+bufora, uruchamiając work-item wyłącznie dla liczby trafień. Nie ma macierzy
+sentineli ani osobnej tablicy identyfikatorów reguł.
 
-Kosztem jest transfer macierzy `n_rules x n_words` także wtedy, gdy część
-par nie trafia w aktywny TARGET. Dla typowego pierwszego przebiegu, w którym
-najwyżej oceniane reguły mają niemal pełne trafienia, stały transfer jest
-porównywalny lub mniejszy od poprzedniego strumienia slotów + identyfikatorów,
-a usuwa koszt globalnej kontencji atomowej i sortowania wyników na CPU.
-Profil `exact-result D2H` raportuje teraz jedną kopię macierzy na word-chunk,
-liczbę przesłanych MiB oraz liczbę niepustych wierszy reguł; nie ma odczytu
-licznika trafień.
+CPU wykonuje jeden zbiorczy odczyt D2H slotów kompaktowanego wyniku dla każdego
+niepustego word-chunka. Odczyt małego wektora liczników jest oddzielnym
+transferem sterującym; nie przenosi danych slotów. Zwarty strumień jest
+rozdzielany na reguły zgodnie z licznikami. Duplikaty pozostają do końcowego
+`np.unique` wykonywanego osobno dla każdej reguły przez wszystkie word-chunki.
+Dokładny gain, aktywny zbiór, kryterium wyboru i tie-break CELF pozostają
+niezmienione.
+
+Profil `exact-result D2H` raportuje odczyty zwartego strumienia, transfer małych
+liczników, rozmiary transferów oraz liczbę uruchomień kernela compaction.
 
 ## 4. Liczniki GPU
 

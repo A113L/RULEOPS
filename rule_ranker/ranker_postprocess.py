@@ -91,7 +91,10 @@ def dim(t): return f"{C.DIM}{t}{C.END}"
 
 
 def log(msg):
-    print(f"{dim('[CELF]')} {msg}", flush=True)
+    # ProgressBar keeps its live frame open with ``\r``. Route log messages
+    # through the renderer so they always occupy a separate terminal/log line.
+    from .progress import write_log_line
+    write_log_line(f"{dim('[CELF]')} {msg}")
 
 
 # ============================================================

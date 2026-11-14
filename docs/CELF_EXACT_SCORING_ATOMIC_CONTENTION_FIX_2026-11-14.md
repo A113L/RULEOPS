@@ -1,47 +1,60 @@
-# CELF exact-batch GPU write-path fix — 2026-11-14
+# CELF exact-batch GPU scoring: per-rule counters and compaction — 2026-11-14
 
-## Problem
+## Cel
 
-The multi-rule exact kernel appended every match to one shared output stream via
-`atomic_add(hit_total_count, 1)`. All work-items for all candidates in a batch
-contended on that single counter. The host then sorted all compact records by
-local rule ID (`np.argsort`) before it could deduplicate each candidate's hits.
-This path could dominate first-round exact challenger resolution when many
-candidate/word pairs matched active targets.
+Zachować dokładne gainy CELF i `np.unique`, ale uniknąć zarówno jednego
+wspólnego licznika atomowego, jak i transferu gęstej macierzy
+`n_rules x n_words` z komórkami dla nietrafionych par.
 
-## Change
+## Trzy etapy
 
-`score_exact_batch_kernel` now assigns a deterministic output cell to each
-`(rule, word)` pair:
+1. **GPU — exact scoring z licznikami per reguła.**
+   `score_exact_batch_kernel` ma osobny licznik `rule_hit_counts[rule_idx]`.
+   Trafienie jest dopisywane do segmentu `rule_idx * words_per_rule_cap`.
+   Segment ma pojemność równą maksymalnemu rozmiarowi word-chunka; jedna reguła
+   może zapisać najwyżej jedno trafienie na słowo, więc nie może go przepełnić.
+   Nie istnieje współdzielony licznik dla całego batcha.
 
-- output index: `rule_idx * num_words + word_idx`;
-- successful hit: cracked-target slot (`uint32`);
-- no hit: `UINT32_MAX` sentinel.
+2. **GPU — kompakcja trafień.**
+   Host odczytuje mały wektor liczników, wylicza prefiksowe offsety i przesyła
+   je na GPU. `compact_exact_hits_kernel` uruchamia work-item wyłącznie dla
+   rzeczywistych trafień. Każdy work-item wyszukuje segment źródłowy przez
+   prefiksy i kopiuje slot do zwartego bufora. Nie powstaje bufor identyfikatorów
+   reguł.
 
-Every work-item writes only to its own cell. The exact batch no longer has a
-global append atomic, hit counter, local-rule-ID stream, or host-side global
-sort. The host copies one contiguous rule-major matrix per word chunk, filters
-sentinels per row, and retains the existing final `np.unique` across chunks.
+3. **CPU — jeden zbiorczy odczyt wyników.**
+   Dla niepustego word-chunka CPU wykonuje jeden D2H odczyt zwartego strumienia
+   slotów. Mały odczyt liczników jest osobnym transferem sterującym potrzebnym
+   do zbudowania offsetów i rozmiaru kompaktowanego wyniku. CPU rozdziela
+   strumień według liczników, zachowuje sloty do końcowego `np.unique` osobno
+   dla każdej reguły i przez wszystkie chunki.
 
-Exact gains, active-target checks, CELF priority comparisons, and deterministic
-tie-breaking are unchanged. `apply_winner_and_clear` still receives the exact
-unique slot list for a winning candidate.
+## Niezmienniki CELF
 
-## Transfer trade-off
+- Każda reguła nadal otrzymuje dokładny zbiór aktywnych slotów celu.
+- Duplikaty slotów w ramach reguły i pomiędzy word-chunkami są usuwane przez
+  istniejące `np.unique`.
+- Gain, test aktywności, priorytety, kolejność wyboru i tie-break CELF nie są
+  zmieniane.
+- `apply_winner_and_clear` nadal otrzymuje dokładną listę unikalnych slotów
+  zwycięskiej reguły.
 
-The transfer size is now fixed at `n_rules * n_words * sizeof(uint32)` for each
-exact chunk, instead of copying only matching compact records plus rule IDs.
-For the observed first-round landscape, where the highest raw upper bounds are
-at the full wordlist size, the dense matrix avoids both global atomic
-serialization and CPU sorting while transferring at most 4 bytes per
-(rule, word) pair. Later rounds with sparse matches may transfer unused
-sentinel cells; the new profile reports matrix MiB and non-empty rule rows so
-this trade-off can be measured on the target GPU.
+## Profilowanie
 
-## Verification
+`exact-result D2H` raportuje liczbę zbiorczych odczytów kompaktowanych slotów,
+liczbę kernel launchy compaction, bajty danych wynikowych oraz liczbę i rozmiar
+małych odczytów liczników. W `gpu_dispatches` uwzględniane są oba kernele:
+scoring oraz compaction.
 
-- `pytest -q`: 570 passed, 5 skipped, 7 warnings.
-- Focused CELF tests: 23 passed.
-- Generated OpenCL kernel source passed `clang -x cl -cl-std=CL1.2 -fsyntax-only`.
-- The GPU integration test was skipped because this environment has no real
-  PyOpenCL/OpenCL runtime. No RTX 3060 Ti benchmark was performed here.
+## Weryfikacja
+
+- `pytest -q tests/ranker_suite`: **154 passed, 1 skipped**.
+- Skipped: integracyjny test GPU, ponieważ środowisko nie ma rzeczywistego
+  runtime OpenCL.
+- Wygenerowane źródło OpenCL przechodzi
+  `clang -x cl -cl-std=CL1.2 -fsyntax-only`.
+- Pełne `pytest -q` nie może zebrać jednego modułu testowego z dostarczonego
+  archiwum: `tests/test_license_issuer_auth.py` importuje brakujący
+  `license_admin`. Nie jest to błąd testów zmienionego modułu.
+- Nie wykonano benchmarku na karcie docelowej; przyspieszenie wymaga pomiaru
+  na tym samym zbiorze danych i GPU co bazowy przebieg ~13 min.

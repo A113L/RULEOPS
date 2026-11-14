@@ -351,30 +351,47 @@ class TestCostWeightedCelf:
         assert fake.remaining_active_count() == 0
 
 
-def test_exact_hit_rows_group_by_rule_and_keep_duplicate_slots_for_unique():
+def test_compacted_exact_hits_split_by_counts_and_keep_duplicates_for_unique():
     rule_indices = [10, 20, 30]
-    miss = np.uint32(0xFFFFFFFF)
-    # Rule-major matrix: misses are sentinel cells; duplicates are retained
-    # until the final exact np.unique for each rule.
-    host_hits = np.asarray([
-        91, miss, 5, 5,
-        miss, 12, 12, 13,
-        7, 91, miss, miss,
-    ], dtype=np.uint32)
+    counts = np.asarray([2, 3, 1], dtype=np.int32)
+    compact_hits = np.asarray([91, 5, 12, 12, 13, 7], dtype=np.uint32)
     slot_parts = {idx: [] for idx in rule_indices}
 
-    nonempty = crg._append_exact_hit_rows(rule_indices, host_hits, 4, slot_parts)
+    nonempty = crg._append_compacted_exact_hits(
+        rule_indices, compact_hits, counts, slot_parts)
 
     assert nonempty == 3
     assert np.array_equal(np.unique(np.concatenate(slot_parts[10])), [5, 91])
     assert np.array_equal(np.unique(np.concatenate(slot_parts[20])), [12, 13])
-    assert np.array_equal(np.unique(np.concatenate(slot_parts[30])), [7, 91])
+    assert np.array_equal(np.unique(np.concatenate(slot_parts[30])), [7])
 
 
-def test_exact_hit_rows_reject_wrong_matrix_size():
+def test_compacted_exact_hits_support_empty_rule_segments():
+    rule_indices = [1, 2, 3, 4]
+    counts = np.asarray([0, 2, 0, 1], dtype=np.int32)
+    compact_hits = np.asarray([8, 9, 7], dtype=np.uint32)
+    slot_parts = {idx: [] for idx in rule_indices}
+
+    nonempty = crg._append_compacted_exact_hits(
+        rule_indices, compact_hits, counts, slot_parts)
+
+    assert nonempty == 2
+    assert slot_parts[1] == []
+    assert np.array_equal(slot_parts[2][0], [8, 9])
+    assert slot_parts[3] == []
+    assert np.array_equal(slot_parts[4][0], [7])
+
+
+def test_compacted_exact_hits_reject_wrong_result_size_and_counts():
     with pytest.raises(ValueError, match="expected 4"):
-        crg._append_exact_hit_rows(
-            [4, 5], np.asarray([10], dtype=np.uint32), 2, {4: [], 5: []})
+        crg._append_compacted_exact_hits(
+            [4, 5], np.asarray([10], dtype=np.uint32),
+            np.asarray([2, 2]), {4: [], 5: []})
+    with pytest.raises(ValueError, match="non-negative"):
+        crg._append_compacted_exact_hits(
+            [4], np.asarray([], dtype=np.uint32),
+            np.asarray([-1]), {4: []})
+
 
 
 def test_fresh_exact_batch_scans_past_interleaved_nonfresh_heap_entries():
@@ -393,16 +410,21 @@ def test_fresh_exact_batch_scans_past_interleaved_nonfresh_heap_entries():
     assert heapq.heappop(heap)[1] == 1
 
 
-def test_exact_batch_kernel_uses_collision_free_rule_major_result_rows():
+def test_exact_batch_kernel_uses_per_rule_segments_and_gpu_compaction():
     source = crg.get_recompute_kernel_source(num_cracked=8, hash_table_size=16)
     start = source.index("void score_exact_batch_kernel(")
     end = source.index("// Clears a small, EXPLICIT list", start)
-    kernel = source[start:end]
-    assert "hit_slots[global_id] = 0xffffffffU" in kernel
-    assert "hit_slots[global_id] = (unsigned int)slot" in kernel
-    assert "atomic_add" not in kernel
-    assert "hit_total_count" not in kernel
-    assert "hit_rule_ids" not in kernel
+    kernels = source[start:end]
+    score_kernel = kernels[:kernels.index("void compact_exact_hits_kernel(")]
+    compact_kernel = kernels[kernels.index("void compact_exact_hits_kernel("):]
+
+    assert "rule_hit_counts[rule_idx]" in score_kernel
+    assert "rule_idx * words_per_rule_cap" in score_kernel
+    assert "atomic_add" in score_kernel
+    assert "hit_total_count" not in score_kernel
+    assert "hit_rule_ids" not in score_kernel
+    assert "rule_offsets[mid + 1] <= packed_idx" in compact_kernel
+    assert "compact_hit_slots[packed_idx]" in compact_kernel
 
 
 class TestOpenCLBuildWarnings:

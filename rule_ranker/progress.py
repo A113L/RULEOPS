@@ -8,7 +8,48 @@ import shutil
 import sys
 import threading
 import time
+import weakref
 from typing import Optional, TextIO
+
+
+_ACTIVE_PROGRESS_BARS = weakref.WeakSet()
+_ACTIVE_PROGRESS_BARS_LOCK = threading.RLock()
+
+
+def write_log_line(message: object, *, stream: Optional[TextIO] = None) -> None:
+    """Write a durable log line without joining it to an active progress row.
+
+    ProgressBar intentionally keeps its current frame open with a carriage
+    return. A plain ``print()`` therefore appends log text to that frame in
+    captured/non-TTY output. Close and clear the frame before writing, then
+    redraw it so the progress indicator remains live.
+    """
+    target = stream or sys.stdout
+    text = str(message).rstrip("\r\n")
+    with _ACTIVE_PROGRESS_BARS_LOCK:
+        bars = [
+            bar for bar in _ACTIVE_PROGRESS_BARS
+            if bar.stream is target and not bar.closed
+        ]
+    if not bars:
+        target.write(text + "\n")
+        target.flush()
+        return
+
+    # There should normally be one ranker progress bar per stream. If nested
+    # stages happen to share a stream, redraw the most recently created one.
+    bar = max(bars, key=lambda item: item.start_time)
+    with bar._lock:
+        if bar.closed:
+            target.write(text + "\n")
+            target.flush()
+            return
+        # Terminate the in-place progress frame, clear its visual contents,
+        # and emit the log on a dedicated line. This works for both TTY and
+        # redirected stdout (where carriage returns are otherwise preserved).
+        bar._write("\r\x1b[K\n")
+        bar._write(text + "\n")
+        bar.refresh(force=True)
 
 
 class ProgressBar:
@@ -50,6 +91,8 @@ class ProgressBar:
         self._thread = None
 
         if self.enabled:
+            with _ACTIVE_PROGRESS_BARS_LOCK:
+                _ACTIVE_PROGRESS_BARS.add(self)
             self.refresh(force=True)
             if heartbeat:
                 self._thread = threading.Thread(
@@ -197,3 +240,5 @@ class ProgressBar:
         with self._lock:
             # Do not fake completion. The final frame reflects the actual count.
             self._write("\r" + self._fit_line(self._build_line()) + "\x1b[K\n")
+        with _ACTIVE_PROGRESS_BARS_LOCK:
+            _ACTIVE_PROGRESS_BARS.discard(self)

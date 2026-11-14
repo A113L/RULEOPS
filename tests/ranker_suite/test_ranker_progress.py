@@ -63,3 +63,35 @@ def test_narrow_terminal_keeps_celf_diagnostic_postfix(monkeypatch):
     assert "gpu_dispatches=12867" in fitted
     assert "rescored=1097921" in fitted
     pbar.close()
+
+
+def test_log_line_is_separated_from_live_progress_frame():
+    from rule_ranker.progress import write_log_line
+
+    stream = io.StringIO()
+    pbar = ProgressBar(100, "CELF", "rule", stream=stream, heartbeat=False)
+    pbar.set_postfix_str("round=1 | heap=886,686")
+    write_log_line("[CELF] first round started", stream=stream)
+    pbar.close()
+
+    output = stream.getvalue()
+    assert "heap=886,686\x1b[K\r\x1b[K\n[CELF] first round started\n" in output
+    assert "heap=886,686[CELF]" not in output
+
+
+def test_ranker_log_uses_progress_aware_line_writer(monkeypatch):
+    import sys
+    from rule_ranker.progress import ProgressBar
+    from rule_ranker.ranker_postprocess import log
+
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stream)
+    pbar = ProgressBar(10, "CELF", "rule", stream=stream, heartbeat=False)
+    pbar.set_postfix_str("round=1 | rescored=9985")
+    log("round 1: exact-resolve complete")
+    pbar.close()
+
+    output = stream.getvalue()
+    assert "rescored=9985\x1b[K\r\x1b[K\n" in output
+    assert "round 1: exact-resolve complete\n" in output
+    assert "rescored=9985[CELF]" not in output

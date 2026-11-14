@@ -349,3 +349,52 @@ class TestCostWeightedCelf:
         assert selected[0][0] == "x"
         assert selected[0][1] == 3  # raw gain, not gain/cost
         assert fake.remaining_active_count() == 0
+
+
+def test_compact_exact_hit_records_group_by_rule_and_keep_duplicate_slots_for_unique():
+    rule_indices = [10, 20, 30]
+    # Records are appended in GPU completion order, not rule order. Duplicate
+    # slots remain in each rule's chunk list and are removed by final np.unique.
+    host_slots = np.asarray([91, 5, 12, 7, 5, 91, 13], dtype=np.uint32)
+    host_rule_ids = np.asarray([2, 0, 1, 2, 0, 2, 1], dtype=np.uint8)
+    slot_parts = {idx: [] for idx in rule_indices}
+
+    crg._group_compact_exact_hits(rule_indices, host_slots, host_rule_ids, slot_parts)
+
+    assert np.array_equal(np.unique(np.concatenate(slot_parts[10])), [5])
+    assert np.array_equal(np.unique(np.concatenate(slot_parts[20])), [12, 13])
+    assert np.array_equal(np.unique(np.concatenate(slot_parts[30])), [7, 91])
+
+
+def test_compact_exact_hit_grouping_rejects_invalid_rule_ids():
+    with pytest.raises(ValueError, match="invalid rule id"):
+        crg._group_compact_exact_hits(
+            [4, 5], np.asarray([10], dtype=np.uint32),
+            np.asarray([2], dtype=np.uint8), {4: [], 5: []})
+
+
+def test_fresh_exact_batch_scans_past_interleaved_nonfresh_heap_entries():
+    import heapq
+
+    heap = [(-10, 0, 10), (-9, 1, 9), (-8, 2, 8), (-7, 3, 7), (-6, 4, 6)]
+    heapq.heapify(heap)
+    fresh = {0, 2, 3, 4}
+
+    batch = crg._collect_fresh_exact_batch(
+        heap, fresh, 2, lambda bound, idx: True, scan_factor=4)
+
+    assert batch == [0, 2]
+    assert fresh == {3, 4}
+    # The non-fresh entry was not consumed or reordered relative to the heap.
+    assert heapq.heappop(heap)[1] == 1
+
+
+def test_exact_batch_kernel_uses_compact_result_stream():
+    source = crg.get_recompute_kernel_source(num_cracked=8, hash_table_size=16)
+    start = source.index("void score_exact_batch_kernel(")
+    end = source.index("// Clears a small, EXPLICIT list", start)
+    kernel = source[start:end]
+    assert "hit_rule_ids" in kernel
+    assert "hit_total_count" in kernel
+    assert "atomic_add(hit_total_count, 1)" in kernel
+    assert "hit_slots[rule_idx * words_per_rule_cap" not in kernel

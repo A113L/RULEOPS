@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4">
+  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile">
 </head>
 <body>
   <div class="app-shell">
@@ -290,6 +290,17 @@
 
             <section class="panel ranker-workflow-panel" id="ranker-optimize-panel" data-workflow-panel="optimize" hidden>
               <div class="panel-heading"><div><span class="section-index">02B</span><h2>Optimize an existing ruleset</h2><p>Run GPU coverage recomputation and lazy-greedy CELF selection on an existing rule set.</p></div><span class="subtle-tag">CELF · RECOMPUTE GPU</span></div>
+              <div class="celf-profile-card" role="group" aria-labelledby="opt-profile-title">
+                <div class="celf-profile-copy">
+                  <span class="celf-profile-kicker">OPTIONAL · CELF DIAGNOSTICS</span>
+                  <b id="opt-profile-title">Enable GPU profiling</b>
+                  <small id="opt-profile-help">Enable detailed CELF stage timings and OpenCL event measurements for this Optimize ruleset run only. Profiling adds measurement overhead.</small>
+                </div>
+                <label class="switch celf-profile-switch" aria-label="Enable CELF GPU profiling">
+                  <input type="checkbox" id="opt_profile" aria-describedby="opt-profile-help">
+                  <span></span>
+                </label>
+              </div>
               <div class="ranker-source-choice"><span class="field-label">Optimization source</span><label><input type="radio" name="rank_source_type" value="rules" checked> Plain .rule file</label><label><input type="radio" name="rank_source_type" value="csv"> Ranking CSV</label></div>
               <div class="upload-card ranker-source-upload" id="opt-rules-upload" data-upload="ranker_source_rules">
                 <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Existing ruleset</h3><small>Plain Hashcat .rule file</small></div><span class="required-star">*</span></div>
@@ -722,6 +733,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   
-      <script src="/app.js?v=ruleops-2.6.0-integrated-tools&build=2.6.0-integrated-tools"></script>
+      <script src="/app.js?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile"></script>
 </body>
 </html>

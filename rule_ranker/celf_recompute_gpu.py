@@ -58,6 +58,7 @@ pipeline as the recompute-gpu CELF implementation.
 
 import argparse
 import csv
+import inspect
 import math
 import os
 import sys
@@ -518,21 +519,15 @@ void score_single_and_record_kernel(
     hit_slots[pos] = (unsigned int)slot;
 }}
 
-// Multi-rule exact/deduplicated recording pass: like
-// score_single_and_record_kernel, but for a small BATCH of rules at
-// once (one kernel dispatch instead of one per candidate). Each rule
-// gets its own hit-count slot and its own fixed-capacity segment of
-// `hit_slots` (segment i = hit_slots[i*words_per_rule_cap .. +cap)).
-// words_per_rule_cap must be >= num_words so no rule's segment can
-// overflow (a rule hits at most one target per word, so at most
-// num_words hits per rule per chunk). This exists purely to amortize
-// GPU round-trip latency across several CELF candidates that each
-// need an exact (post-dedup) gain this round -- raw counts from
-// score_against_active_kernel are NOT safe to use here, same reason
-// as score_single_and_record_kernel: two different words landing on
-// the same still-active target must count once, not twice, and only
-// the host-side np.unique over each rule's recorded slot segment
-// (done by the Python caller) establishes that.
+// Multi-rule exact/deduplicated recording pass. Hits from all rules are
+// appended to one compact result stream rather than copied back from one
+// fixed-capacity segment per rule. `hit_rule_ids[pos]` identifies the
+// candidate-local rule index for `hit_slots[pos]`. There can be at most
+// num_rules_in_batch * num_words records, because each (rule, word) pair
+// contributes at most one hit. The caller groups records by rule and runs
+// np.unique, preserving exact deduplication across words and chunks.
+// One global append counter avoids one D2H copy per rule and adds no kernel
+// launch; the host fetches compact records in two bulk transfers.
 __kernel __attribute__((reqd_work_group_size({LOCAL_WORK_SIZE}, 1, 1)))
 void score_exact_batch_kernel(
     __global const unsigned char* base_words_in,
@@ -541,7 +536,8 @@ void score_exact_batch_kernel(
     __global const unsigned int* hash_table_occupied,
     __global const unsigned int* active,
     __global unsigned int* hit_slots,
-    __global int* hit_counts,
+    __global unsigned char* hit_rule_ids,
+    __global int* hit_total_count,
     const unsigned int num_words,
     const unsigned int num_rules_in_batch,
     const unsigned int words_per_rule_cap,
@@ -585,9 +581,11 @@ void score_exact_batch_kernel(
     unsigned int bit_pos = (unsigned int)slot & 31U;
     if ((active[word_pos] & (1U << bit_pos)) == 0) return;  // already covered
 
-    int pos = atomic_add(&hit_counts[rule_idx], 1);
-    if ((unsigned int)pos < words_per_rule_cap) {{
-        hit_slots[rule_idx * words_per_rule_cap + (unsigned int)pos] = (unsigned int)slot;
+    int pos = atomic_add(hit_total_count, 1);
+    unsigned int total_capacity = num_rules_in_batch * words_per_rule_cap;
+    if ((unsigned int)pos < total_capacity) {{
+        hit_slots[(unsigned int)pos] = (unsigned int)slot;
+        hit_rule_ids[(unsigned int)pos] = (unsigned char)rule_idx;
     }}
 }}
 
@@ -835,11 +833,16 @@ class _GpuScorer(_ResidentWordlistMixin):
         self.W = max(1, (table_size + 31) // 32)
         self.rule_batch_size = rule_batch_size
         self.words_per_gpu_batch = words_per_gpu_batch
+        self._max_chunk_words = max(1, int(words_per_gpu_batch))
+        self.last_gpu_dispatches = 0
         self.encoded = encoded_rules
 
         platform, device = select_device(device_id)
         self.context = cl.Context([device])
-        self.queue = cl.CommandQueue(self.context)
+        queue_properties = (cl.command_queue_properties.PROFILING_ENABLE
+                            if os.environ.get("RANKER_GREEDY_PROFILE") == "1"
+                            else 0)
+        self.queue = cl.CommandQueue(self.context, properties=queue_properties)
         src = get_recompute_kernel_source(num_cracked, self.hash_table_size)
         prg = cl.Program(self.context, src).build()
         self.score_kernel = prg.score_against_active_kernel
@@ -902,6 +905,7 @@ class _GpuScorer(_ResidentWordlistMixin):
             max_chunk_words = max((n for _, n in self._word_chunks_host), default=words_per_gpu_batch)
         else:
             max_chunk_words = words_per_gpu_batch
+        self._max_chunk_words = max(1, int(max_chunk_words))
         self.hit_slots_g = cl.Buffer(self.context, mf.READ_WRITE,
                                       max(1, max_chunk_words) * np.uint32().itemsize)
         self.hit_count_g = cl.Buffer(self.context, mf.READ_WRITE, np.int32().itemsize)
@@ -918,26 +922,38 @@ class _GpuScorer(_ResidentWordlistMixin):
         # expected win here is small (low single-digit %), not another
         # big structural fix like the batching ones.
         self._single_slots_region_cache = {}
-        # EXACT_BATCH_CAP candidates can be exact/deduplicated-scored in
-        # ONE score_exact_batch_kernel dispatch instead of one dispatch
-        # each -- each gets its own words_per_rule_cap-sized segment of
-        # exact_hit_slots_g, sized identically to hit_slots_g's single-rule
-        # capacity (a rule can't hit more targets than there are words in
-        # the chunk). This is purely a GPU round-trip-latency optimization:
-        # it amortizes dispatch overhead across several CELF candidates
-        # that each still need a true deduplicated gain this round;
-        # correctness/dedup happens exactly as in _score_single_recording,
-        # just for several rules' segments at once.
-        self.exact_batch_cap = max(1, int(os.environ.get('RANKER_EXACT_BATCH', '64')))
+        # Several candidates are exact/deduplicated-scored in one kernel
+        # dispatch. Hits are appended to a compact slot + local-rule-id
+        # stream, preserving per-rule np.unique while avoiding one D2H
+        # copy for each non-empty candidate segment.
+        requested_exact_batch_cap = max(1, int(os.environ.get('RANKER_EXACT_BATCH', '128')))
         self._exact_words_per_rule_cap = max(1, max_chunk_words)
+        # Each (rule, word) pair maps to one work-item. Keep the exact batch
+        # within the kernel's launch limit and within the uint8 rule-id range.
+        max_exact_rules_per_dispatch = max(
+            1, MAX_DISPATCH_ITEMS // self._exact_words_per_rule_cap)
+        self.exact_batch_cap = min(requested_exact_batch_cap, 256,
+                                   max_exact_rules_per_dispatch)
+        self.exact_batch_cap_was_clamped = self.exact_batch_cap != requested_exact_batch_cap
+        exact_record_capacity = self._exact_words_per_rule_cap * self.exact_batch_cap
+        if exact_record_capacity > np.iinfo(np.int32).max:
+            raise ValueError(
+                'RANKER_EXACT_BATCH and word chunk size exceed the compact CELF '
+                'record counter capacity; lower RANKER_EXACT_BATCH or --words-batch-size')
+        # Compact output: uint32 slot + uint8 local-rule id per possible hit.
+        # This costs 25% more result-buffer VRAM than segmented slots but
+        # replaces up to exact_batch_cap D2H copies with two bulk transfers.
         self.exact_hit_slots_g = cl.Buffer(
             self.context, mf.READ_WRITE,
-            self._exact_words_per_rule_cap * self.exact_batch_cap * np.uint32().itemsize)
+            exact_record_capacity * np.uint32().itemsize)
+        self.exact_hit_rule_ids_g = cl.Buffer(
+            self.context, mf.READ_WRITE, exact_record_capacity * np.uint8().itemsize)
         self.exact_hit_counts_g = cl.Buffer(
-            self.context, mf.READ_WRITE, self.exact_batch_cap * np.int32().itemsize)
-        # Reused host-side scratch for the counts readback in
-        # score_exact_batch -- avoids a fresh allocation on every call.
-        self._exact_counts_host = np.empty(self.exact_batch_cap, dtype=np.int32)
+            self.context, mf.READ_WRITE, np.int32().itemsize)
+        self._exact_total_count_host = np.empty(1, dtype=np.int32)
+        self.exact_batch_chunks = 0
+        self.exact_nonempty_rule_segments = 0
+        self.exact_result_d2h_copies = 0
         # (rule_idx, slots ndarray) for the most recent SINGLE-rule
         # score_batch() call, if any -- consumed by apply_winner_and_clear()
         # when that same rule turns out to be the round's winner, and
@@ -951,7 +967,7 @@ class _GpuScorer(_ResidentWordlistMixin):
         cl.enqueue_copy(self.queue, host, self.active_g).wait()
         return int(np.unpackbits(host.view(np.uint8)).sum())
 
-    def score_batch(self, rule_indices, wordlist_path):
+    def score_batch(self, rule_indices, wordlist_path, progress_callback=None):
         """Scores len(rule_indices) rules (given as row indices into
         self.encoded) against the CURRENT active set. Returns
         (len(rule_indices),) int64 array of gains. May internally
@@ -996,13 +1012,22 @@ class _GpuScorer(_ResidentWordlistMixin):
         # reuse that recorded list directly -- clearing just `gain`
         # slots -- instead of re-scanning the whole wordlist a second
         # time purely to rediscover positions already known here.
+        self.last_gpu_dispatches = 0
         if len(rule_indices) == 1:
             ridx = int(rule_indices[0])
-            gain, slots = self._score_single_recording(ridx, wordlist_path)
+            gain, slots = self._score_single_recording(
+                ridx, wordlist_path, progress_callback=progress_callback)
             self._last_single_hits = (ridx, slots)
             return np.array([gain], dtype=np.int64)
         self._last_single_hits = None  # multi-rule batch: no single recorded candidate anymore
         out = np.zeros(len(rule_indices), dtype=np.int64)
+        word_chunk_total = (len(self._word_chunks_gpu) if self._word_chunks_gpu is not None
+                            else len(self._word_chunks_host) if self._word_chunks_host is not None
+                            else None)
+        rule_chunk_count = int(math.ceil(len(rule_indices) / self.rule_batch_size))
+        progress_total = (word_chunk_total * rule_chunk_count
+                          if word_chunk_total is not None else None)
+        progress_done = 0
         for cs in range(0, len(rule_indices), self.rule_batch_size):
             ce = min(cs + self.rule_batch_size, len(rule_indices))
             idx_chunk = rule_indices[cs:ce]
@@ -1030,13 +1055,17 @@ class _GpuScorer(_ResidentWordlistMixin):
                                        sub_gains_g, np.uint32(num_words),
                                        np.uint32(sub_num), np.uint32(MAX_WORD_LEN),
                                        np.uint32(self.hash_table_mask))
+                    self.last_gpu_dispatches += 1
+                progress_done += 1
+                if progress_callback is not None:
+                    progress_callback(progress_done, progress_total, n, int(num_words))
 
             host_gains = np.zeros(n, dtype=np.int32)
             cl.enqueue_copy(self.queue, host_gains, gains_region_g).wait()
             out[cs:ce] = host_gains
         return out
 
-    def _score_single_recording(self, rule_idx, wordlist_path):
+    def _score_single_recording(self, rule_idx, wordlist_path, progress_callback=None):
         """Scores ONE rule (by row index into self.encoded) against the
         current active set using score_single_and_record_kernel, and
         returns (gain, slots) where `slots` is the (gain,) uint32 array
@@ -1045,10 +1074,15 @@ class _GpuScorer(_ResidentWordlistMixin):
         Costs the same one wordlist pass score_kernel would have for a
         single rule; the recording is "free" (same kernel launch,
         extra output buffer) rather than an extra pass."""
+        self.last_gpu_dispatches = 0
         rule_len = int(self.rule_lens[rule_idx])
         cl.enqueue_copy(self.queue, self.single_rule_g,
                          np.ascontiguousarray(self.encoded[rule_idx]))
         slot_parts = []
+        chunk_total = (len(self._word_chunks_gpu) if self._word_chunks_gpu is not None
+                       else len(self._word_chunks_host) if self._word_chunks_host is not None
+                       else None)
+        chunk_done = 0
         for words_g, num_words in self._iter_word_chunks(wordlist_path):
             hit_slots_region_g = self._single_slots_region_cache.get(num_words)
             if hit_slots_region_g is None:
@@ -1064,6 +1098,7 @@ class _GpuScorer(_ResidentWordlistMixin):
                                 hit_slots_region_g, self.hit_count_g,
                                 np.uint32(num_words), np.uint32(rule_len),
                                 np.uint32(MAX_WORD_LEN), np.uint32(self.hash_table_mask))
+            self.last_gpu_dispatches += 1
             # The slots copy is unavoidably dependent on the count (we
             # can't size/issue it before the kernel tells us how many
             # hits there were), so this is a genuine 2-round-trip
@@ -1088,6 +1123,9 @@ class _GpuScorer(_ResidentWordlistMixin):
                                  hit_slots_region_g.get_sub_region(
                                      0, cnt * np.uint32().itemsize)).wait()
                 slot_parts.append(host_slots)
+            chunk_done += 1
+            if progress_callback is not None:
+                progress_callback(chunk_done, chunk_total, 1, int(num_words))
         # DEDUPLICATE across the whole wordlist before this becomes the
         # round's "exact" gain. Two different base words can both produce
         # the same cracked output under one rule (e.g. two words that
@@ -1109,19 +1147,16 @@ class _GpuScorer(_ResidentWordlistMixin):
         total_gain = int(slots.shape[0])
         return total_gain, slots
 
-    def score_exact_batch(self, rule_indices, wordlist_path):
-        """Exact (deduplicated) gains for up to self.exact_batch_cap rules
-        at once, in one GPU dispatch per wordlist chunk rather than one
-        dispatch per rule. Returns a dict rule_idx -> (gain, slots), where
-        `slots` is that rule's deduplicated hit-slot array (same shape/use
-        as _score_single_recording's return, so it can feed the same
-        apply_winner_and_clear() fast path if this rule goes on to win).
+    def score_exact_batch(self, rule_indices, wordlist_path, progress_callback=None):
+        """Return exact deduplicated gains for up to exact_batch_cap rules.
 
-        Chunked exactly like _score_single_recording: hit_counts is reset
-        every chunk and per-rule segments are deduplicated and
-        concatenated across chunks before the final np.unique.
+        The kernel appends compact (rule-id, hit-slot) records to one device
+        buffer. Per chunk the host reads the record count, then the actual
+        slots and rule ids in two bulk D2H transfers. Grouping by rule and
+        np.unique preserve the former per-rule segment semantics.
         """
         n = len(rule_indices)
+        self.last_gpu_dispatches = 0
         if n == 0:
             return {}
         if n > self.exact_batch_cap:
@@ -1133,49 +1168,46 @@ class _GpuScorer(_ResidentWordlistMixin):
         cl.enqueue_copy(self.queue, rules_region_g, rules_batch_np)
 
         slot_parts = {int(ridx): [] for ridx in rule_indices}
-        counts_region_g = self.exact_hit_counts_g.get_sub_region(0, n * np.int32().itemsize)
-        if self._exact_counts_host is None or self._exact_counts_host.shape[0] < n:
-            self._exact_counts_host = np.empty(self.exact_batch_cap, dtype=np.int32)
-        host_counts = self._exact_counts_host[:n]
+        chunk_total = (len(self._word_chunks_gpu) if self._word_chunks_gpu is not None
+                       else len(self._word_chunks_host) if self._word_chunks_host is not None
+                       else None)
+        chunk_done = 0
         for words_g, num_words in self._iter_word_chunks(wordlist_path):
-            cl.enqueue_fill_buffer(self.queue, counts_region_g, np.int32(0), 0,
-                                    n * np.int32().itemsize)
+            # One hit at most per (rule, word); cap >= num_words by construction.
+            cl.enqueue_fill_buffer(self.queue, self.exact_hit_counts_g, np.int32(0),
+                                   0, np.int32().itemsize)
             global_size = (int(math.ceil(num_words * n / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
             self.exact_batch_kernel(self.queue, global_size, (LOCAL_WORK_SIZE,),
                                      words_g, rules_region_g, self.hash_table_g,
                                      self.hash_table_occupied_g, self.active_g,
-                                     self.exact_hit_slots_g, counts_region_g,
-                                     np.uint32(num_words), np.uint32(n),
-                                     np.uint32(cap), np.uint32(MAX_WORD_LEN),
-                                     np.uint32(self.hash_table_mask))
-            # Must know each rule's count before its slots copy can be
-            # sized, so this first readback is a hard dependency -- one
-            # wait, unavoidable.
-            cl.enqueue_copy(self.queue, host_counts, counts_region_g).wait()
-            # But the per-rule slots copies that follow do NOT depend on
-            # each other, only on this same count readback -- so issue
-            # all of them back-to-back on the in-order queue WITHOUT an
-            # intermediate .wait() each (that per-candidate blocking is
-            # what made this call latency-dominated: up to exact_batch_cap
-            # serialized round trips), then block ONCE for all of them
-            # together. Each copy is still sized to that rule's true cnt,
-            # never to the cap -- unlike reading back the whole n*cap
-            # region unconditionally, this keeps the transferred bytes
-            # proportional to real data regardless of how large
-            # exact_batch_cap is tuned.
-            pending = []
-            for local_i, ridx in enumerate(rule_indices):
-                cnt = min(int(host_counts[local_i]), cap)  # capped segment, see kernel comment
-                if cnt:
-                    seg_g = self.exact_hit_slots_g.get_sub_region(
-                        (local_i * cap) * np.uint32().itemsize, cnt * np.uint32().itemsize)
-                    buf = np.empty(cnt, dtype=np.uint32)
-                    evt = cl.enqueue_copy(self.queue, buf, seg_g)
-                    pending.append((ridx, buf, evt))
-            if pending:
-                cl.wait_for_events([evt for _, _, evt in pending])
-                for ridx, buf, _ in pending:
-                    slot_parts[int(ridx)].append(buf)
+                                     self.exact_hit_slots_g, self.exact_hit_rule_ids_g,
+                                     self.exact_hit_counts_g, np.uint32(num_words),
+                                     np.uint32(n), np.uint32(cap),
+                                     np.uint32(MAX_WORD_LEN), np.uint32(self.hash_table_mask))
+            self.last_gpu_dispatches += 1
+            self.exact_batch_chunks += 1
+
+            cl.enqueue_copy(self.queue, self._exact_total_count_host,
+                            self.exact_hit_counts_g).wait()
+            total_hits = int(self._exact_total_count_host[0])
+            max_hits = n * int(num_words)
+            if total_hits < 0 or total_hits > max_hits:
+                raise RuntimeError(
+                    f"exact batch hit count out of range: {total_hits} (capacity {max_hits})")
+            if total_hits:
+                host_slots = np.empty(total_hits, dtype=np.uint32)
+                host_rule_ids = np.empty(total_hits, dtype=np.uint8)
+                evt_slots = cl.enqueue_copy(self.queue, host_slots, self.exact_hit_slots_g)
+                evt_rule_ids = cl.enqueue_copy(self.queue, host_rule_ids,
+                                                self.exact_hit_rule_ids_g)
+                cl.wait_for_events([evt_slots, evt_rule_ids])
+                self.exact_result_d2h_copies += 2
+                self.exact_nonempty_rule_segments += int(np.unique(host_rule_ids).size)
+                _group_compact_exact_hits(
+                    rule_indices, host_slots, host_rule_ids, slot_parts)
+            chunk_done += 1
+            if progress_callback is not None:
+                progress_callback(chunk_done, chunk_total, n, int(num_words))
 
         out = {}
         for ridx in rule_indices:
@@ -1206,6 +1238,7 @@ class _GpuScorer(_ResidentWordlistMixin):
         read directly off the upper-bound pass, never individually
         rescored), or a round whose winner came from a multi-rule
         rescore batch (no per-rule recording happens there)."""
+        self.last_gpu_dispatches = 0
         if self._last_single_hits is not None and self._last_single_hits[0] == rule_idx:
             _, slots = self._last_single_hits
             self._last_single_hits = None
@@ -1221,6 +1254,7 @@ class _GpuScorer(_ResidentWordlistMixin):
             self.clear_recorded_kernel(self.queue, global_size, (LOCAL_WORK_SIZE,),
                                         self.active_g, slots_g, self.cleared_count_g,
                                         np.uint32(n_hits))
+            self.last_gpu_dispatches += 1
             host_count = np.zeros(1, dtype=np.int32)
             cl.enqueue_copy(self.queue, host_count, self.cleared_count_g).wait()
             return int(host_count[0])
@@ -1241,10 +1275,63 @@ class _GpuScorer(_ResidentWordlistMixin):
                                self.cleared_count_g, np.uint32(num_words),
                                np.uint32(len(rb)), np.uint32(MAX_WORD_LEN),
                                np.uint32(self.hash_table_mask))
+            self.last_gpu_dispatches += 1
 
         host_count = np.zeros(1, dtype=np.int32)
         cl.enqueue_copy(self.queue, host_count, self.cleared_count_g).wait()
         return int(host_count[0])
+
+
+def _collect_fresh_exact_batch(candidate_heap, fresh_this_round, cap,
+                               can_beat, *, scan_factor=4):
+    """Collect fresh contenders within a bounded heap window.
+
+    Non-fresh entries interleaved among fresh candidates are deferred and
+    pushed back unchanged. Exact-scoring is safe here because it does not
+    mutate the active coverage set; all contenders are compared before commit.
+    """
+    import heapq
+    cap = max(1, int(cap))
+    scan_limit = max(cap, cap * max(1, int(scan_factor)))
+    resolved, deferred = [], []
+    scanned = 0
+    while candidate_heap and len(resolved) < cap and scanned < scan_limit:
+        entry = heapq.heappop(candidate_heap)
+        scanned += 1
+        _neg_priority, idx, bound = entry
+        idx = int(idx)
+        if not can_beat(int(bound), idx):
+            deferred.append(entry)
+            break
+        if idx in fresh_this_round:
+            fresh_this_round.discard(idx)
+            resolved.append(idx)
+        else:
+            deferred.append(entry)
+    for entry in deferred:
+        heapq.heappush(candidate_heap, entry)
+    return resolved
+
+
+def _group_compact_exact_hits(rule_indices, host_slots, host_rule_ids, slot_parts):
+    """Group compact (local-rule-id, slot) records into per-rule lists."""
+    n = len(rule_indices)
+    if len(host_slots) != len(host_rule_ids):
+        raise ValueError("compact exact-hit slot and rule-id arrays differ in length")
+    if len(host_rule_ids) == 0:
+        return
+    if int(host_rule_ids.max()) >= n:
+        raise ValueError("compact exact-hit record contains an invalid rule id")
+    order = np.argsort(host_rule_ids, kind="stable")
+    sorted_slots = host_slots[order]
+    counts = np.bincount(host_rule_ids.astype(np.int64, copy=False), minlength=n)
+    offsets = np.empty(n + 1, dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(counts, out=offsets[1:])
+    for local_i, ridx in enumerate(rule_indices):
+        left, right = int(offsets[local_i]), int(offsets[local_i + 1])
+        if right > left:
+            slot_parts[int(ridx)].append(sorted_slots[left:right])
 
 
 def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
@@ -1276,24 +1363,19 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
     to express at all.
 
     RANKER_GREEDY_RESCORE_BATCH controls speculative contenders rescored
-    together after the first candidate (default 128, raised from an
-    earlier default of 32 after profiling on an RTX 3060 Ti showed no
-    VRAM or correctness regression at this size -- see
-    RANKER_EXACT_BATCH below for the matching exact-resolve default).
-    Smaller values reduce speculative work; larger values reduce
-    kernel-launch overhead.
+    together after the first candidate (default 256). Its effective value
+    is clamped by rule_batch_size and MAX_DISPATCH_ITEMS / max_chunk_words,
+    so a batch does not split into multiple kernel launches unnecessarily.
 
-    RANKER_EXACT_BATCH (read in _GpuScorer.__init__) controls how many
-    lazily-promoted candidates get resolved to an exact, deduplicated
-    gain in one GPU dispatch (default 64, raised from 8). This only
-    costs extra VRAM in exact_hit_slots_g, sized
-    max_chunk_words * RANKER_EXACT_BATCH * 4 bytes -- for a ~130k-word
-    resident chunk that's roughly 32 MB at 64 versus 4 MB at 8, trivial
-    next to the cracked-hash table (which dominates VRAM use and scales
-    with the cracked list size, not with either of these two knobs).
-    Both defaults can still be overridden via their environment
-    variables for memory-constrained GPUs or very different
-    candidate-pool/wordlist sizes.
+    RANKER_EXACT_BATCH controls how many lazily-promoted candidates are
+    resolved to exact, deduplicated gains together (default 128). It is
+    clamped to 256 (the uint8 local-rule-id limit) and to the same dispatch
+    ceiling. The compact exact-hit result stream uses one uint32 slot plus
+    one uint8 local rule id per possible hit. The defaults can be overridden
+    through the corresponding environment variables.
+
+    These are tuning defaults based on the supplied profile, not a claim
+    that a new RTX 3060 Ti benchmark has already confirmed a speedup.
     """
     import heapq
 
@@ -1395,20 +1477,25 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
     limit = budget if budget else n_active
     greedy_rescore_batch = max(
         1,
-        int(os.environ.get('RANKER_GREEDY_RESCORE_BATCH', '128')),
+        int(os.environ.get('RANKER_GREEDY_RESCORE_BATCH', '256')),
     )
+    max_words_per_dispatch = max(
+        1, int(getattr(scorer, '_max_chunk_words', words_per_gpu_batch)))
+    max_rules_per_dispatch = max(1, MAX_DISPATCH_ITEMS // max_words_per_dispatch)
     greedy_rescore_batch = min(
         greedy_rescore_batch,
         max(1, int(rule_batch_size)),
+        max_rules_per_dispatch,
     )
 
     selected = []
     round_num = 0
     total_rescored_rules = 0
+    total_gpu_dispatches = 0
     round_t0 = time.time()
 
-    pbar = ProgressBar(total=limit, desc=cyan("CELF greedy select [recompute-gpu+heap]"),
-                unit="rule")
+    pbar = ProgressBar(total=limit, desc=cyan("CELF"),
+                unit="rule", bar_width=14)
 
     def _can_beat(bound, idx, cur_priority, cur_idx):
         p = bound / costs[idx]
@@ -1416,11 +1503,69 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
 
     has_exact_batch = hasattr(scorer, 'score_exact_batch')
     exact_resolve_cap = max(1, int(getattr(scorer, 'exact_batch_cap', 1)))
+    round_progress_log_state = {"last_log_at": 0.0}
+
+    def _round_progress_callback(stage):
+        """Update the live progress postfix and emit a durable log heartbeat.
+
+        A CELF round can rescore a large fraction of the candidate pool before
+        its first winner is committed. The selected/limit counter must remain
+        semantically accurate, so inner work is reported separately rather
+        than incrementing the winner counter prematurely.
+        """
+        def _report(done, total, batch_n, words_n):
+            chunk_text = f"{done}/{total}" if total else f"{done}/?"
+            # The scorer updates last_gpu_dispatches as each kernel is
+            # launched. Include those in-flight launches before the scoring
+            # method returns and the outer loop folds them into this round.
+            live_dispatches = dispatches_this_pick + int(
+                getattr(scorer, 'last_gpu_dispatches', 0))
+            postfix = (
+                f"round={round_num} | stage={stage}:{chunk_text} "
+                f"| selected={len(selected)}/{limit} | batch={batch_n} "
+                f"| gpu_dispatches={live_dispatches} "
+                f"| rescored={rescored_this_pick}"
+            )
+            pbar.set_postfix_str(postfix, refresh=False)
+            now = time.monotonic()
+            if now - round_progress_log_state["last_log_at"] >= 8.0:
+                log(
+                    f"CELF round {round_num}: {stage} {chunk_text} chunks; "
+                    f"batch={batch_n} rules, words/chunk={words_n:,}, "
+                    f"selected={len(selected)}/{limit}, "
+                    f"gpu_dispatches={live_dispatches}, "
+                    f"rescored={rescored_this_pick}."
+                )
+                round_progress_log_state["last_log_at"] = now
+        return _report
+
+    try:
+        _score_batch_supports_progress = (
+            "progress_callback" in inspect.signature(scorer.score_batch).parameters)
+    except (TypeError, ValueError):
+        _score_batch_supports_progress = False
+
+    def _score_batch_with_progress(rule_indices, progress_callback):
+        # Lightweight test/fallback scorers may implement only the original
+        # two-argument API. Production _GpuScorer exposes chunk callbacks.
+        if _score_batch_supports_progress:
+            return scorer.score_batch(
+                rule_indices, wordlist_path, progress_callback=progress_callback)
+        return scorer.score_batch(rule_indices, wordlist_path)
 
     while len(selected) < limit and candidate_heap:
         round_num += 1
         dispatches_this_pick = 0
         rescored_this_pick = 0
+        if round_num == 1:
+            pbar.set_postfix_str(
+                f"round=1 | seed exact starting | selected=0/{limit} | "
+                f"heap={len(candidate_heap):,}", refresh=True)
+            log(
+                f"CELF first round started: selected=0/{limit}, "
+                f"challengers={len(candidate_heap):,}. Inner scoring progress "
+                f"will be logged while the first winner is being resolved."
+            )
 
         # Seed this round with one EXACT (deduplicated) evaluation -- never
         # trust the pass-1 upper_bound or a batch-tightened bound as the
@@ -1437,9 +1582,10 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
         _neg_priority, seed_idx, _bound = heapq.heappop(candidate_heap)
         seed_idx = int(seed_idx)
         with _Timed("seed_exact"):
-            seed_gain = int(scorer.score_batch(
-                np.asarray([seed_idx], dtype=np.int64), wordlist_path)[0])
-        dispatches_this_pick += 1
+            seed_gain = int(_score_batch_with_progress(
+                np.asarray([seed_idx], dtype=np.int64),
+                _round_progress_callback("seed-exact"))[0])
+        dispatches_this_pick += max(1, int(getattr(scorer, 'last_gpu_dispatches', 1)))
         rescored_this_pick += 1
         total_rescored_rules += 1
 
@@ -1472,26 +1618,27 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 # resolved candidate still gets a true deduplicated gain
                 # before it is allowed to contend for the win, same as a
                 # single score_batch([idx]) call would give.
-                resolve_batch = []
-                while candidate_heap and len(resolve_batch) < exact_resolve_cap:
-                    top_bound = int(candidate_heap[0][2])
-                    top_idx = int(candidate_heap[0][1])
-                    if top_idx not in fresh_this_round:
-                        break
-                    if not _can_beat(top_bound, top_idx, best_priority, best_idx):
-                        break
-                    heapq.heappop(candidate_heap)
-                    fresh_this_round.discard(top_idx)
-                    resolve_batch.append(top_idx)
+                resolve_batch = _collect_fresh_exact_batch(
+                    candidate_heap, fresh_this_round, exact_resolve_cap,
+                    lambda bound, idx: _can_beat(bound, idx, best_priority, best_idx),
+                    scan_factor=4)
                 if not resolve_batch:
                     continue
                 if profiling:
                     resolve_batch_sizes.append(len(resolve_batch))
 
                 if has_exact_batch:
+                    pbar.set_postfix_str(
+                        f"round={round_num} | exact batch starting "
+                        f"| batch={len(resolve_batch)} rules "
+                        f"| selected={len(selected)}/{limit} "
+                        f"| gpu_dispatches={dispatches_this_pick} "
+                        f"| rescored={rescored_this_pick}", refresh=True)
                     with _Timed("fresh_resolve_exact_batch", n=len(resolve_batch)):
-                        exact = scorer.score_exact_batch(resolve_batch, wordlist_path)
-                    dispatches_this_pick += 1
+                        exact = scorer.score_exact_batch(
+                            resolve_batch, wordlist_path,
+                            progress_callback=_round_progress_callback("exact-resolve"))
+                    dispatches_this_pick += max(1, int(getattr(scorer, 'last_gpu_dispatches', 1)))
                 else:
                     # Fallback for scorers without score_exact_batch (e.g.
                     # the pure-Python test fake, which is already exact
@@ -1541,10 +1688,16 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
             # by duplicate word->target hits, so these only TIGHTEN each
             # candidate's bound -- they never get compared against
             # best_priority directly, and never replace best_idx.
+            pbar.set_postfix_str(
+                f"round={round_num} | batch-tighten starting "
+                f"| batch={len(batch)} rules | selected={len(selected)}/{limit} "
+                f"| gpu_dispatches={dispatches_this_pick} "
+                f"| rescored={rescored_this_pick}", refresh=False)
             with _Timed("batch_tighten", n=len(batch)):
-                gains = scorer.score_batch(
-                    np.asarray(batch, dtype=np.int64), wordlist_path)
-            dispatches_this_pick += 1
+                gains = _score_batch_with_progress(
+                    np.asarray(batch, dtype=np.int64),
+                    _round_progress_callback("batch-tighten"))
+            dispatches_this_pick += max(1, int(getattr(scorer, 'last_gpu_dispatches', 1)))
             rescored_this_pick += len(batch)
             total_rescored_rules += len(batch)
 
@@ -1556,17 +1709,27 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                     fresh_this_round.add(ridx)
 
         if best_gain <= 0:
+            # Keep the profile total accurate even if the final round
+            # evaluated challengers but found no positive marginal gain.
+            total_gpu_dispatches += dispatches_this_pick
             break
 
         with _Timed("apply_winner_and_clear"):
             true_cleared = scorer.apply_winner_and_clear(
                 best_idx, rules[best_idx], wordlist_path)
+        dispatches_this_pick += int(getattr(scorer, 'last_gpu_dispatches', 0))
+        total_gpu_dispatches += dispatches_this_pick
         selected.append((rules[best_idx], true_cleared))
         n_active -= 1
 
         pbar.update(1)
         round_elapsed = time.time() - round_t0
         round_t0 = time.time()
+        if round_num == 1:
+            log(
+                f"CELF first round committed: winner={best_idx}, gain={best_gain:,}, "
+                f"elapsed={round_elapsed:.1f}s, gpu_dispatches={dispatches_this_pick:,}, "
+                f"rescored={rescored_this_pick:,}.")
         pbar.set_postfix({
             "round": round_num,
             "gpu_dispatches": dispatches_this_pick,
@@ -1583,7 +1746,22 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
         log(f"{blue('Greedy profile:')} {cyan(f'{total_rescored_rules:,}')} "
             f"candidate rescoring(s) after the initial pass; "
             f"rescore_batch={cyan(str(greedy_rescore_batch))}, "
-            f"exact_batch_cap={cyan(str(exact_resolve_cap))}.")
+            f"exact_batch_cap={cyan(str(exact_resolve_cap))}, "
+            f"gpu_kernel_dispatches={cyan(f'{total_gpu_dispatches:,}')}")
+        if getattr(scorer, 'exact_batch_cap_was_clamped', False):
+            log(yellow(
+                f"[CELF profile] RANKER_EXACT_BATCH was clamped to "
+                f"{exact_resolve_cap} to respect MAX_DISPATCH_ITEMS."))
+        exact_chunks = int(getattr(scorer, 'exact_batch_chunks', 0))
+        result_copies = int(getattr(scorer, 'exact_result_d2h_copies', 0))
+        prior_segment_copies = int(getattr(scorer, 'exact_nonempty_rule_segments', 0))
+        if exact_chunks:
+            saved_copies = max(0, prior_segment_copies - result_copies)
+            log(dim(
+                f"[CELF profile] exact-result D2H: {result_copies:,} bulk copies "
+                f"for {exact_chunks:,} chunks; {prior_segment_copies:,} former "
+                f"per-rule copies consolidated (estimated {saved_copies:,} copies avoided; "
+                "count readback is unchanged)."))
 
         total_time = sum(t for _, t in prof.values())
         log(f"{blue('--- CELF stage breakdown (RANKER_GREEDY_PROFILE) ---')}")

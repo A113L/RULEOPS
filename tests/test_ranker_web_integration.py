@@ -176,3 +176,46 @@ def test_build_ranker_mab_command_includes_mab_tuning_but_not_legacy(tmp_path, m
     assert "--legacy" not in command
     assert ["--mab-exploration", "1.25"] == command[command.index("--mab-exploration"):command.index("--mab-exploration") + 2]
     assert "--mab-no-zero-eliminate" in command
+
+
+def test_celf_profiling_toggle_is_nested_inside_optimize_panel_and_submitted():
+    root = Path(app.__file__).resolve().parent
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "app.js").read_text(encoding="utf-8")
+    optimize_panel_start = html.index('id="ranker-optimize-panel"')
+    analyze_panel_start = html.index('id="ranker-analyze-panel"')
+    optimize_panel = html[optimize_panel_start:analyze_panel_start]
+    assert 'class="celf-profile-card"' in optimize_panel
+    assert 'id="opt_profile"' in optimize_panel
+    assert 'Enable GPU profiling' in optimize_panel
+    assert "profile: $('opt_profile').checked" in js
+    # Keep the setting out of the generic workflow area: it should appear only
+    # when the Optimize ruleset tab is active.
+    tabs_start = html.index('id="ranker-workflow-tabs"')
+    rank_panel_start = html.index('id="ranker-rank-panel"')
+    assert 'opt_profile' not in html[tabs_start:rank_panel_start]
+    # Force fresh static asset URLs when upgrading an existing RULEOPS install.
+    assert 'styles.css?v=2.6.4-ranker-celf-profile' in html
+    assert 'app.js?v=2.6.4-ranker-celf-profile' in html
+
+
+def test_ranker_profiling_environment_is_scoped_to_optimize():
+    assert app.ranker_env_overrides("optimize", {"profile": True}) == {
+        "RANKER_GREEDY_PROFILE": "1"
+    }
+    assert app.ranker_env_overrides("optimize", {"profile": False}) == {
+        "RANKER_GREEDY_PROFILE": None
+    }
+    assert app.ranker_env_overrides("rank", {"profile": True}) == {
+        "RANKER_GREEDY_PROFILE": None
+    }
+
+
+def test_celf_inner_progress_is_reported_for_seed_and_batch_tightening():
+    root = Path(app.__file__).resolve().parent
+    source = (root / "rule_ranker" / "celf_recompute_gpu.py").read_text(encoding="utf-8")
+    assert "def score_batch(self, rule_indices, wordlist_path, progress_callback=None):" in source
+    assert '_round_progress_callback("seed-exact")' in source
+    assert '_round_progress_callback("batch-tighten")' in source
+    assert '_round_progress_callback("exact-resolve")' in source
+    assert "CELF first round started:" in source

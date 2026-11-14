@@ -1249,6 +1249,12 @@ def _float_option(options: dict, key: str, default: float, minimum: float = 0.0,
     return value
 
 
+def ranker_env_overrides(mode: str, options: dict) -> dict:
+    """Return per-job Ranker environment overrides for diagnostic flags."""
+    profiling_enabled = mode == "optimize" and isinstance(options, dict) and options.get("profile") is True
+    return {"RANKER_GREEDY_PROFILE": "1"} if profiling_enabled else {"RANKER_GREEDY_PROFILE": None}
+
+
 def build_ranker_command(mode: str, options: dict, run_dir: Path):
     """Build a validated command for the bundled Rule Ranker dispatcher."""
     if mode not in {"rank", "optimize", "analyze"}:
@@ -1500,7 +1506,7 @@ def build_minimizer_command(options: dict, run_dir: Path):
     return cmd, output_name
 
 
-def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_baseline_bytes=None):
+def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_baseline_bytes=None, env_overrides=None):
     global PROCESS, RUN_THREAD
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -1510,6 +1516,12 @@ def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_b
     # useful counters/postfix fields before the GUI can wrap the full line.
     env["COLUMNS"] = "200"
     env["LINES"] = "40"
+    if env_overrides:
+        for key, value in env_overrides.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[str(key)] = str(value)
     if tool == "concentrator":
         env["CONCENTRATOR_WEB_MODE"] = "1"
         env["CONCENTRATOR_WEB_AUTO_CONFIRM"] = "1" if "-y" in cmd else "0"
@@ -2640,7 +2652,12 @@ class Handler(BaseHTTPRequestHandler):
             add_log(f"[WEB] Starting Rule Ranker workflow: {mode}.")
             add_log("[WEB] Wordlists and rules are retained in the reusable library; workflow-specific temporary files are removed after the job.")
             add_log("[WEB] " + " ".join(cmd[3:]))
-        thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, None, "ranker", storage_baseline_bytes), daemon=True)
+        ranker_env = ranker_env_overrides(mode, options)
+        if ranker_env["RANKER_GREEDY_PROFILE"] == "1":
+            add_log("[WEB] CELF GPU profiling is ENABLED for this Optimize ruleset job.")
+        else:
+            add_log("[WEB] CELF GPU profiling is disabled for this Ranker job.")
+        thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, None, "ranker", storage_baseline_bytes, ranker_env), daemon=True)
         with LOCK:
             RUN_THREAD = thread
         thread.start()

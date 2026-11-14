@@ -1092,6 +1092,7 @@ function rankerOptionsForActiveWorkflow() {
       device: integerOrBlank('opt_device', 'OpenCL device ID', 0),
       auto_max_output_len: $('opt_auto_max_output_len').checked,
       print_output_len_estimate: $('opt_print_output_len_estimate').checked,
+      profile: $('opt_profile').checked,
     };
   }
   if (!uploadState.ranker_analysis_csv) throw new Error('Upload a ranking CSV to analyze.');

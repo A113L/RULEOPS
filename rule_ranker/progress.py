@@ -105,9 +105,32 @@ class ProgressBar:
             width = shutil.get_terminal_size((120, 20)).columns
         except (OSError, ValueError):
             width = 120
-        if width <= 20 or len(line) <= width:
+        max_chars = max(1, width - 1)
+        if width <= 20 or len(line) <= max_chars:
             return line
-        return line[: max(1, width - 1)]
+
+        # CELF progress carries durable diagnostic fields in its postfix.
+        # When the terminal is narrow, shorten the visual prefix first and
+        # keep the complete postfix (especially gpu_dispatches/rescored).
+        marker = " | round="
+        marker_at = line.find(marker)
+        if marker_at >= 0:
+            prefix = line[:marker_at]
+            suffix = line[marker_at + len(marker):].replace(" | ", " ")
+            if len(suffix) > max_chars - 24:
+                tokens = suffix.split()
+                # Preserve stage/round context and the final counters.
+                if len(tokens) > 5:
+                    suffix = " ".join(tokens[:3] + tokens[-2:])
+            prefix_budget = max_chars - len(suffix) - 3
+            if prefix_budget >= 12:
+                return prefix[:prefix_budget] + "..." + suffix
+
+        # Generic progress lines have no structured postfix. Preserve both
+        # their leading phase/progress and trailing diagnostic context.
+        head = max(12, (max_chars - 3) // 2)
+        tail = max_chars - head - 3
+        return line[:head] + "..." + (line[-tail:] if tail > 0 else "")
 
     def refresh(self, *, force: bool = False) -> None:
         if not self.enabled:

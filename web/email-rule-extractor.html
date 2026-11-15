@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Email Rule Extractor · RULEOPS</title>
 <link rel="stylesheet" href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4&metrics=2.6.5">
-<link rel="stylesheet" href="/email-rule-extractor.css?v=2.6.5&metrics=2.6.6">
+<link rel="stylesheet" href="/email-rule-extractor.css?v=2.6.6&metrics=2.6.6">
 </head>
 <body>
 <div class="app-shell">
@@ -106,10 +106,21 @@
         </div>
         <div id="email-file-info"></div>
       </div>
-      <div style="margin-bottom:1.25rem">
-        <label>Domain Filter (optional)</label>
-        <input type="text" id="domain-filter" placeholder="e.g. gmail.com,protonmail.com (leave blank for all)">
-        <p style="font-size:.78rem;color:var(--t3);margin-top:.3rem">Comma-separated, case-insensitive. Only keep matching domains.</p>
+      <div class="domain-filter-section" style="margin-bottom:1.25rem">
+        <div class="domain-filter-heading">
+          <label for="domain-filter-search">Domain Filter <span>(optional)</span></label>
+          <span id="domain-filter-summary" class="domain-filter-summary" aria-live="polite">All domains · upload a file to view groups</span>
+        </div>
+        <div class="domain-filter-controls">
+          <button type="button" id="domain-filter-all" class="domain-filter-chip domain-filter-chip-all" aria-pressed="true" disabled>
+            <span>All domains</span><span id="domain-filter-total" class="domain-count">0</span>
+          </button>
+          <input type="search" id="domain-filter-search" class="domain-filter-search" placeholder="Search domains…" aria-label="Search email domains" autocomplete="off" hidden>
+        </div>
+        <div id="domain-filter-options" class="domain-filter-options" role="group" aria-label="Select email domains">
+          <span class="domain-filter-empty">Upload an email list to see domain groups.</span>
+        </div>
+        <p class="domain-filter-hint">Select one or more domains to include. Selected groups are highlighted. The count is the number of email addresses in each domain.</p>
       </div>
       <div style="margin-bottom:1.25rem">
         <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
@@ -157,6 +168,6 @@
   </main>
 </div>
 
-<script src="/email-rule-extractor.js?v=2.6.2&metrics=2.6.6" defer></script>
+<script src="/email-rule-extractor.js?v=2.6.3&metrics=2.6.6" defer></script>
 </body>
 </html>

@@ -25,7 +25,14 @@
   const clearBtn = document.getElementById('clear-btn');
   const resultsSection = document.getElementById('results-section');
   const resultsContent = document.getElementById('results-content');
-  const domainFilterInput = document.getElementById('domain-filter');
+  const domainFilterOptions = document.getElementById('domain-filter-options');
+  const domainFilterAllButton = document.getElementById('domain-filter-all');
+  const domainFilterTotal = document.getElementById('domain-filter-total');
+  const domainFilterSearch = document.getElementById('domain-filter-search');
+  const domainFilterSummary = document.getElementById('domain-filter-summary');
+  let domainCounts = new Map();
+  let selectedDomains = new Set();
+  let allDomainsSelected = true;
   const extractDigitsCheck = document.getElementById('extract-digits');
   const downloadBtn = document.getElementById('download-rules-btn');
 
@@ -140,6 +147,104 @@
     return rule;
   }
 
+  function collectDomainCounts(content) {
+    const counts = new Map();
+    for (const rawLine of content.split(/\r?\n/)) {
+      const emailAddr = extractEmailFromLine(rawLine);
+      if (!emailAddr) continue;
+      const parsed = parseEmail(emailAddr);
+      if (!parsed) continue;
+      counts.set(parsed.domain, (counts.get(parsed.domain) || 0) + 1);
+    }
+    return counts;
+  }
+
+  function renderDomainFilters() {
+    domainFilterOptions.innerHTML = '';
+    const entries = Array.from(domainCounts.entries()).sort((a, b) => {
+      return b[1] - a[1] || a[0].localeCompare(b[0]);
+    });
+    const totalEmails = entries.reduce((sum, [, count]) => sum + count, 0);
+
+    domainFilterAllButton.disabled = entries.length === 0;
+    domainFilterAllButton.setAttribute('aria-pressed', String(allDomainsSelected));
+    domainFilterTotal.textContent = totalEmails.toLocaleString();
+    domainFilterSearch.hidden = entries.length <= 8;
+
+    const includedEmailCount = allDomainsSelected
+      ? totalEmails
+      : entries.reduce((sum, [domain, count]) => sum + (selectedDomains.has(domain) ? count : 0), 0);
+    const includedDomainCount = allDomainsSelected ? entries.length : selectedDomains.size;
+    if (!entries.length) {
+      domainFilterSummary.textContent = 'No valid email domains found';
+      const empty = document.createElement('span');
+      empty.className = 'domain-filter-empty';
+      empty.textContent = currentFileContent
+        ? 'No valid email domains found in this file.'
+        : 'Upload an email list to see domain groups.';
+      domainFilterOptions.appendChild(empty);
+      return;
+    }
+
+    domainFilterSummary.textContent = allDomainsSelected
+      ? `All ${entries.length.toLocaleString()} domains · ${totalEmails.toLocaleString()} emails included`
+      : `${includedDomainCount.toLocaleString()} of ${entries.length.toLocaleString()} domains · ${includedEmailCount.toLocaleString()} emails included`;
+
+    const query = domainFilterSearch.value.trim().toLowerCase();
+    const visibleEntries = query
+      ? entries.filter(([domain]) => domain.includes(query))
+      : entries;
+
+    if (!visibleEntries.length) {
+      const empty = document.createElement('span');
+      empty.className = 'domain-filter-empty';
+      empty.textContent = `No domains match “${domainFilterSearch.value.trim()}”.`;
+      domainFilterOptions.appendChild(empty);
+      return;
+    }
+
+    for (const [domain, count] of visibleEntries) {
+      const isSelected = allDomainsSelected || selectedDomains.has(domain);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'domain-filter-chip';
+      button.setAttribute('aria-pressed', String(isSelected));
+      button.setAttribute('aria-label', `${domain}, ${count.toLocaleString()} email addresses, ${isSelected ? 'included' : 'excluded'}`);
+      button.title = `${count.toLocaleString()} email address(es)`;
+      button.appendChild(document.createTextNode(domain));
+
+      const countBadge = document.createElement('span');
+      countBadge.className = 'domain-count';
+      countBadge.textContent = count.toLocaleString();
+      countBadge.setAttribute('aria-hidden', 'true');
+      button.appendChild(countBadge);
+
+      button.addEventListener('click', () => {
+        if (allDomainsSelected) {
+          allDomainsSelected = false;
+          selectedDomains.clear();
+          selectedDomains.add(domain);
+          renderDomainFilters();
+          return;
+        }
+        if (selectedDomains.has(domain)) {
+          selectedDomains.delete(domain);
+        } else {
+          selectedDomains.add(domain);
+        }
+        if (selectedDomains.size === entries.length) {
+          allDomainsSelected = true;
+          selectedDomains.clear();
+        } else if (selectedDomains.size === 0) {
+          // An empty selection is treated as All domains, never as an accidental zero-result filter.
+          allDomainsSelected = true;
+        }
+        renderDomainFilters();
+      });
+      domainFilterOptions.appendChild(button);
+    }
+  }
+
   // Process file content and return pattern map: key = patternString (digits+domain OR local+domain)
   // returns Map with { pattern, count, examples, rule }
   function processEmails(content, domainFilterSet, extractDigitsOnly) {
@@ -233,14 +338,8 @@
       return;
     }
 
-    // parse domain filter
-    let domainFilter = domainFilterInput.value.trim();
-    let domainSet = new Set();
-    if (domainFilter) {
-      const parts = domainFilter.split(',').map(s => s.trim().toLowerCase()).filter(s => s);
-      for (const p of parts) domainSet.add(p);
-    }
-
+    // An empty selection means no domain filter; otherwise keep selected domains only.
+    const domainSet = allDomainsSelected ? new Set() : new Set(selectedDomains);
     const extractDigitsOnly = extractDigitsCheck.checked;
 
     metricOutputFiles = 0;
@@ -296,6 +395,11 @@
     reader.onload = (e) => {
       currentFileContent = e.target.result;
       currentFileName = file.name;
+      domainCounts = collectDomainCounts(currentFileContent);
+      selectedDomains.clear();
+      allDomainsSelected = true;
+      domainFilterSearch.value = '';
+      renderDomainFilters();
       fileInfoDiv.innerHTML = `<div class="file-info" style="background:var(--sf2); border-radius:var(--rs); padding:0.75rem; font-size:0.85rem;">📄 ${escapeHtml(file.name)} (${(file.size/1024).toFixed(1)} KB) loaded.</div>`;
       extractBtn.disabled = false;
       metricOutputFiles = 0;
@@ -324,7 +428,11 @@
     setEmailMetricState('idle', 'Waiting for a run', { resetElapsed: true });
     extractBtn.disabled = true;
     fileInput.value = '';
-    domainFilterInput.value = '';
+    domainCounts.clear();
+    selectedDomains.clear();
+    allDomainsSelected = true;
+    domainFilterSearch.value = '';
+    renderDomainFilters();
     extractDigitsCheck.checked = true;
     showStatus('Cleared. Upload a new email list.', 'info');
   }
@@ -360,6 +468,12 @@
   extractBtn.addEventListener('click', runExtraction);
   clearBtn.addEventListener('click', clearAll);
   downloadBtn.addEventListener('click', downloadRules);
+  domainFilterAllButton.addEventListener('click', () => {
+    allDomainsSelected = true;
+    selectedDomains.clear();
+    renderDomainFilters();
+  });
+  domainFilterSearch.addEventListener('input', renderDomainFilters);
 
   // initial state
   setupDragAndDrop();

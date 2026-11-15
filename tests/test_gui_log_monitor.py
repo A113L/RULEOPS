@@ -80,6 +80,15 @@ def test_progress_count_can_be_used_when_percent_is_absent():
     assert app.STATE["progress"] == 25
 
 
+def test_celf_selected_count_is_exposed_as_stage_progress_for_eta():
+    reset_stage_state()
+    app.update_stage("[CELF] Greedy selection | selected=25/100 (25.0%) | recovered=2,000/12,000")
+    assert app.STATE["stage"] == "Rule Selection · CELF"
+    assert app.STATE["progress"] == 25
+    assert app.STATE["progress_completed"] == 25
+    assert app.STATE["progress_total"] == 100
+
+
 def test_terminal_cleaner_preserves_full_long_line_and_removes_ansi():
     long_text = "Important counter: " + ("1234567890" * 80)
     raw = "\x1b[96m" + long_text + "\x1b[0m\x1b[K"

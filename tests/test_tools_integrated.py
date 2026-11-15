@@ -99,9 +99,9 @@ def test_email_extractor_uses_the_shared_ruleops_sidebar():
 def test_email_extractor_is_local_client_side_page():
     html = (ROOT / "web" / "email-rule-extractor.html").read_text(encoding="utf-8")
     js = (ROOT / "web" / "email-rule-extractor.js").read_text(encoding="utf-8")
-    assert 'src="/email-rule-extractor.js?v=2.6.2&metrics=2.6.6"' in html
-    assert 'href="/email-rule-extractor.css?v=2.6.5&metrics=2.6.6"' in html
-    assert 'href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4&metrics=2.6.5"' in html
+    assert 'src="/email-rule-extractor.js?v=2.6.7&metrics=2.6.7&eta=20261115"' in html
+    assert 'href="/email-rule-extractor.css?v=2.6.7&metrics=2.6.7&eta=20261115"' in html
+    assert 'href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4&metrics=2.6.5&eta=20261115"' in html
     assert "hcrt.pages.dev" not in html + js
     assert not re.search(r"<script\b(?![^>]*\bsrc=)[^>]*>", html, flags=re.I)
     assert "FileReader" in js
@@ -116,6 +116,22 @@ def test_tool_cli_entry_points_show_help():
         )
         assert result.returncode == 0, result.stderr
         assert "usage:" in result.stdout.lower()
+
+
+def test_email_extractor_domain_filter_uses_counted_multi_select_groups():
+    html = (ROOT / "web" / "email-rule-extractor.html").read_text(encoding="utf-8")
+    js = (ROOT / "web" / "email-rule-extractor.js").read_text(encoding="utf-8")
+    css = (ROOT / "web" / "email-rule-extractor.css").read_text(encoding="utf-8")
+
+    assert 'id="domain-filter-all"' in html
+    assert 'id="domain-filter-options"' in html
+    assert 'id="domain-filter-summary"' in html
+    assert 'id="domain-filter-search"' in html
+    assert "collectDomainCounts" in js
+    assert "aria-pressed" in js
+    assert "selectedDomains" in js and "allDomainsSelected" in js
+    assert "domainFilterSearch.addEventListener('input', renderDomainFilters)" in js
+    assert ".domain-filter-chip[aria-pressed=\"true\"]" in css
 
 
 def test_email_extractor_uses_shared_dark_theme_without_broken_css_prelude():

@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile&metrics=2.6.5">
+  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile&metrics=2.6.5&about-layout=20261115c&eta=20261115">
 </head>
 <body>
   <div class="app-shell">
@@ -78,11 +78,12 @@
         <div class="heading-badge"><span class="badge-orbit">✳</span><div><b>Precision mode</b><small>Every parameter in your control</small></div></div>
       </section>
 
-      <section class="metrics-grid" aria-label="RULEST run metrics" data-tool-metrics="rulest">
+      <section class="metrics-grid tool-metrics-grid" aria-label="RULEST run metrics" data-tool-metrics="rulest">
         <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" id="metric-status" data-metric="status">Idle</div><div class="metric-note"><span class="status-dot" data-metric-dot></span><span id="status-note" data-metric="note">Ready to configure</span></div></article>
         <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" id="metric-stage" data-metric="stage">—</div><div class="metric-note">Live pipeline phase</div></article>
         <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" id="metric-elapsed" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
         <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" id="metric-outputs" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        <article class="metric-card metric-eta-card"><div class="metric-label">ETA <span class="metric-icon">⌛</span></div><div class="metric-value metric-eta-value" data-metric="eta">—</div><div class="metric-note metric-eta-note" data-metric="eta-note">Current stage estimate</div></article>
       </section>
 
       <div class="content-grid">
@@ -225,6 +226,7 @@
           <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for a Ranker job</div><div class="metric-note">Live pipeline phase</div></article>
           <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
           <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        <article class="metric-card metric-eta-card"><div class="metric-label">ETA <span class="metric-icon">⌛</span></div><div class="metric-value metric-eta-value" data-metric="eta">—</div><div class="metric-note metric-eta-note" data-metric="eta-note">Current stage estimate</div></article>
         </section>
 
 
@@ -391,6 +393,7 @@
           <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for a Concentrator job</div><div class="metric-note">Live pipeline phase</div></article>
           <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
           <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        <article class="metric-card metric-eta-card"><div class="metric-label">ETA <span class="metric-icon">⌛</span></div><div class="metric-value metric-eta-value" data-metric="eta">—</div><div class="metric-note metric-eta-note" data-metric="eta-note">Current stage estimate</div></article>
         </section>
 
 
@@ -496,6 +499,7 @@
           <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for Rulestripper</div><div class="metric-note">Live pipeline phase</div></article>
           <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
           <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        <article class="metric-card metric-eta-card"><div class="metric-label">ETA <span class="metric-icon">⌛</span></div><div class="metric-value metric-eta-value" data-metric="eta">—</div><div class="metric-note metric-eta-note" data-metric="eta-note">Current stage estimate</div></article>
         </section>
 
         <div class="content-grid utility-tool-grid">
@@ -555,6 +559,7 @@
           <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for Rule Minimizer</div><div class="metric-note">Live pipeline phase</div></article>
           <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
           <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        <article class="metric-card metric-eta-card"><div class="metric-label">ETA <span class="metric-icon">⌛</span></div><div class="metric-value metric-eta-value" data-metric="eta">—</div><div class="metric-note metric-eta-note" data-metric="eta-note">Current stage estimate</div></article>
         </section>
 
         <div class="content-grid utility-tool-grid">
@@ -621,7 +626,7 @@
           <div class="storage-cleanup-footer"><div><b id="storage-cleanup-summary">Loading run storage summary…</b><small>Authentication settings, application files, temporary inputs and the reusable runs/library/ wordlist/rules folders are not deleted.</small></div><button id="delete-run-directories" class="danger-action-button" type="button" disabled><span aria-hidden="true">⌫</span> Delete all run folders</button></div>
           <div class="storage-feedback" id="storage-feedback" role="status" aria-live="polite"></div>
         </section>
-      
+
 <section class="page-heading system-page about-page-heading" id="about" hidden>
         <div>
           <div class="eyebrow">RULEOPS <span class="eyebrow-line"></span> ABOUT</div>
@@ -699,6 +704,69 @@
               </article>
             </div>
           </section>
+          <section class="panel about-celf-panel" id="about-celf-comparison" aria-labelledby="about-celf-title">
+            <div class="about-celf-heading">
+              <div class="panel-heading-copy">
+                <span class="side-panel-kicker">SELECTION STRATEGY <span aria-hidden="true">/</span> COVERAGE OPTIMIZATION</span>
+                <h2 id="about-celf-title">Frequency ranking vs. CELF marginal coverage</h2>
+                <p>Both methods rank candidate rules, but they optimize different outcomes: standalone hit count or the number of new TARGET words recovered by the selected set.</p>
+              </div>
+              <span class="celf-objective-badge">RULE BUDGET AWARE</span>
+            </div>
+
+            <div class="celf-comparison-grid">
+              <article class="celf-method-card frequency-method">
+                <div class="celf-method-kicker"><span>01</span> SIMPLE BASELINE</div>
+                <h3>Frequency selection</h3>
+                <p class="celf-method-summary">Score each rule independently by its raw GPU hit count, then sort the candidates from highest to lowest.</p>
+                <ul class="celf-benefit-list">
+                  <li><b>Simple and direct.</b> A one-time ranking is easy to inspect and useful as a fast baseline.</li>
+                  <li><b>Preserves standalone popularity.</b> Rules with high individual hit counts rise to the top.</li>
+                  <li><b>Overlap is not discounted.</b> Several high-ranked rules may recover many of the same TARGET words.</li>
+                </ul>
+                <div class="celf-method-foot"><span class="celf-foot-label">BEST WHEN</span> You want a quick frequency-ordered list or a simple reference ranking.</div>
+              </article>
+
+              <article class="celf-method-card celf-method">
+                <div class="celf-method-kicker"><span>02</span> COVERAGE-DRIVEN</div>
+                <h3>CELF greedy selection</h3>
+                <p class="celf-method-summary">Choose the rule that adds the most currently uncovered TARGET words, update the covered set, and repeat.</p>
+                <ul class="celf-benefit-list">
+                  <li><b>Accounts for overlap.</b> A TARGET word already recovered by an earlier rule adds no new marginal gain.</li>
+                  <li><b>Adapts after every pick.</b> A rule with a lower standalone count can become more valuable when it covers different words.</li>
+                  <li><b>Uses lazy evaluation.</b> Upper bounds narrow the challengers; an exact, duplicate-aware score verifies a winner before it is committed.</li>
+                </ul>
+                <div class="celf-method-foot"><span class="celf-foot-label">BEST WHEN</span> You have a fixed rule budget and want to maximize distinct TARGET-word recovery.</div>
+              </article>
+            </div>
+
+            <div class="celf-why-block">
+              <div class="celf-why-heading">
+                <span class="side-panel-kicker">WHY THE DIFFERENCE MATTERS</span>
+                <p>A rule's value depends on what the selected rules have already covered.</p>
+              </div>
+              <div class="celf-why-grid">
+                <article class="celf-why-item"><span class="celf-why-index">A</span><div><b>Less repeated coverage</b><p>Previously recovered TARGET words stop inflating the value of another rule.</p></div></article>
+                <article class="celf-why-item"><span class="celf-why-index">B</span><div><b>More complementary picks</b><p>Rules that reach different parts of the TARGET set can move ahead of redundant high-frequency rules.</p></div></article>
+                <article class="celf-why-item"><span class="celf-why-index">C</span><div><b>Budget tied to new recovery</b><p>Each selection is judged by its additional contribution to the union of recovered words.</p></div></article>
+              </div>
+            </div>
+
+            <div class="celf-process-block">
+              <div class="celf-process-title"><span class="side-panel-kicker">CELF SELECTION LOOP</span><span>Lazy candidate evaluation with exact winner verification</span></div>
+              <div class="celf-process-grid">
+                <div class="celf-process-step"><span>01</span><b>Build candidate bounds</b><small>Estimate which rules may still be competitive.</small></div>
+                <div class="celf-process-step"><span>02</span><b>Refresh challengers</b><small>Re-evaluate candidates whose bounds can beat the current winner.</small></div>
+                <div class="celf-process-step"><span>03</span><b>Verify exact gain</b><small>Count distinct, still-uncovered TARGET words for the winner.</small></div>
+                <div class="celf-process-step"><span>04</span><b>Update and repeat</b><small>Commit the rule, update coverage, and continue within the budget.</small></div>
+              </div>
+            </div>
+
+            <div class="celf-guidance-note">
+              <span class="celf-guidance-icon" aria-hidden="true">↗</span>
+              <p><b>Choosing a mode:</b> Frequency remains the default lightweight ordering. Use <code>--select-mode greedy</code> to enable CELF when distinct TARGET coverage is the goal. With the default <code>--select-cost-alpha 0</code>, CELF optimizes pure marginal coverage; a positive alpha adjusts gain by rule depth and favors shorter chains among rules with similar gain.</p>
+            </div>
+          </section>
         </div>
         <div class="secondary-column">
           <section class="panel donations-panel">
@@ -728,8 +796,27 @@
             <div class="about-actions"><button id="set-user-password-button" class="primary-button" type="button"><span>Save user password</span></button></div>
             <p class="about-feedback" id="user-password-feedback" role="status" aria-live="polite" hidden></p>
           </section>
+          <section class="panel about-brand-emblem-panel" aria-label="RULEOPS brand">
+            <div class="about-brand-emblem-stage" aria-hidden="true">
+              <span class="about-brand-orbit about-brand-orbit-one"></span>
+              <span class="about-brand-orbit about-brand-orbit-two"></span>
+              <svg class="about-brand-emblem" viewBox="0 0 44 44" role="img" focusable="false" aria-labelledby="about-brand-logo-title">
+                <title id="about-brand-logo-title">RULEOPS logo</title>
+                <rect x="1" y="1" width="42" height="42" rx="11" fill="#17221b" stroke="#405633" />
+                <path d="M17 10 13.5 34 M29 10 25.5 34 M9.5 18.5H35 M8 27H33.5" fill="none" stroke="#b8f36b" stroke-width="3.1" stroke-linecap="round" />
+                <circle cx="34.5" cy="31.5" r="3" fill="#b8f36b" />
+              </svg>
+              <span class="about-brand-spark about-brand-spark-a"></span>
+              <span class="about-brand-spark about-brand-spark-b"></span>
+              <span class="about-brand-spark about-brand-spark-c"></span>
+            </div>
+            <div class="about-brand-lockup"><strong>RULEOPS<span>.</span></strong><small>HASHCAT RULE TOOLCHAIN</small></div>
+            <p>Local-first tools for building, selecting and refining Hashcat rules.</p>
+            <div class="about-brand-capabilities"><span>GPU-READY</span><span>LOCAL-FIRST</span><span>OPEN SOURCE</span></div>
+          </section>
         </div>
       </section>
+
       </div><!-- /system-view -->
 
       <section class="panel log-panel" id="live-log" tabindex="-1" aria-label="Live tool log">
@@ -760,7 +847,7 @@
     </form>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
-  
-      <script src="/app.js?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile&metrics=2.6.5"></script>
+
+      <script src="/app.js?v=2.6.4-ranker-celf-profile&build=2.6.4-ranker-celf-profile&metrics=2.6.5&eta=20261115&about-layout=20261115b"></script>
 </body>
 </html>

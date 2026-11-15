@@ -53,3 +53,36 @@ def test_about_page_uses_shared_card_spacing_and_stacked_tool_headings():
     assert ".contact-row{\n  display:grid;" in css
     assert "@media(max-width:650px)" in css
     assert "build=2.6.4" in html
+
+
+def test_celf_comparison_fills_primary_about_column_below_tool_cards():
+    root = Path(app.__file__).resolve().parent
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+
+    primary_column = html.index('<div class="primary-column">')
+    tool_cards = html.index('<section class="panel usecases-panel"')
+    celf_guide = html.index('<section class="panel about-celf-panel" id="about-celf-comparison"')
+    secondary_column = html.index('<div class="secondary-column">')
+
+    assert primary_column < tool_cards < celf_guide < secondary_column
+    assert 'id="about-celf-comparison" hidden' not in html
+    assert ".about-grid .about-celf-panel" in css
+
+
+def test_about_sidebar_uses_remaining_space_for_ruleops_brand_emblem():
+    root = Path(app.__file__).resolve().parent
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+
+    secondary_column = html.index('<div class="secondary-column">', html.index('id="about-grid"'))
+    user_panel = html.index('id="about-user-panel"', secondary_column)
+    brand_panel = html.index('class="panel about-brand-emblem-panel"', user_panel)
+    secondary_end = html.index('</div>', brand_panel)
+
+    assert user_panel < brand_panel < secondary_end
+    assert 'id="about-brand-logo-title"' in html
+    assert 'HASHCAT RULE TOOLCHAIN' in html
+    assert '.about-grid{align-items:stretch}' in css
+    assert '.about-brand-emblem-panel{' in css
+    assert 'flex:1 1 280px' in css

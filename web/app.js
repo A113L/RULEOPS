@@ -226,6 +226,34 @@ function fmtTime(seconds) {
   const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
   return h ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
+function estimateStageEta(data) {
+  if (data.status === 'completed') return { value: 'Done', note: 'Run completed' };
+  if (data.status === 'failed') return { value: '—', note: 'Run failed' };
+  if (data.status === 'stopped') return { value: '—', note: 'Run stopped' };
+  if (data.status === 'stopping') return { value: 'Stopping', note: 'Waiting for process exit' };
+  if (data.status !== 'running') return { value: '—', note: 'No active run' };
+  if (data.paused) return { value: 'Paused', note: 'Estimate paused with the job' };
+
+  const completed = Number(data.progress_completed);
+  const total = Number(data.progress_total);
+  let fraction = null;
+  if (Number.isFinite(completed) && Number.isFinite(total) && total > 0 && completed >= 0) {
+    fraction = Math.min(1, completed / total);
+  } else if (data.progress != null && Number.isFinite(Number(data.progress))) {
+    fraction = Math.min(1, Math.max(0, Number(data.progress) / 100));
+  }
+  const stageElapsed = Number(data.stage_elapsed);
+  if (fraction == null || !Number.isFinite(stageElapsed) || stageElapsed < 5 || fraction < 0.02) {
+    return { value: 'Estimating…', note: 'Waiting for stable stage progress' };
+  }
+  if (fraction >= 0.999) return { value: 'Finishing', note: 'Current stage is nearly complete' };
+
+  const remaining = stageElapsed * (1 - fraction) / fraction;
+  if (!Number.isFinite(remaining) || remaining < 0 || remaining > 365 * 24 * 3600) {
+    return { value: '—', note: 'Stage estimate unavailable' };
+  }
+  return { value: fmtTime(remaining), note: 'Current stage · recalculated live' };
+}
 function toggleStage(name, enabled) {
   const options = $(`${name}-options`);
   const note = $(`${name}-note`);
@@ -540,6 +568,12 @@ function renderToolMetrics(tool, data) {
   const stageValue = value('stage');
   const elapsedValue = value('elapsed');
   const outputValue = value('outputs');
+  const etaValue = value('eta');
+  const etaNoteValue = value('eta-note');
+  const eta = ownsRun ? estimateStageEta(data) : { value: '—', note: 'No active run for this tool' };
+  if (etaValue) etaValue.textContent = eta.value;
+  if (etaNoteValue) etaNoteValue.textContent = eta.note;
+  if (etaValue) etaValue.title = 'Estimated time remaining in the active stage. This is recalculated as progress updates and is not a whole-run guarantee.';
   if (statusValue) statusValue.textContent = labels[status] || 'Idle';
   if (noteValue) noteValue.textContent = notes[status] || notes.idle;
   if (stageValue) {

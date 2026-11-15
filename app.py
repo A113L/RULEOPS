@@ -919,6 +919,7 @@ ANSI_ESCAPE_RE = re.compile(
 )
 PROGRESS_PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3})%\s*\|")
 PROGRESS_COUNT_RE = re.compile(r"\|\s*([\d,]+)\s*/\s*([\d,]+)\s*\[")
+CELF_SELECTED_PROGRESS_RE = re.compile(r"\bselected\s*=\s*([\d,]+)\s*/\s*([\d,]+)", re.IGNORECASE)
 PROGRESS_RULES_RE = re.compile(r"\brules\s*=\s*([\d,]+)", re.IGNORECASE)
 # rulest uses tqdm-style bars with an additional ``spd=12.0K words/s`` or
 # ``spd=812.4M combos/s`` field. Keep this independent of the bar glyphs so
@@ -1109,6 +1110,7 @@ def update_stage(line: str):
             stage = "Concentrator · Processing"
     pct_match = PROGRESS_PERCENT_RE.search(clean)
     count_match = PROGRESS_COUNT_RE.search(clean)
+    celf_selected_match = CELF_SELECTED_PROGRESS_RE.search(clean)
     rate_match = PROGRESS_RATE_RE.search(clean)
     rules_match = PROGRESS_RULES_RE.search(clean)
     progress = None
@@ -1121,6 +1123,11 @@ def update_stage(line: str):
         progress_completed = int(count_match.group(1).replace(",", ""))
         progress_total = int(count_match.group(2).replace(",", ""))
         if progress is None and progress_total > 0:
+            progress = min(100, round(progress_completed * 100 / progress_total))
+    elif celf_selected_match:
+        progress_completed = int(celf_selected_match.group(1).replace(",", ""))
+        progress_total = int(celf_selected_match.group(2).replace(",", ""))
+        if progress_total > 0:
             progress = min(100, round(progress_completed * 100 / progress_total))
     if rate_match:
         progress_rate = (

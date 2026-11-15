@@ -13,6 +13,8 @@
   let metricStartedAt = null;
   let metricElapsedSeconds = 0;
   let metricOutputFiles = 0;
+  let metricProgressCompleted = 0;
+  let metricProgressTotal = 0;
   let metricTimer = null;
 
   // DOM elements
@@ -43,6 +45,8 @@
     stage: document.getElementById('email-metric-stage'),
     elapsed: document.getElementById('email-metric-elapsed'),
     outputs: document.getElementById('email-metric-outputs'),
+    eta: document.getElementById('email-metric-eta'),
+    etaNote: document.getElementById('email-metric-eta-note'),
   };
 
   function formatMetricTime(seconds) {
@@ -74,6 +78,35 @@
       emailMetricEls.elapsed.textContent = formatMetricTime(current);
     }
     if (emailMetricEls.outputs) emailMetricEls.outputs.textContent = String(metricOutputFiles);
+
+    if (emailMetricEls.eta && emailMetricEls.etaNote) {
+      if (metricStatus === 'completed') {
+        emailMetricEls.eta.textContent = 'Done';
+        emailMetricEls.etaNote.textContent = 'Extraction completed';
+      } else if (metricStatus === 'failed') {
+        emailMetricEls.eta.textContent = '—';
+        emailMetricEls.etaNote.textContent = 'Estimate unavailable';
+      } else if (metricStatus !== 'running') {
+        emailMetricEls.eta.textContent = '—';
+        emailMetricEls.etaNote.textContent = 'Available during extraction';
+      } else {
+        const elapsed = metricStartedAt == null ? 0 : (Date.now() - metricStartedAt) / 1000;
+        const fraction = metricProgressTotal > 0 ? metricProgressCompleted / metricProgressTotal : 0;
+        if (fraction >= 0.999) {
+          emailMetricEls.eta.textContent = 'Finishing';
+          emailMetricEls.etaNote.textContent = 'Finalizing extracted patterns';
+        } else if (metricProgressCompleted > 0 && fraction >= 0.015 && elapsed >= 2.5) {
+          const remaining = elapsed * (1 - fraction) / fraction;
+          emailMetricEls.eta.textContent = formatMetricTime(remaining);
+          emailMetricEls.etaNote.textContent = `${Math.round(fraction * 100)}% of input lines · live estimate`;
+        } else {
+          emailMetricEls.eta.textContent = 'Estimating…';
+          emailMetricEls.etaNote.textContent = metricProgressTotal > 0
+            ? `${metricProgressCompleted.toLocaleString()} / ${metricProgressTotal.toLocaleString()} lines processed`
+            : 'Preparing input';
+        }
+      }
+    }
   }
 
   function setEmailMetricState(status, stage, { resetElapsed = false } = {}) {
@@ -247,56 +280,62 @@
 
   // Process file content and return pattern map: key = patternString (digits+domain OR local+domain)
   // returns Map with { pattern, count, examples, rule }
-  function processEmails(content, domainFilterSet, extractDigitsOnly) {
+  async function processEmails(content, domainFilterSet, extractDigitsOnly, onProgress = () => {}) {
     const lines = content.split(/\r?\n/);
-    const patternMap = new Map(); // key: patternKey (string), value: { pattern: displayPattern, count, examples, domain, digitsOrLocal }
+    const patternMap = new Map();
+    const progressBatchSize = 2500;
 
-    for (const rawLine of lines) {
+    for (let index = 0; index < lines.length; index++) {
+      const rawLine = lines[index];
       const emailAddr = extractEmailFromLine(rawLine);
-      if (!emailAddr) continue;
+      if (emailAddr) {
+        const parsed = parseEmail(emailAddr);
+        if (parsed) {
+          const { localPart, domain } = parsed;
+          if (domainFilterSet.size === 0 || domainFilterSet.has(domain)) {
+            let patternValue = null;
+            let displayPattern = null;
 
-      const parsed = parseEmail(emailAddr);
-      if (!parsed) continue;
+            if (extractDigitsOnly) {
+              const matchDigits = localPart.match(/(\d+)$/);
+              if (matchDigits) {
+                patternValue = matchDigits[1] + '@' + domain;
+                displayPattern = patternValue;
+              }
+            } else {
+              patternValue = localPart + '@' + domain;
+              displayPattern = patternValue;
+            }
 
-      const { localPart, domain } = parsed;
-
-      // Apply domain filter if specified
-      if (domainFilterSet.size > 0 && !domainFilterSet.has(domain)) continue;
-
-      let patternValue = null;
-      let displayPattern = null;
-
-      if (extractDigitsOnly) {
-        // trailing digits extraction
-        const matchDigits = localPart.match(/(\d+)$/);
-        if (matchDigits) {
-          const digits = matchDigits[1];
-          patternValue = digits + '@' + domain;
-          displayPattern = patternValue;
+            if (patternValue) {
+              if (patternMap.has(patternValue)) {
+                const entry = patternMap.get(patternValue);
+                entry.count++;
+                if (entry.examples.length < 3 && !entry.examples.includes(rawLine)) {
+                  entry.examples.push(rawLine);
+                }
+              } else {
+                patternMap.set(patternValue, {
+                  pattern: displayPattern,
+                  count: 1,
+                  examples: [rawLine],
+                  rule: stringToHashcatRule(patternValue)
+                });
+              }
+            }
+          }
         }
-      } else {
-        // Use full local part (including any digits, separators)
-        patternValue = localPart + '@' + domain;
-        displayPattern = patternValue;
       }
 
-      if (!patternValue) continue; // no trailing digits and extractDigitsOnly is true -> skip
-
-      if (patternMap.has(patternValue)) {
-        const entry = patternMap.get(patternValue);
-        entry.count++;
-        if (entry.examples.length < 3 && !entry.examples.includes(rawLine)) {
-          entry.examples.push(rawLine);
+      const processed = index + 1;
+      if (processed % progressBatchSize === 0 || processed === lines.length) {
+        onProgress(processed, lines.length);
+        if (processed < lines.length) {
+          await new Promise(resolve => setTimeout(resolve, 0));
         }
-      } else {
-        patternMap.set(patternValue, {
-          pattern: displayPattern,
-          count: 1,
-          examples: [rawLine],
-          rule: stringToHashcatRule(patternValue)
-        });
       }
     }
+    if (lines.length === 0) onProgress(0, 0);
     return patternMap;
   }
 
@@ -343,12 +382,21 @@
     const extractDigitsOnly = extractDigitsCheck.checked;
 
     metricOutputFiles = 0;
+    metricProgressCompleted = 0;
+    metricProgressTotal = currentFileContent.split(/\r?\n/).length;
+    extractBtn.disabled = true;
     setEmailMetricState('running', 'Analyzing email patterns');
+    renderEmailMetrics();
     showStatus(`Processing ${currentFileName || 'file'}...`, 'info');
-    // slight delay to allow UI update
-    setTimeout(() => {
+    // Yield before starting so the running state and ETA card paint immediately.
+    setTimeout(async () => {
       try {
-        const patternMap = processEmails(currentFileContent, domainSet, extractDigitsOnly);
+        const patternMap = await processEmails(currentFileContent, domainSet, extractDigitsOnly, (processed, total) => {
+          metricProgressCompleted = processed;
+          metricProgressTotal = total;
+          renderEmailMetrics();
+        });
+        metricProgressCompleted = metricProgressTotal;
         renderResults(patternMap);
         metricOutputFiles = rawRuleLines.length ? 1 : 0;
         if (patternMap.size === 0) {
@@ -362,6 +410,8 @@
         console.error(err);
         setEmailMetricState('failed', 'Extraction failed');
         showStatus(`Extraction error: ${err.message}`, 'error');
+      } finally {
+        extractBtn.disabled = !currentFileContent;
       }
     }, 10);
   }
@@ -403,12 +453,16 @@
       fileInfoDiv.innerHTML = `<div class="file-info" style="background:var(--sf2); border-radius:var(--rs); padding:0.75rem; font-size:0.85rem;">📄 ${escapeHtml(file.name)} (${(file.size/1024).toFixed(1)} KB) loaded.</div>`;
       extractBtn.disabled = false;
       metricOutputFiles = 0;
+      metricProgressCompleted = 0;
+      metricProgressTotal = 0;
       setEmailMetricState('idle', 'Email list loaded · ready to extract', { resetElapsed: true });
       showStatus(`File "${file.name}" loaded successfully. Ready to extract.`, 'success');
     };
     reader.onerror = () => {
       showStatus('Error reading file.', 'error');
       currentFileContent = null;
+      metricProgressCompleted = 0;
+      metricProgressTotal = 0;
       setEmailMetricState('failed', 'Could not read email list');
       extractBtn.disabled = true;
     };
@@ -425,6 +479,8 @@
     resultsContent.innerHTML = '';
     rawRuleLines = [];
     metricOutputFiles = 0;
+    metricProgressCompleted = 0;
+    metricProgressTotal = 0;
     setEmailMetricState('idle', 'Waiting for a run', { resetElapsed: true });
     extractBtn.disabled = true;
     fileInput.value = '';

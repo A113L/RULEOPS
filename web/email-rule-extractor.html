@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Email Rule Extractor · RULEOPS</title>
-<link rel="stylesheet" href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4&metrics=2.6.5">
-<link rel="stylesheet" href="/email-rule-extractor.css?v=2.6.6&metrics=2.6.6">
+<link rel="stylesheet" href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4&metrics=2.6.5&eta=20261115">
+<link rel="stylesheet" href="/email-rule-extractor.css?v=2.6.7&metrics=2.6.7&eta=20261115">
 </head>
 <body>
 <div class="app-shell">
@@ -88,6 +88,7 @@
   <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" id="email-metric-stage">Waiting for a run</div><div class="metric-note">Live pipeline phase</div></article>
   <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" id="email-metric-elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
   <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" id="email-metric-outputs">0</div><div class="metric-note">Generated in this run</div></article>
+  <article class="metric-card metric-eta-card"><div class="metric-label">ETA <span class="metric-icon">⌛</span></div><div class="metric-value metric-eta-value" id="email-metric-eta">—</div><div class="metric-note metric-eta-note" id="email-metric-eta-note">Available during extraction</div></article>
 </div>
 
 <div class="gc3">
@@ -168,6 +169,6 @@
   </main>
 </div>
 
-<script src="/email-rule-extractor.js?v=2.6.3&metrics=2.6.6" defer></script>
+<script src="/email-rule-extractor.js?v=2.6.7&metrics=2.6.7&eta=20261115" defer></script>
 </body>
 </html>

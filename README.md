@@ -69,15 +69,13 @@ For larger trusted-LAN workloads, limits can be adjusted with environment variab
 
 ## CELF selection performance
 
-The exact-batched CELF path now reuses the per-candidate target-ID bitmap produced during exact scoring. After the greedy heap identifies a winner, the application reads only that winner's bitmap row to obtain its exact covered target IDs. This removes the redundant full base-word/GPU scoring pass that was previously launched once per selected rule solely to record hit slots. A mismatch between the exact gain and the decoded bitmap still triggers the safe batched-exact fallback path; the selected-rule coverage is not inferred from approximate bounds.
+CELF uses upper bounds to narrow the challenger set, but every committed winner is verified with an exact marginal-gain score. For a single resident word chunk, exact batches deduplicate targets with a per-rule open-addressing table on the GPU; only per-rule counters are copied to the host, and the winning hit slots are retained/copied GPU-to-GPU. Multi-chunk inputs and the explicit fallback path retain compact hit-stream processing so duplicates across chunks are still removed exactly.
 
-The CELF GPU profile reports `winner bitmap fetches`, transferred bitmap size and fetch time so the optimization can be evaluated on the actual GPU/driver combination. It also separates upper-bound, exact-count and winner-recording calls (including singleton counts), so a generic `singleton` total is no longer mistaken for one particular scoring mode.
+The default `RANKER_EXACT_BATCH` and `RANKER_GREEDY_RESCORE_BATCH` are both `256`, subject to GPU dispatch and workspace limits. Set `RANKER_EXACT_GPU_DEDUP=0` to force the compact-result fallback, or `RANKER_GREEDY_PROFILE=1` to collect stage-level and exact-scoring timings.
 
-The experimental work-group-local gain reduction was rolled back after its throughput did not improve reliably on the target workload. CELF is back on the previous one-dimensional word/candidate dispatch with per-hit global gain atomics; exact target deduplication still uses the per-candidate bitmap. This avoids the extra work-group barriers and local atomic operations. Benchmark this baseline against the experimental kernel on the actual GPU before considering another reduction strategy.
+CELF progress keeps the selected-rule count separate from first-round rescoring work. After the first winner, `rule/s` and `rescored/s` use 30-second moving windows with a 10-second warm-up; ETA uses the recent `rule/s`, while `avg_rule/s` is the cumulative post-first-winner average. The elapsed clock remains end-to-end.
 
-Small groups of exact challengers left over by successive upper-bound batches are coalesced before exact rescoring. The default minimum group size is `4`; the batch is still capped by the preallocated GPU workspace, and any remaining candidates are flushed when no more admissible heap bounds can win. Set `RULEST_CELF_EXACT_MICROBATCH=1` to disable this coalescing, or raise it cautiously to trade a few more upper-bound checks for fewer exact GPU launches. The greedy comparison, exact gains, winner bitmap validation and selected-rule ordering are unchanged.
-
-Performance gains depend on the target count, base-word size, GPU and OpenCL implementation; benchmark with the same input set before and after updating. No hardware speedup is claimed without a run on the target GPU.
+See [`docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md`](docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md) for the implementation details, configuration reference, correctness constraints, profiling interpretation, and measured run results.
 
 For this PC only, start with:
 

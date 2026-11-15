@@ -3,4 +3,3 @@ pyopencl
 tqdm
 
 msgpack>=1.0
-

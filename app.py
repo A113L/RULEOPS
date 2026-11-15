@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import heapq
 import os
 import codecs
 import re
@@ -23,9 +24,10 @@ import hmac
 import base64
 import sqlite3
 import stat as stat_module
+import zipfile
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from gpu_diagnostics import collect_gpu_diagnostics
@@ -51,6 +53,7 @@ SECURITY_DB = ROOT / "security.sqlite3"
 LOGIN_MAX_LOCK_SECONDS = 60 * 60
 
 LOCK = threading.RLock()
+RUN_STORAGE_MAINTENANCE_LOCK = threading.Lock()
 STATE = {
     "status": "idle", "tool": "rulest", "paused": False, "pause_requested": False, "job_id": None, "started_at": None, "finished_at": None,
     "pid": None, "stage": "Waiting for a run", "stage_detail": "Start a run to see the active processing phase.",
@@ -91,6 +94,13 @@ UPLOADS_ACTIVE = set()
 UPLOAD_RESERVATIONS = {}  # field -> declared bytes, reserved before reading body
 PROCESS = None
 RUN_THREAD = None
+# Storage Intelligence history is intentionally session-scoped: it records scans and
+# cleanup actions since this server process started, without creating another data file.
+_STORAGE_INTELLIGENCE_STATE = {
+    "last_run_scan": None,
+    "last_library_scan": None,
+    "activity": [],
+}
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -691,6 +701,733 @@ def list_library_assets() -> dict:
     return result
 
 
+def search_library_assets(query: str, limit: int = 300) -> dict:
+    """Search reusable-library and run/work-folder files by filename.
+
+    The query is compared only with each file's basename. Full absolute paths
+    are returned as display metadata so same-named files can be distinguished.
+    Run-folder traversal never follows symlinks and deliberately excludes the
+    uploads/ and library/ roots.
+    """
+    query = str(query or "").strip()
+    if not query or len(query) > 180:
+        raise ValueError("Enter a filename search between 1 and 180 characters.")
+    needle = query.casefold()
+    results = []
+    for category in ("wordlists", "rules"):
+        folder = library_category_dir(category)
+        try:
+            root = folder.resolve(strict=True)
+            entries = sorted(folder.iterdir(), key=lambda item: item.name.casefold())
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        for item in entries:
+            try:
+                if not _safe_library_filename(item.name) or _is_library_derived_cache(item.name):
+                    continue
+                metadata = os.lstat(str(item))
+                if not stat_module.S_ISREG(metadata.st_mode):
+                    continue
+                display_name = _library_asset_display_name(item.name)
+                # Search is intentionally filename-only. The full path is output
+                # metadata, not part of the match expression.
+                if needle not in display_name.casefold():
+                    continue
+                resolved = item.resolve(strict=True)
+                if resolved.parent != root:
+                    continue
+                results.append({
+                    "id": item.name,
+                    "source": "library",
+                    "category": category,
+                    "name": display_name,
+                    "path": str(resolved),
+                    "size": int(metadata.st_size),
+                    "modified": int(metadata.st_mtime),
+                })
+            except (OSError, ValueError):
+                continue
+
+    for run_directory in _iter_run_directories():
+        try:
+            run_root = run_directory.resolve(strict=True)
+            data_root = DATA.resolve(strict=True)
+            if run_root.parent != data_root or run_directory.is_symlink():
+                continue
+        except (OSError, ValueError):
+            continue
+
+        def raise_walk_error(error):
+            raise error
+
+        try:
+            for current_root, directory_names, file_names in os.walk(
+                run_root, topdown=True, followlinks=False, onerror=raise_walk_error
+            ):
+                current_path = Path(current_root)
+                directory_names[:] = sorted(
+                    name for name in directory_names
+                    if not (current_path / name).is_symlink()
+                )
+                for filename in sorted(file_names, key=str.casefold):
+                    if needle not in filename.casefold():
+                        continue
+                    candidate = current_path / filename
+                    try:
+                        metadata = candidate.lstat()
+                        if not stat_module.S_ISREG(metadata.st_mode):
+                            continue
+                        resolved = candidate.resolve(strict=True)
+                        if os.path.commonpath((str(run_root), str(resolved))) != str(run_root):
+                            continue
+                        relative_path = candidate.relative_to(run_root).as_posix()
+                        results.append({
+                            "id": relative_path,
+                            "source": "run",
+                            "category": "work folder",
+                            "run_id": run_directory.name,
+                            "relative_path": relative_path,
+                            "name": filename,
+                            "path": str(resolved),
+                            "size": int(metadata.st_size),
+                            "modified": int(metadata.st_mtime),
+                        })
+                    except (OSError, ValueError):
+                        continue
+        except OSError:
+            # A run folder may be concurrently removed or have permissions
+            # changed. Other folders remain searchable.
+            continue
+
+    results.sort(key=lambda row: (row["name"].casefold(), row["source"], row["category"], row["id"]))
+    total = len(results)
+    return {"query": query, "results": results[:limit], "total": total, "truncated": total > limit}
+
+
+def open_run_folder_file(run_id: str, relative_path: str):
+    """Open a regular file inside one direct runs/ child without following symlinks.
+
+    Returns (file_descriptor, stat_result, absolute_path). The descriptor is
+    opened with O_NOFOLLOW and, on platforms with dir_fd support, each path
+    component is traversed relative to an already-open directory descriptor.
+    """
+    run_id = str(run_id or "")
+    relative_path = str(relative_path or "")
+    if (
+        not run_id or "\x00" in run_id
+        or run_id in {".", "..", "uploads", "library"}
+        or "/" in run_id or "\\" in run_id
+    ):
+        raise ValueError("Invalid work-folder identifier.")
+    relative = PurePosixPath(relative_path)
+    if (
+        not relative_path or relative.is_absolute() or "\\" in relative_path
+        or "\x00" in relative_path or ":" in relative_path
+        or relative.as_posix() != relative_path
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError("Invalid work-folder file path.")
+
+    directory = DATA / run_id
+    try:
+        directory_metadata = directory.lstat()
+        if not stat_module.S_ISDIR(directory_metadata.st_mode):
+            raise ValueError("Work folder was not found.")
+        run_root = directory.resolve(strict=True)
+        data_root = DATA.resolve(strict=True)
+        if run_root.parent != data_root:
+            raise ValueError("Work folder is outside RULEOPS run storage.")
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Work folder was not found.") from exc
+
+    parts = list(relative.parts)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = flags | getattr(os, "O_DIRECTORY", 0)
+    descriptor = None
+    opened_directories = []
+    try:
+        if os.open in getattr(os, "supports_dir_fd", set()):
+            current_fd = os.open(str(run_root), directory_flag)
+            opened_directories.append(current_fd)
+            for component in parts[:-1]:
+                current_fd = os.open(component, directory_flag, dir_fd=current_fd)
+                opened_directories.append(current_fd)
+            descriptor = os.open(parts[-1], flags, dir_fd=current_fd)
+            candidate = run_root.joinpath(*parts)
+        else:
+            candidate = run_root.joinpath(*parts)
+            cursor = run_root
+            for component in parts[:-1]:
+                cursor = cursor / component
+                if cursor.is_symlink() or not cursor.is_dir():
+                    raise ValueError("Work-folder path contains an unsafe directory.")
+            if candidate.is_symlink():
+                raise ValueError("Symbolic-link files cannot be downloaded.")
+            descriptor = os.open(str(candidate), flags)
+
+        metadata = os.fstat(descriptor)
+        if not stat_module.S_ISREG(metadata.st_mode):
+            raise ValueError("Requested work-folder item is not a regular file.")
+        resolved = candidate.resolve(strict=True)
+        if os.path.commonpath((str(run_root), str(resolved))) != str(run_root):
+            raise ValueError("Requested file is outside its work folder.")
+        return descriptor, metadata, resolved
+    except (OSError, RuntimeError) as exc:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise ValueError("Work-folder file was not found or is not safe to access.") from exc
+    finally:
+        for opened_fd in reversed(opened_directories):
+            try:
+                os.close(opened_fd)
+            except OSError:
+                pass
+
+
+class _HTTPZipSink:
+    """Minimal non-seekable ZIP destination that streams to an HTTP/1.0 socket."""
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, payload):
+        self.stream.write(payload)
+        return len(payload)
+
+    def flush(self):
+        self.stream.flush()
+
+
+def _library_file_signature(metadata) -> tuple[int, int, int, int, int, int]:
+    return (
+        int(metadata.st_dev), int(metadata.st_ino), int(metadata.st_size),
+        int(getattr(metadata, "st_mtime_ns", int(metadata.st_mtime * 1_000_000_000))),
+        int(getattr(metadata, "st_ctime_ns", int(metadata.st_ctime * 1_000_000_000))),
+        int(metadata.st_mode),
+    )
+
+
+def _duplicate_record_key(record: dict) -> tuple[str, ...]:
+    """Return a stable, source-aware key for a library or work-folder file."""
+    if record.get("source") == "run":
+        return ("run", str(record["run_id"]), str(record["relative_path"]))
+    return ("library", str(record["category"]), str(record["id"]))
+
+
+def _hash_work_duplicate_record(record: dict) -> str:
+    """Hash a work-folder file through the no-follow descriptor helper."""
+    descriptor, metadata, resolved = open_run_folder_file(record["run_id"], record["relative_path"])
+    try:
+        if _library_file_signature(metadata) != record["_signature"]:
+            raise RuntimeError("Work-folder file changed during duplicate scanning.")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+            after_fd = os.fstat(stream.fileno())
+        after_path = resolved.lstat()
+        if (_library_file_signature(after_fd) != record["_signature"]
+                or _library_file_signature(after_path) != record["_signature"]):
+            raise RuntimeError("Work-folder file changed during duplicate scanning.")
+        return digest.hexdigest()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _duplicate_groups_for_records(records: list[dict]) -> tuple[dict, dict, list[dict]]:
+    """Group files by visible filename and by confirmed identical content.
+
+    Library assets retain the existing same-category checksum matching across
+    different names. Work-folder files are hashed only when their filename
+    collides with another scanned file, keeping large run archives practical.
+    """
+    name_groups: dict[str, list[int]] = {}
+    content_groups: dict[tuple, list[int]] = {}
+
+    for index, record in enumerate(records):
+        name_groups.setdefault(record["name"].casefold(), []).append(index)
+        if record.get("source") == "library" and record.get("sha256"):
+            key = ("library", record["category"], record["sha256"])
+            content_groups.setdefault(key, []).append(index)
+
+    # For name-collision candidates, checksum equality distinguishes exact
+    # redundant copies from same-name files that merely need human review.
+    for visible_name, indices in name_groups.items():
+        if len(indices) < 2:
+            continue
+        for index in indices:
+            record = records[index]
+            if record.get("source") == "run" and not record.get("sha256"):
+                try:
+                    record["sha256"] = _hash_work_duplicate_record(record)
+                except (OSError, ValueError, RuntimeError):
+                    record["deletable"] = False
+                    record["protected_reason"] = "Could not verify file contents; rescan before deleting."
+        for index in indices:
+            digest = records[index].get("sha256")
+            if digest:
+                key = ("same-name-content", visible_name, digest)
+                content_groups.setdefault(key, []).append(index)
+
+    parent = list(range(len(records)))
+    rank = [0] * len(records)
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        a, b = find(left), find(right)
+        if a == b:
+            return
+        if rank[a] < rank[b]:
+            a, b = b, a
+        parent[b] = a
+        if rank[a] == rank[b]:
+            rank[a] += 1
+
+    for mapping in (name_groups, content_groups):
+        for indices in mapping.values():
+            if len(indices) > 1:
+                for other in indices[1:]:
+                    union(indices[0], other)
+
+    grouped = {}
+    for index in range(len(records)):
+        grouped.setdefault(find(index), []).append(index)
+    return name_groups, content_groups, [indices for indices in grouped.values() if len(indices) > 1]
+
+
+def _scan_library_duplicate_records() -> tuple[list[dict], list[dict]]:
+    """Scan reusable library and saved work folders for name/content duplicates."""
+    records = []
+    active_library_assets = _active_library_assets()
+
+    # Reusable library files: hash/cache every eligible asset, as before.
+    for category in ("wordlists", "rules"):
+        folder = library_category_dir(category)
+        try:
+            library_root = folder.resolve(strict=True)
+            entries = sorted(folder.iterdir(), key=lambda item: item.name.casefold())
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        for item in entries:
+            try:
+                if not _safe_library_filename(item.name) or _is_library_derived_cache(item.name):
+                    continue
+                metadata = os.lstat(str(item))
+                if not stat_module.S_ISREG(metadata.st_mode):
+                    continue
+                resolved = item.resolve(strict=True)
+                if resolved.parent != library_root:
+                    continue
+                digest = _library_asset_sha256(category, item, metadata)
+                is_active = (category, item.name) in active_library_assets
+                records.append({
+                    "source": "library",
+                    "id": item.name,
+                    "category": category,
+                    "name": _library_asset_display_name(item.name),
+                    "path": str(resolved),
+                    "size": int(metadata.st_size),
+                    "modified": int(metadata.st_mtime),
+                    "sha256": digest,
+                    "deletable": not is_active,
+                    "protected_reason": "Currently mounted in a tool input." if is_active else "",
+                    "_signature": _library_file_signature(metadata),
+                })
+            except (OSError, ValueError, sqlite3.Error):
+                # An unreadable or changing file must never become a deletion candidate.
+                continue
+
+    # Completed work folders: include nested regular files, never follow links.
+    current_run_root = None
+    if STATE.get("run_dir"):
+        try:
+            current_run_root = Path(STATE["run_dir"]).resolve(strict=True)
+        except (OSError, RuntimeError):
+            current_run_root = None
+
+    for run_directory in _iter_run_directories():
+        try:
+            run_root = run_directory.resolve(strict=True)
+            if run_root.parent != DATA.resolve(strict=True) or run_directory.is_symlink():
+                continue
+        except (OSError, RuntimeError):
+            continue
+        is_current_run = current_run_root is not None and run_root == current_run_root
+
+        def raise_walk_error(error):
+            raise error
+
+        try:
+            for current_root, directory_names, file_names in os.walk(
+                run_root, topdown=True, followlinks=False, onerror=raise_walk_error
+            ):
+                current_path = Path(current_root)
+                safe_directories = []
+                for name in sorted(directory_names, key=str.casefold):
+                    child = current_path / name
+                    try:
+                        child_stat = child.lstat()
+                        if stat_module.S_ISDIR(child_stat.st_mode) and not stat_module.S_ISLNK(child_stat.st_mode):
+                            safe_directories.append(name)
+                    except OSError:
+                        continue
+                directory_names[:] = safe_directories
+
+                for filename in sorted(file_names, key=str.casefold):
+                    candidate = current_path / filename
+                    try:
+                        relative_path = candidate.relative_to(run_root).as_posix()
+                        descriptor, metadata, resolved = open_run_folder_file(run_directory.name, relative_path)
+                        os.close(descriptor)
+                        if not stat_module.S_ISREG(metadata.st_mode):
+                            continue
+                        records.append({
+                            "source": "run",
+                            "id": relative_path,
+                            "category": "work folder",
+                            "run_id": run_directory.name,
+                            "relative_path": relative_path,
+                            "name": filename,
+                            "path": str(resolved),
+                            "size": int(metadata.st_size),
+                            "modified": int(metadata.st_mtime),
+                            "sha256": None,
+                            "deletable": not is_current_run,
+                            "protected_reason": "This is the currently selected run folder." if is_current_run else "",
+                            "_signature": _library_file_signature(metadata),
+                        })
+                    except (OSError, ValueError, RuntimeError):
+                        continue
+        except OSError:
+            # A work folder may be concurrently removed or have permissions changed.
+            continue
+
+    records.sort(key=lambda row: (row["name"].casefold(), row["source"], row["path"]))
+    name_groups, content_groups, grouped_indices = _duplicate_groups_for_records(records)
+
+    # Suggest removal only for confirmed byte-identical copies. Prefer a protected
+    # current/active file as the retained representative, otherwise keep newest.
+    suggested_delete = set()
+    for indices in content_groups.values():
+        unique_indices = sorted(set(indices))
+        if len(unique_indices) < 2:
+            continue
+        keeper = min(
+            unique_indices,
+            key=lambda i: (
+                bool(records[i].get("deletable", True)),
+                -int(records[i]["modified"]),
+                records[i]["path"].casefold(),
+            ),
+        )
+        suggested_delete.update(
+            i for i in unique_indices if i != keeper and records[i].get("deletable", True)
+        )
+
+    groups = []
+    for indices in grouped_indices:
+        reasons = set()
+        member_set = set(indices)
+        if any(len(bucket) > 1 and not member_set.isdisjoint(bucket) for bucket in name_groups.values()):
+            reasons.add("same filename")
+        if any(len(bucket) > 1 and not member_set.isdisjoint(bucket) for bucket in content_groups.values()):
+            reasons.add("identical content")
+        members = []
+        for index in sorted(indices, key=lambda i: (records[i]["name"].casefold(), records[i]["path"].casefold())):
+            record = dict(records[index])
+            record["suggest_delete"] = index in suggested_delete
+            record["match"] = (
+                "identical content" if record.get("sha256") and any(
+                    len(bucket) > 1 and index in bucket for bucket in content_groups.values()
+                )
+                else "same filename; contents differ" if record.get("sha256")
+                else "same filename; contents unverified"
+            )
+            members.append(record)
+        categories = sorted({records[index]["category"] for index in indices})
+        sources = sorted({records[index]["source"] for index in indices})
+        groups.append({
+            "category": categories[0] if len(categories) == 1 else "library and work folders",
+            "sources": sources,
+            "reasons": sorted(reasons),
+            "files": members,
+        })
+
+    groups.sort(key=lambda group: (group["category"], group["files"][0]["name"].casefold()))
+    return records, groups
+
+
+def _record_storage_activity(action: str, detail: str = "", bytes_reclaimed: int = 0) -> None:
+    """Record a compact, in-memory storage event for the Intelligence panel."""
+    event = {
+        "action": str(action)[:80],
+        "detail": str(detail)[:220],
+        "bytes_reclaimed": max(0, int(bytes_reclaimed or 0)),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with LOCK:
+        activity = _STORAGE_INTELLIGENCE_STATE.setdefault("activity", [])
+        activity.insert(0, event)
+        del activity[8:]
+
+
+def _set_storage_scan_snapshot(key: str, snapshot: dict) -> None:
+    with LOCK:
+        _STORAGE_INTELLIGENCE_STATE[key] = dict(snapshot)
+
+
+def _invalidate_storage_scan_snapshots() -> None:
+    """Mark scan-derived cleanup counts stale after any destructive operation."""
+    with LOCK:
+        _STORAGE_INTELLIGENCE_STATE["last_run_scan"] = None
+        _STORAGE_INTELLIGENCE_STATE["last_library_scan"] = None
+
+
+def scan_library_duplicates() -> dict:
+    """Scan reusable library and completed work folders for duplicates."""
+    with _run_storage_maintenance():
+        records, groups = _scan_library_duplicate_records()
+    safe_groups = []
+    suggested = 0
+    for group in groups:
+        files = []
+        for record in group["files"]:
+            suggested += int(bool(record["suggest_delete"]))
+            files.append({key: value for key, value in record.items() if key != "_signature"})
+        safe_groups.append({**group, "files": files})
+    suggested_bytes = sum(
+        int(item.get("size", 0))
+        for group in safe_groups for item in group["files"]
+        if item.get("suggest_delete")
+    )
+    result = {
+        "scanned_files": len(records),
+        "scanned_library_files": sum(1 for item in records if item["source"] == "library"),
+        "scanned_work_files": sum(1 for item in records if item["source"] == "run"),
+        "duplicate_groups": safe_groups,
+        "duplicate_group_count": len(safe_groups),
+        "suggested_delete_count": suggested,
+        "suggested_delete_bytes": suggested_bytes,
+        "scanned_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _set_storage_scan_snapshot("last_library_scan", {
+        "scanned_at": result["scanned_at"],
+        "duplicate_group_count": result["duplicate_group_count"],
+        "same_name_review_groups": sum(1 for group in safe_groups if "same filename" in group.get("reasons", [])),
+        "suggested_delete_count": suggested,
+        "suggested_delete_bytes": suggested_bytes,
+        "scanned_files": result["scanned_files"],
+    })
+    _record_storage_activity(
+        "Library + work duplicate scan",
+        f"Reviewed {len(records):,} files · {len(safe_groups):,} duplicate group(s)",
+    )
+    return result
+
+def _active_library_assets() -> set[tuple[str, str]]:
+    active = set()
+    for value in UPLOADS_META.values():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if not isinstance(item, dict) or not item.get("library"):
+                continue
+            category = item.get("category")
+            asset_id = item.get("asset_id")
+            if category in {"wordlists", "rules"} and isinstance(asset_id, str):
+                active.add((category, asset_id))
+    return active
+
+
+def _verify_duplicate_record(record: dict) -> tuple[Path, str]:
+    """Reopen a scanned asset safely and verify its identity and content hash."""
+    if record.get("source") == "run":
+        descriptor, metadata, resolved = open_run_folder_file(record["run_id"], record["relative_path"])
+        try:
+            if _library_file_signature(metadata) != record["_signature"]:
+                raise RuntimeError("A selected work-folder file changed after scanning. Run the scan again.")
+            digest = hashlib.sha256()
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = None
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+                after_fd = os.fstat(stream.fileno())
+            after_path = resolved.lstat()
+            if (_library_file_signature(after_fd) != record["_signature"]
+                    or _library_file_signature(after_path) != record["_signature"]):
+                raise RuntimeError("A selected work-folder file changed after scanning. Run the scan again.")
+            return resolved, digest.hexdigest()
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    path = resolve_library_asset(record["category"], record["id"])
+    metadata = os.lstat(str(path))
+    if _library_file_signature(metadata) != record["_signature"]:
+        raise RuntimeError("A selected file changed after scanning. Run the duplicate scan again.")
+    digest = _library_asset_sha256(record["category"], path, metadata)
+    if digest != record["sha256"]:
+        raise RuntimeError("A selected file checksum changed after scanning. Run the duplicate scan again.")
+    return path, digest
+
+
+def delete_selected_library_assets(items: list[dict]) -> dict:
+    """Delete checked library/work files after a fresh duplicate scan and safety checks."""
+    if not isinstance(items, list) or not items or len(items) > 300:
+        raise ValueError("Select between 1 and 300 duplicate files to delete.")
+
+    selected = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("The selected file list is invalid.")
+        source = item.get("source", "library")
+        if source == "library":
+            category = item.get("category")
+            asset_id = item.get("asset_id")
+            if category not in {"wordlists", "rules"} or not _safe_library_filename(asset_id):
+                raise ValueError("One of the selected library files is invalid.")
+            key = ("library", category, asset_id)
+        elif source == "run":
+            run_id = item.get("run_id")
+            relative_path = item.get("relative_path")
+            # Reuse the no-follow resolver for strict identifier/path validation.
+            descriptor, _metadata, _resolved = open_run_folder_file(run_id, relative_path)
+            os.close(descriptor)
+            key = ("run", str(run_id), str(relative_path))
+        else:
+            raise ValueError("One of the selected file sources is invalid.")
+        selected.add(key)
+    if len(selected) != len(items):
+        raise ValueError("The selection contains duplicate file entries.")
+
+    deleted = []
+    failures = []
+    with _run_storage_maintenance():
+        records, duplicate_groups = _scan_library_duplicate_records()
+        by_key = {_duplicate_record_key(record): record for record in records}
+        duplicate_keys = {
+            _duplicate_record_key(record)
+            for group in duplicate_groups for record in group["files"]
+        }
+        if not selected.issubset(duplicate_keys):
+            raise ValueError("Only files listed in the latest duplicate scan can be deleted.")
+        missing = selected.difference(by_key)
+        if missing:
+            raise ValueError("One or more selected files no longer exist or could not be verified. Scan again.")
+        protected = [by_key[key] for key in selected if not by_key[key].get("deletable", True)]
+        if protected:
+            raise RuntimeError(protected[0].get("protected_reason") or "One or more selected files are protected.")
+
+        name_groups, content_groups, _grouped = _duplicate_groups_for_records(records)
+        for name, indices in name_groups.items():
+            keys = {_duplicate_record_key(records[index]) for index in indices}
+            selected_in_group = selected.intersection(keys)
+            if len(keys) > 1 and selected_in_group and len(selected_in_group) == len(keys):
+                raise ValueError("At least one file with each duplicated filename must remain. Uncheck one copy and try again.")
+        for content_key, indices in content_groups.items():
+            keys = {_duplicate_record_key(records[index]) for index in indices}
+            selected_in_group = selected.intersection(keys)
+            if len(keys) > 1 and selected_in_group and len(selected_in_group) == len(keys):
+                raise ValueError("At least one byte-identical copy must remain. Uncheck one copy and try again.")
+
+        # Revalidate selected files and every survivor that protects a name/content group.
+        verify_keys = set(selected)
+        for mapping in (name_groups, content_groups):
+            for indices in mapping.values():
+                keys = {_duplicate_record_key(records[index]) for index in indices}
+                if selected.intersection(keys):
+                    verify_keys.update(keys - selected)
+
+        verified_paths = {}
+        verified_hashes = {}
+        for key in verify_keys:
+            record = by_key[key]
+            path, digest = _verify_duplicate_record(record)
+            if record.get("sha256") and digest != record["sha256"]:
+                raise RuntimeError("A selected file checksum changed after scanning. Run the scan again.")
+            verified_paths[key] = path
+            verified_hashes[key] = digest
+
+        selected_library = {
+            (key[1], key[2]) for key in selected if key[0] == "library"
+        }
+        with LOCK:
+            if STATE.get("status") in ("running", "stopping"):
+                raise RuntimeError("Files cannot be deleted while a job is active.")
+            if UPLOADS_ACTIVE or UPLOAD_RESERVATIONS:
+                raise RuntimeError("Wait for active uploads to finish before deleting files.")
+            in_use = selected_library.intersection(_active_library_assets())
+            if in_use:
+                raise RuntimeError("One or more selected library files are currently mounted in a tool input. Unselect them and try again.")
+            current_run_dir = None
+            if STATE.get("run_dir"):
+                try:
+                    current_run_dir = Path(STATE["run_dir"]).resolve()
+                except OSError:
+                    current_run_dir = None
+            for key in sorted(selected):
+                path = verified_paths[key]
+                if key[0] == "run":
+                    run_root = (DATA / key[1]).resolve(strict=True)
+                    if current_run_dir is not None and run_root == current_run_dir:
+                        raise RuntimeError("The currently selected run folder is protected from file deletion.")
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    failures.append({"source": key[0], "id": key[-1], "error": type(exc).__name__})
+                    continue
+                record = by_key[key]
+                deleted.append({
+                    "source": key[0],
+                    "category": record["category"],
+                    "id": record["id"],
+                    "run_id": record.get("run_id"),
+                    "relative_path": record.get("relative_path"),
+                    "name": record["name"],
+                    "path": record["path"],
+                })
+                if key[0] == "library":
+                    try:
+                        index_path = _library_digest_index_path()
+                        with sqlite3.connect(str(index_path), timeout=15) as connection:
+                            connection.execute(
+                                "DELETE FROM asset_digests WHERE category=? AND asset_id=?",
+                                (key[1], key[2]),
+                            )
+                    except sqlite3.Error:
+                        pass
+
+    deleted_paths = {item.get("path") for item in deleted}
+    deleted_bytes = sum(
+        int(record.get("size", 0)) for record in (by_key.values() if "by_key" in locals() else [])
+        if record.get("path") in deleted_paths
+    )
+    if deleted:
+        _invalidate_storage_scan_snapshots()
+    add_log(f"[WEB] Duplicate cleanup removed {len(deleted)} selected library/work file(s).")
+    if deleted:
+        _record_storage_activity(
+            "Duplicate files removed",
+            f"Deleted {len(deleted):,} selected library/work file(s)",
+            deleted_bytes,
+        )
+    return {
+        "ok": True, "deleted": deleted, "deleted_count": len(deleted),
+        "requested_count": len(selected), "failures": failures,
+    }
+
 def resolve_library_asset(category: str, asset_id: str) -> Path:
     """Resolve a library ID/name to a regular file strictly inside its folder."""
     if (
@@ -817,6 +1554,8 @@ def data_storage_usage_bytes() -> int:
 
 def storage_preflight(additional_bytes: int = 0) -> tuple[bool, str, int]:
     """Check aggregate app-data quota and preserve a minimum free-disk reserve."""
+    if RUN_STORAGE_MAINTENANCE_LOCK.locked():
+        return False, "Run storage is being scanned or cleaned up. Retry after the operation finishes.", 0
     try:
         used = data_storage_usage_bytes()
         free = shutil.disk_usage(DATA).free
@@ -856,19 +1595,328 @@ def run_storage_summary() -> dict:
         }
 
 
+@contextmanager
+def _run_storage_maintenance():
+    """Serialize scans/deletes and prevent a new engine run during maintenance."""
+    if not RUN_STORAGE_MAINTENANCE_LOCK.acquire(blocking=False):
+        raise RuntimeError("Another run-storage scan or cleanup operation is already in progress.")
+    try:
+        with LOCK:
+            _assert_run_storage_cleanup_idle()
+        yield
+    finally:
+        RUN_STORAGE_MAINTENANCE_LOCK.release()
+
+
+def _assert_run_storage_cleanup_idle() -> None:
+    """Prevent storage scans/deletes from racing active engines or uploads."""
+    if STATE.get("status") in ("running", "stopping"):
+        raise RuntimeError("Run storage cannot be scanned or cleaned up while a job is running or stopping.")
+    if UPLOADS_ACTIVE:
+        raise RuntimeError("Wait for active uploads to finish before scanning or deleting run folders.")
+
+
+def _run_directory_snapshot(directory: Path) -> dict | None:
+    """Hash regular files without following symlinks; reject unstable/unsafe trees.
+
+    Relative paths are part of the signature, so a duplicate has the same file
+    layout and exact file contents (SHA-256), not merely the same total size.
+    """
+    records = []
+    total_bytes = 0
+    latest_mtime_ns = 0
+    try:
+        if directory.is_symlink() or not directory.is_dir():
+            return None
+    except OSError:
+        return None
+
+    def raise_walk_error(error):
+        raise error
+
+    try:
+        for root, dir_names, file_names in os.walk(
+            directory, topdown=True, followlinks=False, onerror=raise_walk_error
+        ):
+            root_path = Path(root)
+            safe_dir_names = []
+            for name in sorted(dir_names):
+                child = root_path / name
+                info = child.lstat()
+                if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISDIR(info.st_mode):
+                    return None
+                safe_dir_names.append(name)
+            dir_names[:] = safe_dir_names
+
+            for name in sorted(file_names):
+                file_path = root_path / name
+                before = file_path.lstat()
+                if stat_module.S_ISLNK(before.st_mode) or not stat_module.S_ISREG(before.st_mode):
+                    return None
+
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(file_path, flags)
+                digest = hashlib.sha256()
+                size_read = 0
+                with os.fdopen(descriptor, "rb") as stream:
+                    opened = os.fstat(stream.fileno())
+                    if (not stat_module.S_ISREG(opened.st_mode)
+                            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+                        return None
+                    while True:
+                        chunk = stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        size_read += len(chunk)
+                    after_open = os.fstat(stream.fileno())
+
+                after_path = file_path.lstat()
+                stable_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                final_identity = (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns)
+                opened_identity = (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns)
+                if (stable_identity != final_identity or stable_identity != opened_identity
+                        or size_read != before.st_size):
+                    return None
+
+                records.append({
+                    "path": file_path.relative_to(directory).as_posix(),
+                    "size": before.st_size,
+                    "sha256": digest.hexdigest(),
+                })
+                total_bytes += before.st_size
+                latest_mtime_ns = max(latest_mtime_ns, before.st_mtime_ns)
+    except (OSError, ValueError):
+        return None
+
+    records.sort(key=lambda item: item["path"])
+    signature_data = json.dumps(records, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "records": records,
+        "files": len(records),
+        "bytes": total_bytes,
+        "latest_mtime_ns": latest_mtime_ns,
+        "fingerprint": hashlib.sha256(signature_data).hexdigest(),
+    }
+
+
+def _is_direct_run_directory(directory: Path) -> bool:
+    """Validate that a candidate is a direct, non-symlink child of DATA."""
+    try:
+        return not directory.is_symlink() and directory.is_dir() and directory.parent.resolve() == DATA.resolve()
+    except OSError:
+        return False
+
+
+def _scan_run_storage_candidates_unlocked() -> dict:
+    """Collect empty/log-only directories and exact-content duplicate groups."""
+    log_only = []
+    grouped = {}
+    skipped_unsafe = 0
+    scanned = 0
+    current_run_dir = None
+    if STATE.get("run_dir"):
+        try:
+            current_run_dir = Path(STATE["run_dir"]).resolve()
+        except OSError:
+            current_run_dir = None
+
+    for directory in _iter_run_directories():
+        scanned += 1
+        snapshot = _run_directory_snapshot(directory)
+        if snapshot is None:
+            skipped_unsafe += 1
+            continue
+
+        records = snapshot["records"]
+        log_files = sum(1 for item in records if Path(item["path"]).suffix.lower() == ".log")
+        if log_files == len(records):
+            log_only.append({
+                "name": directory.name,
+                "files": snapshot["files"],
+                "log_files": log_files,
+                "bytes": snapshot["bytes"],
+                "empty": snapshot["files"] == 0,
+            })
+
+        # Empty folders are cleanup candidates, but not duplicate runs: an empty
+        # signature carries no useful identity and would collapse unrelated jobs.
+        if snapshot["files"] == 0:
+            continue
+        grouped.setdefault(snapshot["fingerprint"], []).append({
+            "name": directory.name,
+            "files": snapshot["files"],
+            "bytes": snapshot["bytes"],
+            "latest_mtime_ns": snapshot["latest_mtime_ns"],
+            "path": directory,
+        })
+
+    duplicate_groups = []
+    for fingerprint, entries in grouped.items():
+        if len(entries) < 2:
+            continue
+        current_entries = [
+            item for item in entries
+            if current_run_dir is not None and item["path"].resolve() == current_run_dir
+        ]
+        # Preserve STATE.run_dir if it is one of the copies; otherwise keep newest.
+        keeper = current_entries[0] if current_entries else max(
+            entries, key=lambda item: (item["latest_mtime_ns"], item["name"])
+        )
+        duplicate_names = sorted(item["name"] for item in entries if item is not keeper)
+        duplicate_groups.append({
+            "fingerprint": fingerprint,
+            "keep": keeper["name"],
+            "duplicates": duplicate_names,
+            "files": keeper["files"],
+            "bytes_each": keeper["bytes"],
+            "reclaimable_bytes": keeper["bytes"] * len(duplicate_names),
+        })
+
+    duplicate_groups.sort(key=lambda item: (item["keep"].lower(), item["fingerprint"]))
+    log_only.sort(key=lambda item: item["name"].lower())
+    return {
+        "scanned_directories": scanned,
+        "log_only_directories": log_only,
+        "log_only_count": len(log_only),
+        "log_only_bytes": sum(item["bytes"] for item in log_only),
+        "duplicate_groups": duplicate_groups,
+        "duplicate_group_count": len(duplicate_groups),
+        "duplicate_directories": sum(len(item["duplicates"]) for item in duplicate_groups),
+        "duplicate_reclaimable_bytes": sum(item["reclaimable_bytes"] for item in duplicate_groups),
+        "skipped_unsafe_directories": skipped_unsafe,
+    }
+
+
+def scan_run_storage_cleanup_candidates() -> dict:
+    """Hash saved runs and list folders that can be safely cleaned up."""
+    with _run_storage_maintenance():
+        result = _scan_run_storage_candidates_unlocked()
+    scanned_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    _set_storage_scan_snapshot("last_run_scan", {
+        "scanned_at": scanned_at,
+        "log_only_count": result["log_only_count"],
+        "log_only_bytes": result["log_only_bytes"],
+        "duplicate_directories": result["duplicate_directories"],
+        "duplicate_reclaimable_bytes": result["duplicate_reclaimable_bytes"],
+        "scanned_directories": result["scanned_directories"],
+    })
+    result["scanned_at"] = scanned_at
+    _record_storage_activity(
+        "Run folder scan",
+        f"Checked {result['scanned_directories']:,} folders · {result['log_only_count']:,} log-only · {result['duplicate_directories']:,} duplicate(s)",
+    )
+    return result
+
+
+def _clear_deleted_run_state(deleted_names: set[str]) -> None:
+    """Drop state/output references if a targeted cleanup removed STATE.run_dir."""
+    if not deleted_names or not STATE.get("run_dir"):
+        return
+    try:
+        current = Path(STATE["run_dir"])
+        if current.name in deleted_names and current.parent.resolve() == DATA.resolve():
+            STATE["run_dir"] = None
+            STATE["outputs"] = []
+    except OSError:
+        STATE["run_dir"] = None
+        STATE["outputs"] = []
+
+
+def delete_log_only_run_directories() -> dict:
+    """Delete empty folders or folders containing regular .log files only."""
+    with _run_storage_maintenance():
+        candidates = _scan_run_storage_candidates_unlocked()["log_only_directories"]
+        deleted = []
+        failures = []
+        for item in candidates:
+            directory = DATA / item["name"]
+            if not _is_direct_run_directory(directory):
+                failures.append(f"{item['name']}: folder is no longer a safe run directory")
+                continue
+            snapshot = _run_directory_snapshot(directory)
+            if snapshot is None or any(
+                Path(record["path"]).suffix.lower() != ".log" for record in snapshot["records"]
+            ):
+                failures.append(f"{item['name']}: contents changed after the scan; skipped")
+                continue
+            try:
+                shutil.rmtree(directory)
+                deleted.append(item["name"])
+            except OSError as exc:
+                failures.append(f"{item['name']}: {exc}")
+        with LOCK:
+            _clear_deleted_run_state(set(deleted))
+            result = run_storage_summary_unlocked()
+            result.update({"deleted_directories": len(deleted), "deleted_names": deleted, "failures": failures})
+
+    if deleted:
+        _invalidate_storage_scan_snapshots()
+        add_log(f"[WEB] Run storage cleanup removed {len(deleted)} empty/log-only director{'y' if len(deleted) == 1 else 'ies'}.")
+        _record_storage_activity(
+            "Empty / logs-only folders removed",
+            f"Deleted {len(deleted):,} eligible folder(s)",
+            sum(int(item.get("bytes", 0)) for item in candidates if item.get("name") in deleted),
+        )
+    return result
+
+
+def delete_duplicate_run_directories() -> dict:
+    """Delete exact duplicate run copies while retaining one folder per group."""
+    with _run_storage_maintenance():
+        scan = _scan_run_storage_candidates_unlocked()
+        deleted = []
+        retained = []
+        failures = []
+        for group in scan["duplicate_groups"]:
+            retained.append(group["keep"])
+            for name in group["duplicates"]:
+                directory = DATA / name
+                if not _is_direct_run_directory(directory):
+                    failures.append(f"{name}: folder is no longer a safe run directory")
+                    continue
+                snapshot = _run_directory_snapshot(directory)
+                if snapshot is None or snapshot["fingerprint"] != group["fingerprint"]:
+                    failures.append(f"{name}: contents changed after the scan; skipped")
+                    continue
+                try:
+                    shutil.rmtree(directory)
+                    deleted.append(name)
+                except OSError as exc:
+                    failures.append(f"{name}: {exc}")
+        with LOCK:
+            _clear_deleted_run_state(set(deleted))
+            result = run_storage_summary_unlocked()
+            result.update({
+                "deleted_directories": len(deleted),
+                "deleted_names": deleted,
+                "retained_directories": retained,
+                "failures": failures,
+            })
+
+    if deleted:
+        _invalidate_storage_scan_snapshots()
+        add_log(f"[WEB] Run storage duplicate cleanup removed {len(deleted)} duplicate director{'y' if len(deleted) == 1 else 'ies'}.")
+        reclaimed = sum(
+            int(group.get("bytes_each", 0)) * sum(1 for name in group.get("duplicates", []) if name in deleted)
+            for group in scan["duplicate_groups"]
+        )
+        _record_storage_activity(
+            "Duplicate run folders removed",
+            f"Deleted {len(deleted):,} redundant run folder(s)", reclaimed,
+        )
+    return result
+
+
 def clear_run_directories() -> dict:
     """Delete persisted run directories, preserving uploads/, library/ and app config.
 
     This operation is rejected while any engine job or upload is active. It only
     removes direct, non-symlink run directories under DATA and never follows links.
     """
-    with LOCK:
-        if STATE.get("status") in ("running", "stopping"):
-            raise RuntimeError("Run folders cannot be deleted while a job is running or stopping.")
-        if UPLOADS_ACTIVE:
-            raise RuntimeError("Wait for active uploads to finish before deleting run folders.")
-
-        current_run_dir = Path(STATE["run_dir"]) if STATE.get("run_dir") else None
+    with _run_storage_maintenance():
+        with LOCK:
+            current_run_dir = Path(STATE["run_dir"]) if STATE.get("run_dir") else None
         removed = 0
         failures = []
         for directory in list(_iter_run_directories()):
@@ -879,19 +1927,23 @@ def clear_run_directories() -> dict:
                 failures.append(f"{directory.name}: {exc}")
 
         # Drop references to deleted outputs so the UI cannot offer dead links.
-        if current_run_dir is not None:
-            try:
-                if current_run_dir.parent.resolve() == DATA.resolve() and not current_run_dir.exists():
+        with LOCK:
+            if current_run_dir is not None:
+                try:
+                    if current_run_dir.parent.resolve() == DATA.resolve() and not current_run_dir.exists():
+                        STATE["run_dir"] = None
+                        STATE["outputs"] = []
+                except OSError:
                     STATE["run_dir"] = None
                     STATE["outputs"] = []
-            except OSError:
-                STATE["run_dir"] = None
-                STATE["outputs"] = []
 
-        result = run_storage_summary_unlocked()
-        result.update({"deleted_directories": removed, "failures": failures})
+            result = run_storage_summary_unlocked()
+            result.update({"deleted_directories": removed, "failures": failures})
 
     add_log(f"[WEB] Run storage cleanup removed {removed} run director{'y' if removed == 1 else 'ies'}.")
+    if removed:
+        _invalidate_storage_scan_snapshots()
+        _record_storage_activity("All run folders removed", f"Deleted {removed:,} run folder(s)")
     return result
 
 
@@ -911,6 +1963,238 @@ def run_storage_summary_unlocked() -> dict:
         "active": STATE.get("status") in ("running", "stopping"),
         "uploads_preserved": True,
         "library_preserved": True,
+    }
+
+
+
+def storage_intelligence_summary() -> dict:
+    """Build a filesystem dashboard in one metadata-only pass; never hash file contents."""
+    bucket_values = {
+        "runs": {"key": "runs", "label": "Run folders", "files": 0, "bytes": 0},
+        "library": {"key": "library", "label": "Reusable library", "files": 0, "bytes": 0},
+        "uploads": {"key": "uploads", "label": "Temporary uploads", "files": 0, "bytes": 0},
+        "internal": {"key": "internal", "label": "Internal metadata", "files": 0, "bytes": 0},
+    }
+    library_stats = {"wordlist_files": 0, "wordlist_bytes": 0, "rule_files": 0, "rule_bytes": 0}
+    run_directories = 0
+    total_files = 0
+    total_bytes = 0
+    folders = []
+    largest_heap = []
+    newest_library_heap = []
+    sequence = 0
+    largest_limit = 10
+    newest_limit = 5
+
+    def consider_file(record):
+        nonlocal sequence
+        sequence += 1
+        candidate = (int(record["bytes"]), sequence, record)
+        if len(largest_heap) < largest_limit:
+            heapq.heappush(largest_heap, candidate)
+        elif candidate[0] > largest_heap[0][0]:
+            heapq.heapreplace(largest_heap, candidate)
+        if record.get("source") == "library":
+            newest = (int(record.get("modified", 0)), sequence, record)
+            if len(newest_library_heap) < newest_limit:
+                heapq.heappush(newest_library_heap, newest)
+            elif newest[0] > newest_library_heap[0][0]:
+                heapq.heapreplace(newest_library_heap, newest)
+
+    def scan_tree(folder: Path, source: str, category: str = "") -> tuple[int, int]:
+        """Count safe regular files and collect downloadable top files if applicable."""
+        count = size = 0
+        if folder.is_symlink() or not folder.is_dir():
+            return count, size
+
+        def raise_walk_error(error):
+            raise error
+
+        try:
+            for current_root, directory_names, file_names in os.walk(
+                folder, topdown=True, followlinks=False, onerror=raise_walk_error
+            ):
+                current_path = Path(current_root)
+                safe_names = []
+                for directory_name in sorted(directory_names, key=str.casefold):
+                    child = current_path / directory_name
+                    try:
+                        child_mode = child.lstat().st_mode
+                        if stat_module.S_ISDIR(child_mode) and not stat_module.S_ISLNK(child_mode):
+                            safe_names.append(directory_name)
+                    except OSError:
+                        continue
+                directory_names[:] = safe_names
+
+                for filename in file_names:
+                    candidate_path = current_path / filename
+                    try:
+                        metadata = candidate_path.lstat()
+                        if not stat_module.S_ISREG(metadata.st_mode):
+                            continue
+                        file_size = int(metadata.st_size)
+                        count += 1
+                        size += file_size
+                        if source == "run":
+                            relative = candidate_path.relative_to(folder).as_posix()
+                            consider_file({
+                                "source": "run", "name": filename,
+                                "path": str(candidate_path), "bytes": file_size,
+                                "modified": int(metadata.st_mtime), "run_id": folder.name,
+                                "relative_path": relative,
+                                "download_url": "/api/run-storage/file-download?" + urllib.parse.urlencode({
+                                    "run_id": folder.name, "relative_path": relative,
+                                }),
+                            })
+                        elif (source == "library" and current_path == folder
+                                and _safe_library_filename(filename)
+                                and not _is_library_derived_cache(filename)):
+                            consider_file({
+                                "source": "library", "category": category,
+                                "asset_id": filename,
+                                "name": _library_asset_display_name(filename),
+                                "path": str(candidate_path), "bytes": file_size,
+                                "modified": int(metadata.st_mtime),
+                                "download_url": "/api/library/download?" + urllib.parse.urlencode({
+                                    "category": category, "asset_id": filename,
+                                }),
+                            })
+                    except (OSError, ValueError):
+                        continue
+        except OSError:
+            # Keep the partial metadata snapshot; inaccessible descendants are skipped.
+            pass
+        return count, size
+
+    try:
+        top_entries = sorted(DATA.iterdir(), key=lambda item: item.name.casefold()) if DATA.is_dir() and not DATA.is_symlink() else []
+    except OSError:
+        top_entries = []
+
+    for entry in top_entries:
+        try:
+            metadata = entry.lstat()
+            if stat_module.S_ISLNK(metadata.st_mode):
+                continue
+            if stat_module.S_ISREG(metadata.st_mode):
+                total_files += 1
+                total_bytes += int(metadata.st_size)
+                bucket_values["internal"]["files"] += 1
+                bucket_values["internal"]["bytes"] += int(metadata.st_size)
+                continue
+            if not stat_module.S_ISDIR(metadata.st_mode):
+                continue
+        except OSError:
+            continue
+
+        if entry.name == UPLOADS.name:
+            count, size = scan_tree(entry, "uploads")
+            bucket_values["uploads"]["files"] += count
+            bucket_values["uploads"]["bytes"] += size
+            total_files += count
+            total_bytes += size
+            folders.append({"name": entry.name, "path": str(entry), "source": "uploads", "files": count, "bytes": size})
+        elif entry.name == "library":
+            # The hash index and any non-category library metadata are counted as
+            # internal files; the two selectable asset folders are reported as Library.
+            try:
+                library_entries = sorted(entry.iterdir(), key=lambda item: item.name.casefold())
+            except OSError:
+                library_entries = []
+            for library_entry in library_entries:
+                try:
+                    child_metadata = library_entry.lstat()
+                    if stat_module.S_ISLNK(child_metadata.st_mode):
+                        continue
+                    if stat_module.S_ISREG(child_metadata.st_mode):
+                        total_files += 1
+                        total_bytes += int(child_metadata.st_size)
+                        bucket_values["internal"]["files"] += 1
+                        bucket_values["internal"]["bytes"] += int(child_metadata.st_size)
+                        continue
+                    if not stat_module.S_ISDIR(child_metadata.st_mode):
+                        continue
+                except OSError:
+                    continue
+                if library_entry.name in {"wordlists", "rules"}:
+                    count, size = scan_tree(library_entry, "library", library_entry.name)
+                    bucket_values["library"]["files"] += count
+                    bucket_values["library"]["bytes"] += size
+                    total_files += count
+                    total_bytes += size
+                    if library_entry.name == "wordlists":
+                        library_stats["wordlist_files"] += count
+                        library_stats["wordlist_bytes"] += size
+                    else:
+                        library_stats["rule_files"] += count
+                        library_stats["rule_bytes"] += size
+                    folders.append({"name": library_entry.name, "path": str(library_entry), "source": "library", "files": count, "bytes": size})
+                else:
+                    count, size = scan_tree(library_entry, "internal")
+                    bucket_values["internal"]["files"] += count
+                    bucket_values["internal"]["bytes"] += size
+                    total_files += count
+                    total_bytes += size
+        else:
+            run_directories += 1
+            count, size = scan_tree(entry, "run")
+            bucket_values["runs"]["files"] += count
+            bucket_values["runs"]["bytes"] += size
+            total_files += count
+            total_bytes += size
+            folders.append({"name": entry.name, "path": str(entry), "source": "run", "files": count, "bytes": size})
+
+    for bucket in bucket_values.values():
+        bucket["percent"] = (bucket["bytes"] / total_bytes * 100.0) if total_bytes else 0.0
+
+    try:
+        disk = shutil.disk_usage(DATA)
+        filesystem = {
+            "total_bytes": int(disk.total),
+            "free_bytes": int(disk.free),
+            "used_percent": ((disk.total - disk.free) / disk.total * 100.0) if disk.total else 0.0,
+        }
+    except OSError:
+        filesystem = None
+
+    folders.sort(key=lambda item: (-item["bytes"], item["path"].casefold()))
+    with LOCK:
+        last_run_scan = dict(_STORAGE_INTELLIGENCE_STATE.get("last_run_scan") or {})
+        last_library_scan = dict(_STORAGE_INTELLIGENCE_STATE.get("last_library_scan") or {})
+        activity = [dict(item) for item in _STORAGE_INTELLIGENCE_STATE.get("activity", [])[:6]]
+        active = STATE.get("status") in ("running", "stopping")
+
+    cleanup = {
+        "run_scanned_at": last_run_scan.get("scanned_at"),
+        "log_only_count": last_run_scan.get("log_only_count"),
+        "log_only_bytes": last_run_scan.get("log_only_bytes"),
+        "duplicate_run_count": last_run_scan.get("duplicate_directories"),
+        "duplicate_run_bytes": last_run_scan.get("duplicate_reclaimable_bytes"),
+        "library_scanned_at": last_library_scan.get("scanned_at"),
+        "duplicate_file_groups": last_library_scan.get("duplicate_group_count"),
+        "same_name_review_groups": last_library_scan.get("same_name_review_groups"),
+        "suggested_delete_count": last_library_scan.get("suggested_delete_count"),
+        "suggested_delete_bytes": last_library_scan.get("suggested_delete_bytes"),
+    }
+    library_files = bucket_values["library"]["files"]
+    library_bytes = bucket_values["library"]["bytes"]
+    return {
+        "total_files": total_files,
+        "total_bytes": total_bytes,
+        "run_directories": run_directories,
+        "buckets": list(bucket_values.values()),
+        "filesystem": filesystem,
+        "library": {
+            "files": library_files, "bytes": library_bytes,
+            **library_stats,
+        },
+        "largest_files": [item[2] for item in sorted(largest_heap, key=lambda item: (-item[0], item[2]["path"].casefold()))],
+        "recent_library_files": [item[2] for item in sorted(newest_library_heap, key=lambda item: (-item[0], item[2]["path"].casefold()))],
+        "largest_folders": folders[:8],
+        "cleanup": cleanup,
+        "activity": activity,
+        "active": active,
+        "history_scope": "since server start",
     }
 
 
@@ -1932,8 +3216,159 @@ class Handler(BaseHTTPRequestHandler):
                 }, 500)
         elif path == "/api/library":
             self.send_json({"ok": True, **list_library_assets()})
+        elif path == "/api/library/search":
+            query = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+            try:
+                self.send_json({"ok": True, **search_library_assets(query)})
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
+        elif path == "/api/library/download":
+            params = urllib.parse.parse_qs(parsed.query)
+            category = params.get("category", [""])[0]
+            asset_id = params.get("asset_id", [""])[0]
+            try:
+                target = resolve_library_asset(category, asset_id)
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(str(target), flags)
+                metadata = os.fstat(descriptor)
+                if not stat_module.S_ISREG(metadata.st_mode):
+                    os.close(descriptor)
+                    raise ValueError("The requested library item is not a regular file.")
+            except (ValueError, OSError) as exc:
+                self.send_json({"error": str(exc) or "Library file not found."}, 404)
+                return
+            download_name = safe_name(_library_asset_display_name(asset_id), "library-file")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+            self.send_header("Content-Length", str(metadata.st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                with os.fdopen(descriptor, "rb") as handle:
+                    while True:
+                        block = handle.read(1024 * 1024)
+                        if not block:
+                            break
+                        self.wfile.write(block)
+            except OSError:
+                self.close_connection = True
+        elif path == "/api/run-storage/file-download":
+            params = urllib.parse.parse_qs(parsed.query)
+            run_id = params.get("run_id", [""])[0]
+            relative_path = params.get("relative_path", [""])[0]
+            try:
+                descriptor, metadata, target = open_run_folder_file(run_id, relative_path)
+            except (ValueError, OSError) as exc:
+                self.send_json({"error": str(exc) or "Work-folder file not found."}, 404)
+                return
+            download_name = safe_name(target.name, "run-file")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+            self.send_header("Content-Length", str(metadata.st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                with os.fdopen(descriptor, "rb") as handle:
+                    while True:
+                        block = handle.read(1024 * 1024)
+                        if not block:
+                            break
+                        self.wfile.write(block)
+            except OSError:
+                self.close_connection = True
+        elif path == "/api/run-storage/download-outputs.zip":
+            with LOCK:
+                run_directory_value = STATE.get("run_dir")
+                outputs = [dict(item) for item in STATE.get("outputs", []) if isinstance(item, dict)]
+                output_tool = str(STATE.get("tool") or "ruleops")
+                output_status = STATE.get("status")
+            if output_status in ("running", "stopping"):
+                self.send_json({"error": "Output files are available as a ZIP after the tool has finished."}, 409)
+                return
+            if len(outputs) <= 3 or not run_directory_value:
+                self.send_json({"error": "A ZIP download is available only when the completed run has more than three output files."}, 409)
+                return
+
+            run_directory = Path(run_directory_value)
+            run_id = run_directory.name
+            opened_outputs = []
+            try:
+                # Confirm the active output folder is a direct child of runs/.
+                resolved_run_directory = run_directory.resolve(strict=True)
+                if (
+                    run_directory.is_symlink()
+                    or resolved_run_directory.parent != DATA.resolve(strict=True)
+                    or not resolved_run_directory.is_dir()
+                ):
+                    raise ValueError("Current output folder is outside RULEOPS run storage.")
+                seen_names = set()
+                for output in outputs:
+                    name = str(output.get("name") or "")
+                    if (
+                        not name or name in {".", ".."} or "/" in name or "\\" in name
+                        or safe_name(name, "") != name or name in seen_names
+                    ):
+                        raise ValueError("The output list contains an unsafe or duplicate filename.")
+                    seen_names.add(name)
+                    descriptor, metadata, _target = open_run_folder_file(run_id, name)
+                    expected_size = output.get("size")
+                    if expected_size is not None and int(expected_size) != int(metadata.st_size):
+                        os.close(descriptor)
+                        raise ValueError(f"Output file changed since the run completed: {name}")
+                    opened_outputs.append((name, descriptor, metadata))
+            except (OSError, TypeError, ValueError) as exc:
+                for _name, descriptor, _metadata in opened_outputs:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                self.send_json({"error": str(exc) or "Output files could not be prepared for download."}, 409)
+                return
+
+            archive_name = safe_name(f"RULEOPS-{output_tool}-outputs.zip", "RULEOPS-outputs.zip")
+            self.close_connection = True  # HTTP/1.0 response is delimited by socket close.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{archive_name}"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                with zipfile.ZipFile(
+                    _HTTPZipSink(self.wfile), mode="w",
+                    compression=zipfile.ZIP_DEFLATED, compresslevel=1,
+                ) as archive:
+                    for name, descriptor, metadata in opened_outputs:
+                        info = zipfile.ZipInfo(name)
+                        info.compress_type = zipfile.ZIP_DEFLATED
+                        info.file_size = int(metadata.st_size)
+                        info.external_attr = (stat_module.S_IFREG | 0o600) << 16
+                        with os.fdopen(descriptor, "rb") as source, archive.open(
+                            info, mode="w", force_zip64=True
+                        ) as destination:
+                            shutil.copyfileobj(source, destination, length=1024 * 1024)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError, zipfile.BadZipFile):
+                # A disconnected client or changed output cannot be repaired
+                # after streaming starts. Close the response without leaking FDs.
+                self.close_connection = True
+            finally:
+                for _name, descriptor, _metadata in opened_outputs:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
         elif path == "/api/run-storage/summary":
             self.send_json({"ok": True, **run_storage_summary()})
+        elif path == "/api/run-storage/intelligence":
+            try:
+                self.send_json({"ok": True, **storage_intelligence_summary()})
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.send_json({"error": f"Storage Intelligence unavailable: {exc}"}, 500)
         elif path == "/api/status":
             qs = urllib.parse.parse_qs(parsed.query)
             try:
@@ -2030,6 +3465,10 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_auth_set_user_password()
         elif parsed.path == "/api/library/select":
             self.handle_library_select()
+        elif parsed.path == "/api/library/scan-duplicates":
+            self.handle_library_duplicate_scan()
+        elif parsed.path == "/api/library/delete-selected":
+            self.handle_library_delete_selected()
         elif parsed.path.startswith("/api/upload/"):
             self.handle_upload(parsed, ranker=False)
         elif parsed.path.startswith("/api/ranker/upload/"):
@@ -2058,6 +3497,12 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_clear_logs()
         elif parsed.path == "/api/run-storage/clear":
             self.handle_clear_run_directories()
+        elif parsed.path == "/api/run-storage/scan":
+            self.handle_scan_run_storage()
+        elif parsed.path == "/api/run-storage/delete-log-only":
+            self.handle_delete_log_only_run_directories()
+        elif parsed.path == "/api/run-storage/delete-duplicates":
+            self.handle_delete_duplicate_run_directories()
         else:
             self.send_error(404)
 
@@ -2333,6 +3778,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, **result})
 
+    def handle_scan_run_storage(self):
+        try:
+            result = scan_run_storage_cleanup_candidates()
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, 409)
+            return
+        self.send_json({"ok": True, **result})
+
+    def handle_delete_log_only_run_directories(self):
+        try:
+            result = delete_log_only_run_directories()
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, 409)
+            return
+        self.send_json({"ok": not bool(result.get("failures")), **result}, 207 if result.get("failures") else 200)
+
+    def handle_delete_duplicate_run_directories(self):
+        try:
+            result = delete_duplicate_run_directories()
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, 409)
+            return
+        self.send_json({"ok": not bool(result.get("failures")), **result}, 207 if result.get("failures") else 200)
+
     def handle_upload(self, parsed, ranker=False, concentrator=False, tools=False):
         field = parsed.path.rsplit("/", 1)[-1]
         allowed_fields = (CONCENTRATOR_UPLOAD_FIELDS if concentrator else
@@ -2516,6 +3985,39 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Upload failed: {exc}"}, response_status)
             except OSError:
                 self.close_connection = True
+
+    def handle_library_duplicate_scan(self):
+        """Scan reusable wordlists/rules for same-name or checksum duplicates."""
+        data = self.read_json_body(16 * 1024)
+        if data is None:
+            return
+        try:
+            result = scan_library_duplicates()
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, 409)
+            return
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            self.send_json({"error": f"Library/work duplicate scan failed: {exc}"}, 500)
+            return
+        self.send_json({"ok": True, **result})
+
+    def handle_library_delete_selected(self):
+        """Delete only explicitly checked library assets after server-side revalidation."""
+        data = self.read_json_body(128 * 1024)
+        if not isinstance(data, dict):
+            return
+        try:
+            result = delete_selected_library_assets(data.get("items"))
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, 409)
+            return
+        except (OSError, sqlite3.Error) as exc:
+            self.send_json({"error": f"Library cleanup failed: {exc}"}, 500)
+            return
+        self.send_json(result)
 
     def handle_library_select(self):
         """Mount an existing persistent library item into an input slot."""

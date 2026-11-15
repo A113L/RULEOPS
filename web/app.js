@@ -29,6 +29,12 @@ let pollTimer = null;
 let toastTimer = null;
 let currentStatus = 'idle';
 let lastStorageSummaryAt = 0;
+let lastStorageIntelligenceAt = 0;
+let storageIntelligenceLoading = false;
+let lastRunStorageScan = null;
+let lastLibraryDuplicateScan = null;
+let librarySearchTimer = null;
+let librarySearchRequestId = 0;
 let completionAudioContext = null;
 let completionSoundEnabled = true;
 const pendingCompletionJobIds = new Set();
@@ -520,6 +526,15 @@ function renderOutputs(outputs = [], outputTool = 'rulest') {
       empty.innerHTML = '<span>▤</span><b>No outputs yet</b><small>Generated files for this tool will appear here.</small>';
       root.append(empty); return;
     }
+    if (ownedOutputs.length > 3) {
+      const bundle = document.createElement('a');
+      bundle.className = 'download-output-bundle';
+      bundle.href = '/api/run-storage/download-outputs.zip';
+      bundle.title = `Download all ${ownedOutputs.length} output files as a ZIP archive`;
+      bundle.setAttribute('aria-label', `Download all ${ownedOutputs.length} output files as a ZIP archive`);
+      bundle.innerHTML = '<span aria-hidden="true">↓</span><span>Download all files <small>ZIP · ' + ownedOutputs.length + '</small></span>';
+      root.append(bundle);
+    }
     ownedOutputs.forEach((file) => {
       const row = document.createElement('div'); row.className = 'output-item';
       const icon = document.createElement('span'); icon.className = 'output-file-icon';
@@ -621,6 +636,206 @@ function formatStorageBytes(value) {
   }
   return `${amount.toFixed(amount >= 100 ? 0 : 1)} ${unit}`;
 }
+function storageIntelElement(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined && text !== null) element.textContent = String(text);
+  return element;
+}
+function storageIntelPlaceholder(container, message) {
+  container.replaceChildren(storageIntelElement('div', 'storage-intel-placeholder', message));
+}
+function renderStorageIntelligence(data) {
+  const totalBytes = Number(data.total_bytes || 0);
+  $('storage-intel-total').textContent = formatStorageBytes(totalBytes);
+  $('storage-intel-file-total').textContent = `${Number(data.total_files || 0).toLocaleString()} files`;
+  $('storage-intel-volume-note').textContent = `${Number(data.run_directories || 0).toLocaleString()} run folders · persistent + temporary data`;
+  const filesystem = data.filesystem || null;
+  $('storage-intel-disk-percent').textContent = filesystem ? `${Number(filesystem.used_percent || 0).toFixed(1)}%` : '—';
+  $('storage-intel-disk-bar').style.width = filesystem ? `${Math.max(0, Math.min(100, Number(filesystem.used_percent || 0)))}%` : '0%';
+
+  const breakdown = $('storage-intel-breakdown');
+  breakdown.replaceChildren();
+  (data.buckets || []).forEach((bucket) => {
+    const row = storageIntelElement('div', 'storage-intel-breakdown-row');
+    const label = storageIntelElement('div', 'storage-intel-breakdown-label');
+    label.appendChild(storageIntelElement('span', '', bucket.label));
+    label.appendChild(storageIntelElement('b', '', formatStorageBytes(bucket.bytes)));
+    const track = storageIntelElement('div', 'storage-intel-breakdown-track');
+    const bar = document.createElement('span');
+    bar.style.width = `${Math.max(0, Math.min(100, Number(bucket.percent || 0)))}%`;
+    track.appendChild(bar);
+    row.append(label, track);
+    breakdown.appendChild(row);
+  });
+  if (!breakdown.childElementCount) storageIntelPlaceholder(breakdown, 'No storage data found.');
+
+  const cleanup = $('storage-intel-cleanup');
+  cleanup.replaceChildren();
+  const opportunities = [
+    {
+      label: 'Empty / logs-only folders',
+      count: data.cleanup?.log_only_count,
+      bytes: data.cleanup?.log_only_bytes,
+      scanned: data.cleanup?.run_scanned_at,
+      empty: 'Run the folder scan to find eligible items.',
+    },
+    {
+      label: 'Exact duplicate run folders',
+      count: data.cleanup?.duplicate_run_count,
+      bytes: data.cleanup?.duplicate_run_bytes,
+      scanned: data.cleanup?.run_scanned_at,
+      empty: 'Run the folder scan to verify duplicate folders.',
+    },
+    {
+      label: 'Duplicate library / work files',
+      count: data.cleanup?.suggested_delete_count,
+      bytes: data.cleanup?.suggested_delete_bytes,
+      scanned: data.cleanup?.library_scanned_at,
+      empty: 'Run the library + work duplicate scan to find exact copies.',
+    },
+    {
+      label: 'Same-name groups to review',
+      count: data.cleanup?.same_name_review_groups,
+      bytes: null,
+      scanned: data.cleanup?.library_scanned_at,
+      empty: 'Run the library + work duplicate scan to find filename collisions.',
+    },
+  ];
+  opportunities.forEach((item) => {
+    const row = storageIntelElement('div', 'storage-intel-cleanup-row');
+    row.appendChild(storageIntelElement('b', '', item.label));
+    const detail = item.scanned
+      ? `Scanned ${item.scanned}`
+      : item.empty;
+    row.appendChild(storageIntelElement('small', '', detail));
+    const value = item.count === null || item.count === undefined ? '—' : Number(item.count).toLocaleString();
+    const strong = storageIntelElement('strong', '', value);
+    if (item.bytes !== null && item.bytes !== undefined) {
+      strong.appendChild(storageIntelElement('em', '', `${formatStorageBytes(item.bytes)} potential`));
+    }
+    row.appendChild(strong);
+    cleanup.appendChild(row);
+  });
+
+  const library = data.library || {};
+  $('storage-intel-library-size').textContent = formatStorageBytes(library.bytes || 0);
+  const libraryContainer = $('storage-intel-library');
+  libraryContainer.replaceChildren();
+  [
+    ['Wordlists', library.wordlist_files, library.wordlist_bytes],
+    ['Rule files', library.rule_files, library.rule_bytes],
+  ].forEach(([label, count, bytes]) => {
+    const card = storageIntelElement('div', 'storage-intel-library-card');
+    card.appendChild(storageIntelElement('b', '', Number(count || 0).toLocaleString()));
+    card.appendChild(storageIntelElement('small', '', `${label} · ${formatStorageBytes(bytes || 0)}`));
+    libraryContainer.appendChild(card);
+  });
+
+  const recentLibrary = $('storage-intel-recent-library');
+  recentLibrary.replaceChildren();
+  (data.recent_library_files || []).forEach((file) => {
+    const row = storageIntelElement('div', 'storage-intel-item');
+    const copy = storageIntelElement('div', 'storage-intel-item-copy');
+    copy.appendChild(storageIntelElement('b', '', file.name));
+    const path = storageIntelElement('small', 'storage-intel-path', file.path);
+    path.title = file.path || '';
+    copy.appendChild(path);
+    const meta = storageIntelElement('div', 'storage-intel-item-meta');
+    meta.appendChild(storageIntelElement('b', '', new Date(Number(file.modified || 0) * 1000).toLocaleDateString()));
+    meta.appendChild(storageIntelElement('small', '', file.category === 'rules' ? 'RULE FILE' : 'WORDLIST'));
+    const download = document.createElement('a');
+    download.className = 'storage-intel-download';
+    download.href = file.download_url || '#';
+    download.title = `Download ${file.name}`;
+    download.setAttribute('aria-label', `Download ${file.name}`);
+    download.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19v2h16v-2"/></svg>';
+    row.append(copy, meta, download);
+    recentLibrary.appendChild(row);
+  });
+  if (!recentLibrary.childElementCount) storageIntelPlaceholder(recentLibrary, 'No reusable library files found.');
+
+  const largestFiles = $('storage-intel-largest-files');
+  largestFiles.replaceChildren();
+  (data.largest_files || []).forEach((file) => {
+    const row = storageIntelElement('div', 'storage-intel-item');
+    const copy = storageIntelElement('div', 'storage-intel-item-copy');
+    copy.appendChild(storageIntelElement('b', '', file.name));
+    const path = storageIntelElement('small', 'storage-intel-path', file.path);
+    path.title = file.path || '';
+    copy.appendChild(path);
+    const meta = storageIntelElement('div', 'storage-intel-item-meta');
+    meta.appendChild(storageIntelElement('b', '', formatStorageBytes(file.bytes)));
+    meta.appendChild(storageIntelElement('small', '', file.source === 'library' ? 'LIBRARY' : 'WORK FILE'));
+    const download = document.createElement('a');
+    download.className = 'storage-intel-download';
+    download.href = file.download_url || '#';
+    download.title = `Download ${file.name}`;
+    download.setAttribute('aria-label', `Download ${file.name}`);
+    download.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19v2h16v-2"/></svg>';
+    row.append(copy, meta, download);
+    largestFiles.appendChild(row);
+  });
+  if (!largestFiles.childElementCount) storageIntelPlaceholder(largestFiles, 'No downloadable library or work files were found.');
+
+  const largestFolders = $('storage-intel-largest-folders');
+  largestFolders.replaceChildren();
+  (data.largest_folders || []).forEach((folder) => {
+    const row = storageIntelElement('div', 'storage-intel-item');
+    const copy = storageIntelElement('div', 'storage-intel-item-copy');
+    copy.appendChild(storageIntelElement('b', '', folder.name));
+    const path = storageIntelElement('small', 'storage-intel-path', folder.path);
+    path.title = folder.path || '';
+    copy.appendChild(path);
+    const meta = storageIntelElement('div', 'storage-intel-item-meta');
+    meta.appendChild(storageIntelElement('b', '', formatStorageBytes(folder.bytes)));
+    meta.appendChild(storageIntelElement('small', '', `${Number(folder.files || 0).toLocaleString()} files`));
+    row.append(copy, meta);
+    largestFolders.appendChild(row);
+  });
+  if (!largestFolders.childElementCount) storageIntelPlaceholder(largestFolders, 'No storage folders were found.');
+
+  const activity = $('storage-intel-activity');
+  activity.replaceChildren();
+  (data.activity || []).forEach((event) => {
+    const row = storageIntelElement('div', 'storage-intel-event');
+    const copy = storageIntelElement('div', 'storage-intel-event-copy');
+    copy.appendChild(storageIntelElement('b', '', event.action));
+    copy.appendChild(storageIntelElement('small', '', event.detail || 'Storage operation completed.'));
+    const timeText = event.bytes_reclaimed
+      ? `${event.timestamp} · ${formatStorageBytes(event.bytes_reclaimed)} recovered`
+      : event.timestamp;
+    copy.appendChild(storageIntelElement('em', '', timeText));
+    row.appendChild(copy);
+    activity.appendChild(row);
+  });
+  if (!activity.childElementCount) storageIntelPlaceholder(activity, 'No storage scans or cleanup actions recorded during this server session.');
+  $('storage-intel-history-scope').textContent = data.history_scope || 'this session';
+  $('storage-intelligence-updated').textContent = `UPDATED ${new Date().toLocaleTimeString()}`;
+}
+async function loadStorageIntelligence(force = false) {
+  const panel = $('storage-intelligence-title');
+  if (!panel || storageIntelligenceLoading) return;
+  if (!force && Date.now() - lastStorageIntelligenceAt < 30000) return;
+  storageIntelligenceLoading = true;
+  const button = $('storage-intelligence-refresh');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch('/api/run-storage/intelligence', { cache: 'no-store' });
+    if (response.status === 401) { window.location.replace('/'); return; }
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not load Storage Intelligence.');
+    renderStorageIntelligence(data);
+    lastStorageIntelligenceAt = Date.now();
+  } catch (error) {
+    const target = $('storage-intel-breakdown');
+    if (target) storageIntelPlaceholder(target, `Storage Intelligence unavailable: ${error.message}`);
+  } finally {
+    storageIntelligenceLoading = false;
+    if (button) button.disabled = false;
+  }
+}
+
 async function loadRunStorageSummary() {
   lastStorageSummaryAt = Date.now();
   const button = $('delete-run-directories');
@@ -638,7 +853,18 @@ async function loadRunStorageSummary() {
     $('storage-engine-note').textContent = active ? 'Cleanup is locked while a job is active' : 'No active run detected';
     $('storage-cleanup-summary').textContent = `${Number(data.run_directories || 0).toLocaleString()} run folder(s) · ${Number(data.files || 0).toLocaleString()} file(s) · ${formatStorageBytes(data.bytes)}`;
     if (button) button.disabled = active || Number(data.run_directories || 0) === 0;
+    const scanButton = $('scan-run-storage');
+    if (scanButton) scanButton.disabled = active;
+    if (active) {
+      ['delete-log-only-directories', 'delete-duplicate-directories'].forEach((id) => { const item = $(id); if (item) item.disabled = true; });
+    } else if (lastRunStorageScan) {
+      const logButton = $('delete-log-only-directories');
+      const duplicateButton = $('delete-duplicate-directories');
+      if (logButton) logButton.disabled = Number(lastRunStorageScan.log_only_count || 0) === 0;
+      if (duplicateButton) duplicateButton.disabled = Number(lastRunStorageScan.duplicate_directories || 0) === 0;
+    }
     if (feedback && !feedback.textContent) feedback.textContent = data.uploads_preserved ? 'Temporary uploads and the reusable runs/library/ wordlist/rules folders are preserved.' : '';
+    loadStorageIntelligence();
   } catch (error) {
     if (feedback) feedback.textContent = `Storage summary unavailable: ${error.message}`;
     if (button) button.disabled = true;
@@ -660,6 +886,9 @@ async function deleteAllRunDirectories() {
     const result = await apiPost('/api/run-storage/clear', {});
     if (!result.ok) throw new Error((result.failures || []).join('; ') || 'Some run folders could not be deleted.');
     if (feedback) feedback.textContent = `Cleanup complete. Deleted ${Number(result.deleted_directories || 0).toLocaleString()} run folder(s). Uploaded inputs, authentication and application files were preserved.`;
+    lastRunStorageScan = null;
+    $('storage-scan-results').hidden = true;
+    $('storage-scan-summary').textContent = 'Run a new scan to review targeted cleanup candidates.';
     toast(`Deleted ${result.deleted_directories || 0} run folder(s).`);
     await pollStatus();
     await loadRunStorageSummary();
@@ -673,9 +902,393 @@ async function deleteAllRunDirectories() {
   }
 }
 
+function appendStorageCandidateRow(container, title, detail) {
+  const row = document.createElement('div');
+  row.className = 'storage-candidate-row';
+  const heading = document.createElement('b');
+  heading.textContent = title;
+  const description = document.createElement('small');
+  description.textContent = detail;
+  row.append(heading, description);
+  container.appendChild(row);
+}
+function renderRunStorageScan(data) {
+  lastRunStorageScan = data;
+  const results = $('storage-scan-results');
+  const summary = $('storage-scan-summary');
+  const logList = $('storage-log-only-list');
+  const duplicateList = $('storage-duplicate-list');
+  logList.replaceChildren();
+  duplicateList.replaceChildren();
+  const logItems = data.log_only_directories || [];
+  const duplicateGroups = data.duplicate_groups || [];
+  const duplicateCount = Number(data.duplicate_directories || 0);
+  $('storage-log-only-count').textContent = Number(data.log_only_count || 0).toLocaleString();
+  $('storage-duplicate-count').textContent = duplicateCount.toLocaleString();
+  $('storage-log-only-bytes').textContent = `${formatStorageBytes(data.log_only_bytes)} eligible`;
+  $('storage-duplicate-bytes').textContent = `${formatStorageBytes(data.duplicate_reclaimable_bytes)} reclaimable`;
+
+  if (logItems.length) {
+    logItems.forEach((item) => {
+      const kind = item.empty ? 'Empty folder' : `${Number(item.log_files || 0).toLocaleString()} log file(s)`;
+      appendStorageCandidateRow(logList, item.name, `${kind} · ${Number(item.files || 0).toLocaleString()} file(s) · ${formatStorageBytes(item.bytes)}`);
+    });
+  } else {
+    const empty = document.createElement('span'); empty.className = 'storage-candidate-empty';
+    empty.textContent = 'No empty or logs-only folders found.'; logList.appendChild(empty);
+  }
+
+  if (duplicateGroups.length) {
+    duplicateGroups.forEach((group, index) => {
+      const copies = group.duplicates || [];
+      appendStorageCandidateRow(
+        duplicateList,
+        `Group ${index + 1} · keep ${group.keep}`,
+        `Delete: ${copies.join(', ')} · ${Number(group.files || 0).toLocaleString()} file(s) per copy · ${formatStorageBytes(group.reclaimable_bytes)} reclaimable`
+      );
+    });
+  } else {
+    const empty = document.createElement('span'); empty.className = 'storage-candidate-empty';
+    empty.textContent = 'No exact duplicate folders found.'; duplicateList.appendChild(empty);
+  }
+
+  const skipped = Number(data.skipped_unsafe_directories || 0);
+  const scanText = `Scanned ${Number(data.scanned_directories || 0).toLocaleString()} run folder(s). Found ${Number(data.log_only_count || 0).toLocaleString()} empty/log-only folder(s) and ${duplicateCount.toLocaleString()} duplicate copy/copies across ${Number(data.duplicate_group_count || 0).toLocaleString()} group(s).`;
+  summary.textContent = skipped ? `${scanText} Skipped ${skipped.toLocaleString()} folder(s) containing links, special files or unreadable/changing content.` : scanText;
+  results.hidden = false;
+  const active = currentStatus === 'running' || currentStatus === 'stopping';
+  $('delete-log-only-directories').disabled = active || !logItems.length;
+  $('delete-duplicate-directories').disabled = active || duplicateCount === 0;
+}
+async function scanRunStorage() {
+  const button = $('scan-run-storage');
+  const feedback = $('storage-scan-feedback');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.textContent = 'Hashing run files…';
+  if (feedback) feedback.textContent = 'Scanning run folders and calculating SHA-256 checksums. Large runs may take a while.';
+  $('storage-scan-results').hidden = true;
+  try {
+    const result = await apiPost('/api/run-storage/scan', {});
+    renderRunStorageScan(result);
+    if (feedback) feedback.textContent = 'Scan complete. Review the folders below before choosing a cleanup action.';
+    await loadRunStorageSummary();
+    await loadStorageIntelligence(true);
+  } catch (error) {
+    lastRunStorageScan = null;
+    if (feedback) feedback.textContent = `Run storage scan failed: ${error.message}`;
+    toast(`Could not scan run storage: ${error.message}`, true);
+  } finally {
+    button.textContent = '⌕ Scan run folders';
+    button.disabled = currentStatus === 'running' || currentStatus === 'stopping';
+  }
+}
+async function deleteLogOnlyRunDirectories() {
+  const count = Number(lastRunStorageScan?.log_only_count || 0);
+  const button = $('delete-log-only-directories');
+  if (!button || button.disabled || !count) return;
+  if (!window.confirm(`Permanently delete ${count} empty/log-only run folder(s)? Only folders containing no files or regular .log files will be removed. Folders with outputs or other files are preserved.`)) return;
+  button.disabled = true;
+  $('storage-scan-feedback').textContent = 'Rechecking and deleting empty/log-only folders…';
+  try {
+    const result = await apiPost('/api/run-storage/delete-log-only', {});
+    lastRunStorageScan = null;
+    $('storage-scan-results').hidden = true;
+    $('storage-scan-summary').textContent = 'Run a new scan to review remaining cleanup candidates.';
+    $('storage-scan-feedback').textContent = `Cleanup complete. Deleted ${Number(result.deleted_directories || 0).toLocaleString()} empty/log-only folder(s). ${result.failures?.length ? `Some folders were skipped: ${result.failures.join('; ')}` : ''}`;
+    toast(`Deleted ${result.deleted_directories || 0} empty/log-only folder(s).`);
+    await pollStatus();
+    await loadRunStorageSummary();
+    await loadStorageIntelligence(true);
+  } catch (error) {
+    $('storage-scan-feedback').textContent = `Could not delete log-only folders: ${error.message}`;
+    toast(error.message, true);
+    await loadRunStorageSummary();
+  }
+}
+async function deleteDuplicateRunDirectories() {
+  const groups = Number(lastRunStorageScan?.duplicate_group_count || 0);
+  const copies = Number(lastRunStorageScan?.duplicate_directories || 0);
+  const reclaimable = formatStorageBytes(lastRunStorageScan?.duplicate_reclaimable_bytes || 0);
+  const button = $('delete-duplicate-directories');
+  if (!button || button.disabled || !copies) return;
+  if (!window.confirm(`Delete ${copies} exact duplicate run folder(s) from ${groups} group(s)? One copy per group will be retained (the current run folder when applicable; otherwise the newest copy). Estimated space reclaimed: ${reclaimable}.`)) return;
+  button.disabled = true;
+  $('storage-scan-feedback').textContent = 'Rechecking checksums and deleting redundant copies…';
+  try {
+    const result = await apiPost('/api/run-storage/delete-duplicates', {});
+    lastRunStorageScan = null;
+    $('storage-scan-results').hidden = true;
+    $('storage-scan-summary').textContent = 'Run a new scan to review remaining cleanup candidates.';
+    $('storage-scan-feedback').textContent = `Cleanup complete. Deleted ${Number(result.deleted_directories || 0).toLocaleString()} duplicate folder(s); retained ${Number((result.retained_directories || []).length).toLocaleString()} representative folder(s). ${result.failures?.length ? `Some folders were skipped: ${result.failures.join('; ')}` : ''}`;
+    toast(`Deleted ${result.deleted_directories || 0} duplicate folder(s).`);
+    await pollStatus();
+    await loadRunStorageSummary();
+    await loadStorageIntelligence(true);
+  } catch (error) {
+    $('storage-scan-feedback').textContent = `Could not delete duplicate folders: ${error.message}`;
+    toast(error.message, true);
+    await loadRunStorageSummary();
+  }
+}
+
+function libraryDownloadUrl(item) {
+  const params = new URLSearchParams({ category: item.category, asset_id: item.id });
+  return `/api/library/download?${params.toString()}`;
+}
+function createLibraryDownloadLink(item) {
+  const link = document.createElement('a');
+  link.className = 'library-file-download';
+  link.href = libraryDownloadUrl(item);
+  link.title = `Download ${item.name}`;
+  link.setAttribute('aria-label', `Download ${item.name}`);
+  link.setAttribute('download', item.name);
+  link.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5M4 19v2h16v-2"/></svg>';
+  return link;
+}
+function createSearchResultDownloadLink(item) {
+  if (item.source !== 'run') return createLibraryDownloadLink(item);
+  const params = new URLSearchParams({ run_id: item.run_id, relative_path: item.relative_path });
+  const link = document.createElement('a');
+  link.className = 'library-file-download';
+  link.href = `/api/run-storage/file-download?${params.toString()}`;
+  link.title = `Download ${item.name}`;
+  link.setAttribute('aria-label', `Download ${item.name}`);
+  link.setAttribute('download', item.name);
+  link.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5M4 19v2h16v-2"/></svg>';
+  return link;
+}
+function renderLibrarySearchResults(data) {
+  const results = $('library-search-results');
+  const summary = $('library-search-summary');
+  results.replaceChildren();
+  const items = data.results || [];
+  summary.textContent = `${Number(data.total || 0).toLocaleString()} file(s) matched filename “${data.query}” across the reusable library and run/work folders. Full paths are shown below.${data.truncated ? ' Showing the first 300 matches; refine the filename to narrow the results.' : ''}`;
+  results.hidden = false;
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'library-empty-state';
+    empty.textContent = 'No files in the reusable library or work folders match that filename.';
+    results.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const row = document.createElement('article');
+    row.className = 'library-file-result';
+    const copy = document.createElement('div');
+    copy.className = 'library-file-copy';
+    const name = document.createElement('b');
+    name.textContent = item.name;
+    const path = document.createElement('small');
+    path.textContent = item.path;
+    const meta = document.createElement('small');
+    meta.className = 'library-file-meta';
+    const sourceLabel = item.source === 'run'
+      ? `WORK FOLDER · ${item.run_id}`
+      : (item.category === 'wordlists' ? 'LIBRARY WORDLIST' : 'LIBRARY RULE FILE');
+    meta.textContent = `${sourceLabel} · ${formatStorageBytes(item.size)} · modified ${new Date(Number(item.modified) * 1000).toLocaleString()}`;
+    copy.append(name, path, meta);
+    row.append(copy, createSearchResultDownloadLink(item));
+    results.appendChild(row);
+  });
+}
+async function searchLibraryFiles() {
+  const input = $('library-search-query');
+  const query = input.value.trim();
+  const summary = $('library-search-summary');
+  const results = $('library-search-results');
+  if (!query) {
+    summary.textContent = 'Enter a filename to search the reusable library and completed work folders.';
+    results.replaceChildren();
+    results.hidden = true;
+    return;
+  }
+  const requestId = ++librarySearchRequestId;
+  $('library-search-submit').disabled = true;
+  summary.textContent = 'Searching library filenames…';
+  try {
+    const response = await fetch(`/api/library/search?q=${encodeURIComponent(query)}`, { cache: 'no-store' });
+    const data = await response.json();
+    if (response.status === 401) { window.location.replace('/'); return; }
+    if (!response.ok) throw new Error(data.error || 'Library search failed.');
+    if (requestId === librarySearchRequestId && query === $('library-search-query').value.trim()) renderLibrarySearchResults(data);
+  } catch (error) {
+    if (requestId !== librarySearchRequestId) return;
+    summary.textContent = `Library search failed: ${error.message}`;
+    results.hidden = true;
+    toast(error.message, true);
+  } finally {
+    if (requestId === librarySearchRequestId) $('library-search-submit').disabled = false;
+  }
+}
+function appendLibraryDuplicateFile(container, file) {
+  const row = document.createElement('label');
+  row.className = 'library-duplicate-file';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'library-duplicate-checkbox';
+  checkbox.dataset.source = file.source || 'library';
+  if (file.source === 'run') {
+    checkbox.dataset.runId = file.run_id || '';
+    checkbox.dataset.relativePath = file.relative_path || file.id || '';
+  } else {
+    checkbox.dataset.category = file.category || '';
+    checkbox.dataset.assetId = file.id || '';
+  }
+  checkbox.checked = !!file.suggest_delete && file.deletable !== false;
+  checkbox.disabled = file.deletable === false;
+  if (checkbox.disabled) checkbox.title = file.protected_reason || 'This file is protected.';
+  checkbox.addEventListener('change', updateLibraryDeleteSelection);
+  const copy = document.createElement('div');
+  copy.className = 'library-file-copy';
+  const name = document.createElement('b');
+  name.textContent = file.name;
+  const path = document.createElement('small');
+  path.textContent = file.path;
+  const match = document.createElement('small');
+  match.className = 'library-file-meta';
+  const status = file.deletable === false
+    ? ` · protected: ${file.protected_reason || 'not safe to delete'}`
+    : file.suggest_delete ? ' · suggested redundant copy' : ' · keep/review manually';
+  match.textContent = `${file.match || 'Potential duplicate'} · ${formatStorageBytes(file.size)}${status}`;
+  copy.append(name, path, match);
+  row.append(checkbox, copy, createSearchResultDownloadLink(file));
+  container.appendChild(row);
+}
+function updateLibraryDeleteSelection() {
+  const selected = document.querySelectorAll('.library-duplicate-checkbox:checked');
+  const count = selected.length;
+  $('library-delete-selection-count').textContent = `${count.toLocaleString()} file(s) selected for deletion`;
+  $('delete-selected-library-files').disabled = count === 0 || currentStatus === 'running' || currentStatus === 'stopping';
+}
+function renderLibraryDuplicateScan(data) {
+  lastLibraryDuplicateScan = data;
+  const container = $('library-duplicate-results');
+  container.replaceChildren();
+  const groups = data.duplicate_groups || [];
+  $('library-duplicate-count').textContent = Number(data.duplicate_group_count || 0).toLocaleString();
+  $('library-duplicate-summary').textContent = `Scanned ${Number(data.scanned_library_files || 0).toLocaleString()} reusable library file(s) and ${Number(data.scanned_work_files || 0).toLocaleString()} work-folder file(s). Found ${groups.length.toLocaleString()} potential duplicate group(s); ${Number(data.suggested_delete_count || 0).toLocaleString()} byte-identical redundant copies are suggested for removal. Same-name files with different contents remain unchecked for manual review.`;
+  container.hidden = false;
+  if (!groups.length) {
+    const empty = document.createElement('div');
+    empty.className = 'library-empty-state';
+    empty.textContent = 'No same-name or identical-content files were found in the reusable library or completed work folders.';
+    container.appendChild(empty);
+  } else {
+    groups.forEach((group, index) => {
+      const card = document.createElement('section');
+      card.className = 'library-duplicate-group';
+      const head = document.createElement('div');
+      head.className = 'library-duplicate-group-head';
+      const title = document.createElement('b');
+      const first = (group.files || [])[0];
+      title.textContent = `Group ${index + 1} · ${first?.name || group.category}`;
+      const reason = document.createElement('span');
+      reason.className = 'library-duplicate-reason';
+      reason.textContent = (group.reasons || []).join(' + ');
+      head.append(title, reason);
+      card.appendChild(head);
+      (group.files || []).forEach((file) => appendLibraryDuplicateFile(card, file));
+      container.appendChild(card);
+    });
+  }
+  updateLibraryDeleteSelection();
+}
+async function scanLibraryDuplicates() {
+  const button = $('scan-library-duplicates');
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = 'Scanning library + work folders…';
+  $('library-cleanup-feedback').textContent = 'Scanning reusable library files and completed work folders. Library checksums are cached; work-folder files are hashed when their filenames collide.';
+  $('library-duplicate-results').hidden = true;
+  try {
+    const result = await apiPost('/api/library/scan-duplicates', {});
+    renderLibraryDuplicateScan(result);
+    $('library-cleanup-feedback').textContent = 'Scan complete. Review each group and uncheck any file you want to keep before deleting selected files.';
+    await loadStorageIntelligence(true);
+  } catch (error) {
+    lastLibraryDuplicateScan = null;
+    $('library-duplicate-summary').textContent = `Library duplicate scan failed: ${error.message}`;
+    $('library-cleanup-feedback').textContent = error.message;
+    toast(error.message, true);
+  } finally {
+    button.textContent = '⌕ Scan library + work duplicates';
+    button.disabled = currentStatus === 'running' || currentStatus === 'stopping';
+  }
+}
+async function deleteSelectedLibraryFiles() {
+  const selected = Array.from(document.querySelectorAll('.library-duplicate-checkbox:checked'));
+  if (!selected.length || $('delete-selected-library-files').disabled) return;
+  const items = selected.map((checkbox) => checkbox.dataset.source === 'run'
+    ? { source: 'run', run_id: checkbox.dataset.runId, relative_path: checkbox.dataset.relativePath }
+    : { source: 'library', category: checkbox.dataset.category, asset_id: checkbox.dataset.assetId });
+  const names = selected.map((checkbox) => checkbox.closest('.library-duplicate-file')?.querySelector('.library-file-copy small')?.textContent || checkbox.dataset.assetId || checkbox.dataset.relativePath);
+  const preview = names.slice(0, 6).join(', ') + (names.length > 6 ? ` and ${names.length - 6} more` : '');
+  if (!window.confirm(`Permanently delete ${items.length} selected duplicate file(s) from the library/work folders?\n\n${preview}\n\nFiles mounted in an input and the currently selected run folder are protected. At least one same-name file and one byte-identical copy must remain. This action cannot be undone.`)) return;
+  const button = $('delete-selected-library-files');
+  button.disabled = true;
+  $('library-cleanup-feedback').textContent = 'Rechecking selected library/work files, active inputs and surviving duplicate representatives…';
+  try {
+    const result = await apiPost('/api/library/delete-selected', { items });
+    const skipped = (result.failures || []).length;
+    $('library-cleanup-feedback').textContent = `Deleted ${Number(result.deleted_count || 0).toLocaleString()} selected file(s) from library/work folders.${skipped ? ` ${skipped} file(s) could not be deleted; run another scan to inspect them.` : ''} Run another scan to review what remains.`;
+    $('library-duplicate-results').hidden = true;
+    $('library-duplicate-summary').textContent = 'Library changed. Run a new scan to review remaining duplicate candidates.';
+    $('library-duplicate-count').textContent = '0';
+    $('library-delete-selection-count').textContent = '0 files selected';
+    await loadStorageIntelligence(true);
+    lastLibraryDuplicateScan = null;
+    toast(`Deleted ${result.deleted_count || 0} duplicate file(s).`);
+    const query = $('library-search-query').value.trim();
+    if (query) await searchLibraryFiles();
+    await refreshLibraryMenus();
+  } catch (error) {
+    $('library-cleanup-feedback').textContent = `Could not delete selected duplicate files: ${error.message}`;
+    toast(error.message, true);
+    if (/changed|scan again|no longer exist/i.test(error.message)) await scanLibraryDuplicates();
+  } finally {
+    updateLibraryDeleteSelection();
+  }
+}
+function configureRunStorageLibrary() {
+  const refreshIntelligence = $('storage-intelligence-refresh');
+  if (refreshIntelligence) refreshIntelligence.addEventListener('click', () => loadStorageIntelligence(true));
+  const form = $('library-search-form');
+  if (!form) return;
+  form.addEventListener('submit', (event) => { event.preventDefault(); searchLibraryFiles(); });
+  $('library-search-clear').addEventListener('click', () => {
+    if (librarySearchTimer) clearTimeout(librarySearchTimer);
+    librarySearchRequestId += 1;
+    $('library-search-submit').disabled = false;
+    $('library-search-query').value = '';
+    $('library-search-results').replaceChildren();
+    $('library-search-results').hidden = true;
+    $('library-search-summary').textContent = 'Enter a filename to search the reusable library and completed work folders.';
+    $('library-search-query').focus();
+  });
+  $('library-search-query').addEventListener('input', () => {
+    if (librarySearchTimer) clearTimeout(librarySearchTimer);
+    const query = $('library-search-query').value.trim();
+    if (!query) {
+      $('library-search-results').replaceChildren();
+      $('library-search-results').hidden = true;
+      $('library-search-summary').textContent = 'Enter a filename to search the reusable library and completed work folders.';
+      return;
+    }
+    librarySearchTimer = setTimeout(searchLibraryFiles, 320);
+  });
+  $('scan-library-duplicates').addEventListener('click', scanLibraryDuplicates);
+  $('delete-selected-library-files').addEventListener('click', deleteSelectedLibraryFiles);
+}
+
 function renderStatus(data) {
   currentStatus = data.status;
   const running = data.status === 'running' || data.status === 'stopping';
+  const libraryScanButton = $('scan-library-duplicates');
+  const libraryDeleteButton = $('delete-selected-library-files');
+  if (libraryScanButton) libraryScanButton.disabled = running;
+  if (libraryDeleteButton && running) libraryDeleteButton.disabled = true;
+  else if (libraryDeleteButton) updateLibraryDeleteSelection();
   const paused = !!data.paused;
   updateLocalEngineBadge(data);
   let statusText = data.status.charAt(0).toUpperCase() + data.status.slice(1);
@@ -769,6 +1382,9 @@ function renderStatus(data) {
     if (storageState) storageState.textContent = running ? (data.status === 'stopping' ? 'STOPPING' : paused ? 'PAUSED' : 'RUNNING') : 'READY';
     if (storageNote) storageNote.textContent = running ? 'Cleanup is locked while a job is active' : 'No active run detected';
     if (deleteButton && running) deleteButton.disabled = true;
+    if (running) {
+      ['scan-run-storage', 'delete-log-only-directories', 'delete-duplicate-directories'].forEach((id) => { const button = $(id); if (button) button.disabled = true; });
+    }
   }
 }
 function resetLogView(title = 'Log history cleared', subtitle = 'New engine events will appear here.') {
@@ -1461,6 +2077,10 @@ function initializeApp() {
   $('download-log').addEventListener('click', downloadLog);
   $('clear-log').addEventListener('click', clearLogHistoryFromUi);
   $('delete-run-directories').addEventListener('click', deleteAllRunDirectories);
+  $('scan-run-storage').addEventListener('click', scanRunStorage);
+  $('delete-log-only-directories').addEventListener('click', deleteLogOnlyRunDirectories);
+  $('delete-duplicate-directories').addEventListener('click', deleteDuplicateRunDirectories);
+  configureRunStorageLibrary();
   $('wrap-log').addEventListener('click', () => {
     const body = $('log-output');
     const wrapOn = body.classList.toggle('no-wrap') === false;

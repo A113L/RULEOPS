@@ -76,11 +76,11 @@ def test_about_sidebar_uses_remaining_space_for_ruleops_brand_emblem():
     css = (root / "web" / "styles.css").read_text(encoding="utf-8")
 
     secondary_column = html.index('<div class="secondary-column">', html.index('id="about-grid"'))
+    brand_panel = html.index('class="panel about-brand-emblem-panel"', secondary_column)
+    donations_panel = html.index('class="panel donations-panel"', secondary_column)
     user_panel = html.index('id="about-user-panel"', secondary_column)
-    brand_panel = html.index('class="panel about-brand-emblem-panel"', user_panel)
-    secondary_end = html.index('</div>', brand_panel)
 
-    assert user_panel < brand_panel < secondary_end
+    assert secondary_column < brand_panel < donations_panel < user_panel
     assert 'id="about-brand-logo-title"' in html
     assert 'HASHCAT RULE TOOLCHAIN' in html
     assert '.about-grid{align-items:stretch}' in css

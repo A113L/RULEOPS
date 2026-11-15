@@ -33,6 +33,8 @@ chmod +x start_gui.sh
 
 The terminal prints the local URL and discovered private IPv4 LAN address(es).
 
+For automatic startup at boot and journal-based service logs on Linux, see [`docs/SYSTEMD_SERVICE.md`](docs/SYSTEMD_SERVICE.md). The repository includes the matching [`ruleops.service`](ruleops.service) systemd unit template.
+
 On the first visit, open the local URL on the computer running RULEOPS and create your application password (minimum 12 characters). The first person to complete this one-time setup becomes the administrator. Once the password is set, other devices can sign in using the same password.
 
 ## Open from another device on the same network

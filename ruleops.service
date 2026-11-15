@@ -1,0 +1,25 @@
+# RULEOPS systemd service template.
+# Replace @RULEOPS_USER@, @RULEOPS_GROUP@ and @RULEOPS_DIR@ before installing.
+# See docs/SYSTEMD_SERVICE.md for the install and configuration instructions.
+
+[Unit]
+Description=RULEOPS Hashcat Rule Toolchain
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@RULEOPS_USER@
+Group=@RULEOPS_GROUP@
+WorkingDirectory=@RULEOPS_DIR@
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+ExecStart=@RULEOPS_DIR@/.venv/bin/python -u @RULEOPS_DIR@/app.py --host 0.0.0.0 --port 8765
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

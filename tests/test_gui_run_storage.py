@@ -472,6 +472,9 @@ def test_storage_intelligence_reports_breakdown_largest_files_and_folders(tmp_pa
     assert summary["total_bytes"] >= 211
     assert summary["total_files"] == 4
     assert summary["run_directories"] == 1
+    assert summary["quota"]["used_bytes"] == summary["total_bytes"]
+    assert summary["quota"]["limit_bytes"] == app.MAX_DATA_STORAGE_BYTES
+    assert summary["quota"]["remaining_bytes"] == max(0, app.MAX_DATA_STORAGE_BYTES - summary["total_bytes"])
     buckets = {item["key"]: item for item in summary["buckets"]}
     assert buckets["runs"]["bytes"] == 120
     assert buckets["library"]["bytes"] == 76
@@ -514,11 +517,18 @@ def test_storage_intelligence_ui_has_dashboard_sections_and_refresh_route():
     css = (root / "web" / "styles.css").read_text(encoding="utf-8")
     assert 'id="storage-intelligence-title"' in html
     assert 'id="storage-intel-breakdown"' in html
+    assert 'id="storage-intel-quota-label"' in html
+    assert 'id="storage-intel-quota-percent"' in html
+    assert 'id="storage-intel-quota-bar"' in html
     assert 'id="storage-intel-cleanup"' in html
     assert 'id="storage-intel-largest-files"' in html
     assert 'id="storage-intel-largest-folders"' in html
     assert 'id="storage-intel-activity"' in html
     assert "/api/run-storage/intelligence" in js
     assert "renderStorageIntelligence(data)" in js
+    assert "data.quota" in js
+    assert "physical filesystem used" in html
+    assert "RULEOPS STORAGE QUOTA" in html
+    assert ".storage-intel-quota" in css
     assert ".storage-workspace-grid" in css
     assert ".storage-intelligence-panel" in css

@@ -65,7 +65,7 @@ The server binds to `0.0.0.0` by default so devices on the local network can con
 
 ### Web resource limits and hardening
 
-Default server limits are 16 concurrent connections, 20 GiB per upload, 40 GiB aggregate temporary uploads, 200 GiB total data under `runs/`, and a 1 GiB free-disk reserve. Uploads also have an 8-second idle timeout and a sustained minimum throughput check after a 30-second grace period. During engine execution, a watchdog stops the process if the data quota or free-space reserve is breached.
+Default server limits are 16 concurrent connections, 20 GiB per upload request, 40 GiB aggregate temporary-upload ceiling, **10 GiB total RULEOPS data under `runs/`**, and a 1 GiB free-disk reserve. The 10 GiB aggregate data quota is the effective ceiling across run outputs, reusable library files, and temporary uploads. Uploads also have an 8-second idle timeout and a sustained minimum throughput check after a 30-second grace period. During engine execution, a watchdog stops the process if the data quota or free-space reserve is breached.
 
 For larger trusted-LAN workloads, limits can be adjusted with environment variables such as `RULEOPS_MAX_CONNECTIONS`, `RULEOPS_MAX_UPLOAD_FILE_BYTES`, `RULEOPS_MAX_UPLOAD_TOTAL_BYTES`, `RULEOPS_MAX_DATA_STORAGE_BYTES`, and `RULEOPS_MIN_FREE_DISK_BYTES`. See [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) for the full list and examples. Increase quotas only after checking free disk capacity.
 

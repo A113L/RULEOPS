@@ -116,7 +116,7 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 # bounds around the server's temporary and persistent data directories.
 MAX_UPLOAD_BYTES = _env_int("RULEOPS_MAX_UPLOAD_FILE_BYTES", 20 * 1024**3)
 MAX_TOTAL_UPLOAD_BYTES = _env_int("RULEOPS_MAX_UPLOAD_TOTAL_BYTES", 40 * 1024**3)
-MAX_DATA_STORAGE_BYTES = _env_int("RULEOPS_MAX_DATA_STORAGE_BYTES", 200 * 1024**3)
+MAX_DATA_STORAGE_BYTES = _env_int("RULEOPS_MAX_DATA_STORAGE_BYTES", 10 * 1024**3)
 MIN_FREE_DISK_BYTES = _env_int("RULEOPS_MIN_FREE_DISK_BYTES", 1 * 1024**3, minimum=0)
 MAX_CONCURRENT_CONNECTIONS = min(64, _env_int("RULEOPS_MAX_CONNECTIONS", 16, minimum=2))
 HEADER_TIMEOUT_SECONDS = _env_int("RULEOPS_HEADER_TIMEOUT_SECONDS", 15)
@@ -2182,6 +2182,15 @@ def storage_intelligence_summary() -> dict:
         "total_files": total_files,
         "total_bytes": total_bytes,
         "run_directories": run_directories,
+        "quota": {
+            # This is the same aggregate runs/ tree measured by storage_preflight().
+            # It intentionally remains separate from the physical filesystem capacity.
+            "used_bytes": total_bytes,
+            "limit_bytes": MAX_DATA_STORAGE_BYTES,
+            "remaining_bytes": max(0, MAX_DATA_STORAGE_BYTES - total_bytes),
+            "used_percent": (total_bytes / MAX_DATA_STORAGE_BYTES * 100.0)
+                if MAX_DATA_STORAGE_BYTES else 0.0,
+        },
         "buckets": list(bucket_values.values()),
         "filesystem": filesystem,
         "library": {

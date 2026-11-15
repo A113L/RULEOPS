@@ -200,7 +200,29 @@ The service runs as the account shown in `User=`. That account needs write permi
 
 ## 8. Persistent application data
 
-The service does not move or reset RULEOPS data. Keep these items when updating the code:
+The service does not move or reset RULEOPS data. By default, RULEOPS enforces a **10 GiB aggregate data quota** across run outputs, reusable library files and temporary uploads. This application quota is separate from physical filesystem capacity and can be overridden with `RULEOPS_MAX_DATA_STORAGE_BYTES` when the available disk space and retention policy justify it. Storage Intelligence displays both measurements separately.
+
+To override the quota for this systemd service, create a service drop-in (replace the value only after checking free disk capacity):
+
+```bash
+sudo systemctl edit ruleops.service
+```
+
+Add, for example, the following under `[Service]` to set a different quota of 15 GiB:
+
+```ini
+[Service]
+Environment=RULEOPS_MAX_DATA_STORAGE_BYTES=16106127360
+```
+
+Then apply the change:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ruleops.service
+```
+
+Keep these items when updating the code:
 
 - `auth.json` — application password verifier.
 - `security.sqlite3` — persistent login-throttling state.

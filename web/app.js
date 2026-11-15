@@ -651,8 +651,27 @@ function renderStorageIntelligence(data) {
   $('storage-intel-file-total').textContent = `${Number(data.total_files || 0).toLocaleString()} files`;
   $('storage-intel-volume-note').textContent = `${Number(data.run_directories || 0).toLocaleString()} run folders · persistent + temporary data`;
   const filesystem = data.filesystem || null;
-  $('storage-intel-disk-percent').textContent = filesystem ? `${Number(filesystem.used_percent || 0).toFixed(1)}%` : '—';
-  $('storage-intel-disk-bar').style.width = filesystem ? `${Math.max(0, Math.min(100, Number(filesystem.used_percent || 0)))}%` : '0%';
+  const filesystemPercent = filesystem ? Number(filesystem.used_percent || 0) : null;
+  $('storage-intel-disk-percent').textContent = filesystemPercent === null ? '—' : `${filesystemPercent.toFixed(1)}%`;
+  $('storage-intel-disk-bar').style.width = filesystemPercent === null
+    ? '0%' : `${Math.max(0, Math.min(100, filesystemPercent))}%`;
+
+  // RULEOPS quota and physical filesystem usage are different measurements.
+  // The quota uses the same DATA/runs tree as server-side storage preflight.
+  const quota = data.quota || {};
+  const quotaUsed = Number(quota.used_bytes ?? totalBytes);
+  const quotaLimit = Number(quota.limit_bytes || 0);
+  const quotaPercent = quotaLimit > 0 ? quotaUsed / quotaLimit * 100 : 0;
+  const quotaRemaining = Math.max(0, quotaLimit - quotaUsed);
+  $('storage-intel-quota-label').textContent = `${formatStorageBytes(quotaUsed)} / ${formatStorageBytes(quotaLimit)}`;
+  $('storage-intel-quota-percent').textContent = `${quotaPercent.toFixed(1)}% used`;
+  $('storage-intel-quota-bar').style.width = `${Math.max(0, Math.min(100, quotaPercent))}%`;
+  $('storage-intel-quota-progress').classList.toggle('is-over-quota', quotaPercent >= 100);
+  $('storage-intel-quota-progress').setAttribute('aria-valuenow', String(Math.max(0, Math.min(100, quotaPercent)).toFixed(1)));
+  $('storage-intel-quota-progress').setAttribute('aria-valuetext', `${formatStorageBytes(quotaUsed)} of ${formatStorageBytes(quotaLimit)} used`);
+  $('storage-intel-quota-note').textContent = quotaPercent >= 100
+    ? `Quota exceeded by ${formatStorageBytes(quotaUsed - quotaLimit)}. Remove stored data or increase RULEOPS_MAX_DATA_STORAGE_BYTES.`
+    : `${formatStorageBytes(quotaRemaining)} remaining · includes run outputs, temporary uploads and reusable library files.`;
 
   const breakdown = $('storage-intel-breakdown');
   breakdown.replaceChildren();

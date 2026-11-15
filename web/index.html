@@ -701,14 +701,25 @@
               </div>
               <div class="storage-intelligence-total">
                 <div><span class="storage-intel-kicker">RULEOPS DATA</span><b id="storage-intel-total">—</b><small id="storage-intel-volume-note">Calculating stored data…</small></div>
-                <div class="storage-intelligence-disk"><b id="storage-intel-disk-percent">—</b><small>filesystem used</small></div>
+                <div class="storage-intelligence-disk">
+                  <b id="storage-intel-disk-percent">—</b>
+                  <small>physical filesystem used</small>
+                  <div class="storage-intel-filesystem-track" aria-hidden="true"><span id="storage-intel-disk-bar"></span></div>
+                </div>
+              </div>
+              <div class="storage-intel-quota" aria-label="RULEOPS data quota">
+                <div class="storage-intel-quota-heading">
+                  <div><span class="storage-intel-kicker">RULEOPS STORAGE QUOTA</span><b id="storage-intel-quota-label">— / 10 GiB</b></div>
+                  <strong id="storage-intel-quota-percent">—</strong>
+                </div>
+                <div class="storage-intel-quota-track" role="progressbar" aria-label="RULEOPS data quota used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="storage-intel-quota-progress"><span id="storage-intel-quota-bar"></span></div>
+                <small id="storage-intel-quota-note">Aggregate limit for run outputs, temporary uploads and reusable library files.</small>
               </div>
               <div class="storage-intel-section">
                 <div class="storage-intel-section-title"><b>Storage breakdown</b><span id="storage-intel-file-total">— files</span></div>
                 <div id="storage-intel-breakdown" class="storage-intel-breakdown">
                   <div class="storage-intel-placeholder">Storage breakdown will appear after loading.</div>
                 </div>
-                <div class="storage-intel-volume-track" aria-hidden="true"><span id="storage-intel-disk-bar"></span></div>
               </div>
               <div class="storage-intel-section">
                 <div class="storage-intel-section-title"><b>Cleanup opportunities</b><span>latest verified scans</span></div>

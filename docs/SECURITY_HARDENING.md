@@ -17,7 +17,7 @@ Defaults can be overridden with environment variables before starting `start_gui
 | `RULEOPS_UPLOAD_RATE_CHECK_INTERVAL_SECONDS` | `15` | Interval for subsequent upload-rate checks. |
 | `RULEOPS_MAX_UPLOAD_FILE_BYTES` | `20 GiB` | Maximum size of one uploaded file. |
 | `RULEOPS_MAX_UPLOAD_TOTAL_BYTES` | `40 GiB` | Aggregate size of temporary uploads across all tools. |
-| `RULEOPS_MAX_DATA_STORAGE_BYTES` | `200 GiB` | Aggregate `runs/` data quota, including temporary uploads and run outputs. |
+| `RULEOPS_MAX_DATA_STORAGE_BYTES` | `10 GiB` | Aggregate `runs/` data quota, including temporary uploads, reusable library files and run outputs. |
 | `RULEOPS_MIN_FREE_DISK_BYTES` | `1 GiB` | Free-space reserve; uploads/jobs are rejected or stopped before the reserve is consumed. |
 
 Example for a machine with more storage and a trusted LAN:
@@ -31,7 +31,7 @@ export RULEOPS_MIN_FREE_DISK_BYTES=$((2 * 1024 * 1024 * 1024))
 ./start_gui.sh
 ```
 
-Do not raise quotas without checking available disk space. The upload path reserves declared bytes before receiving the body, checks free disk space, enforces a per-file and aggregate quota, applies idle and sustained-rate limits, and removes incomplete uploads on failure.
+Do not raise quotas without checking available disk space. The upload path reserves declared bytes before receiving the body, checks free disk space, enforces the 10 GiB aggregate RULEOPS data quota in addition to the per-file and temporary-upload ceilings, applies idle and sustained-rate limits, and removes incomplete uploads on failure.
 
 ## Connection and Slowloris protection
 

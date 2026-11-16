@@ -26,7 +26,6 @@ hand-tuned rule lists.
 - [Project structure](#project-structure)
 - [Documentation](#documentation)
 - [Testing](#testing)
-- [Responsible use and scope](#responsible-use-and-scope)
 - [License](#license)
 
 ## Motivation
@@ -183,7 +182,7 @@ Control Center's web and authentication layers.
 
 See [`LICENSE`](LICENSE) for full terms.
 
-### Support
+## Support
 
 For help, bug reports and feedback:
 

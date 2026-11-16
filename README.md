@@ -1,200 +1,187 @@
-# RULEOPS — Hashcat Rule Toolchain
+# RULEOPS — A GPU-Accelerated Toolchain for Hashcat Rule Generation, Ranking, and Optimization
 
-RULEOPS is a unified local-first workbench for six complementary Hashcat rule tools: RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Email Rule Extractor. RULEST generates rulesets; Ranker scores and CELF-optimizes them; Concentrator extracts, generates and cleans rule collections; Rulestripper derives rule chains from BASE/TARGET wordlists; Rule Minimizer removes behaviorally equivalent rules; and Email Rule Extractor generates rules from email-list patterns. The server-based tools share one authenticated UI, LAN server, live log, job monitor, output/download area and run-storage manager. Email Rule Extractor runs entirely in the browser.
+RULEOPS is a cybersecurity research workbench for building, scoring, and compressing
+password-cracking rulesets used with [Hashcat](https://hashcat.net/hashcat/).
+It brings together six complementary tools behind one authenticated local
+web UI (plus standalone CLIs for each), aimed at studying how rule-based
+password transformations can be generated and selected more efficiently than
+hand-tuned rule lists.
+
+> **Cybersecurity research use.** This project was built as a cybersecurity
+> research toolchain for studying rule-based password guessing and
+> set-coverage optimization (CELF / greedy max-coverage algorithms applied
+> to rule selection). It is intended for authorized password-security
+> research and password-strength auditing on data you are permitted to
+> test. See [Responsible use](#responsible-use-and-scope) below.
+
+## Table of contents
+
+- [Motivation](#motivation)
+- [Components](#components)
+- [Architecture overview](#architecture-overview)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Typical pipeline](#typical-pipeline)
+- [Project structure](#project-structure)
+- [Documentation](#documentation)
+- [Testing](#testing)
+- [Responsible use and scope](#responsible-use-and-scope)
+- [License](#license)
+
+## Motivation
+
+Hashcat rules transform guessed base words (e.g. `password`) into likely
+password variants (e.g. `Passw0rd!`). Large public rule sets contain tens of
+thousands of such transformations, many of which are redundant or
+low-yield for a given target distribution. RULEOPS explores three related
+questions:
+
+1. **Generation** — can plausible rule chains be derived empirically from
+   paired base/target wordlists rather than written by hand? (`rulest`,
+   `rulestripper`)
+2. **Ranking** — given a candidate rule set and a cracked-password sample,
+   which rules contribute the most unique coverage, and can this be scored
+   efficiently on a GPU? (`rule_ranker`)
+3. **Compression** — once ranked, how small a rule subset can reproduce (or
+   approximate) the same coverage, using greedy/CELF-style submodular
+   selection, and how many rules are simply behaviorally redundant?
+   (`rule_ranker` postprocessing, `minimizer.py`)
+
+## Components
+
+| Tool | Purpose |
+|---|---|
+| **RULEST** | Generates candidate rule sets from BASE/TARGET wordlist pairs (optional Stage 0 pass and genetic-algorithm refinement), GPU-accelerated. |
+| **Rule Ranker** | Scores a candidate `.rule` file against a wordlist + cracked-password list; supports an adaptive multi-armed-bandit (MAB) mode and a legacy exhaustive mode. |
+| **Ranker CELF optimizer** | Runs greedy/CELF max-coverage selection over ranked candidates (GPU coverage pass + CPU or GPU CELF) to produce a compact, high-coverage rule file. |
+| **Concentrator** | Extracts, generates, and cleans rule collections from existing material. |
+| **Rulestripper** | Empirically derives rule chains by decomposing TARGET words into BASE-word stems and transformations (14 extraction modes). |
+| **Rule Minimizer** | Removes functionally/behaviorally equivalent rules by comparing their output over a probe word set. |
+| **Email Rule Extractor** | Browser-only utility that derives candidate rules from email-address-style naming patterns. |
+
+All server-side tools share one password-protected local web UI (live log,
+job monitor, run-storage manager, download area); each is also runnable as a
+standalone CLI.
+
+## Architecture overview
+
+- **`app.py`** — the authenticated Control Center web server (LAN-capable,
+  single-job-at-a-time scheduler, run storage, security hardening).
+- **`rulest/`** — RULEST core engine (OpenCL/GPU kernels, CPU fallback,
+  genetic-algorithm stage, token-stripping, hashing/shared-memory utilities).
+- **`rule_ranker/`** — installable package wrapping the ranking, CSV
+  post-processing/handler, and CELF selection logic behind one dispatcher
+  CLI (`run_ranker.py`).
+- **`minimizer.py`**, **`run_rulestripper.py`**, **`concentrator.py`** —
+  standalone engines for minimization, rule-chain extraction, and rule
+  collection management, each also reachable from the web UI.
+- **`web/`** — front-end assets for the Control Center and the browser-only
+  Email Rule Extractor.
+- **`tests/`** — unit and integration tests for every engine, the GUI
+  control layer, and GPU code paths.
 
 ## Requirements
 
-- Python 3.9 or newer
-- Dependencies from `requirements.txt` (`numpy`, `pyopencl`, `tqdm`, `msgpack`)
-- A working OpenCL runtime and compatible GPU driver for GPU acceleration in RULEST, Ranker ranking, and Ranker CELF optimization (the CSV analysis workflow is CPU-only)
+- Python 3.9+
+- `numpy`, `pyopencl`, `tqdm`, `msgpack>=1.0` (see `requirements.txt`)
+- A working OpenCL runtime and compatible GPU driver for GPU-accelerated
+  stages of RULEST, Rule Ranker ranking, and CELF selection (CSV-only
+  analysis is CPU-only)
 
-## Install and start
-
-### Windows
-
-1. Extract this ZIP.
-2. Open the project folder.
-3. Install dependencies once:
-
-   ```bat
-   python -m pip install -r requirements.txt
-   ```
-
-4. Double-click `start_gui.bat`.
-5. The terminal displays the local URL and any detected LAN URL, for example `http://192.168.1.25:8765`.
-
-### Linux / macOS
+## Installation
 
 ```bash
-python3 -m pip install -r requirements.txt
+git clone https://github.com/A113L/RULEOPS.git
+cd RULEOPS
+python -m pip install -r requirements.txt
+```
+
+## Quick start
+
+**Windows**
+
+```bat
+start_gui.bat
+```
+
+**Linux / macOS**
+
+```bash
 chmod +x start_gui.sh
 ./start_gui.sh
 ```
 
-The terminal prints the local URL and discovered private IPv4 LAN address(es).
+The terminal prints a local URL (and any detected LAN URL). On first visit,
+set an application password (12+ characters) to complete one-time setup; see
+the security notes in the full install docs for LAN-exposure guidance.
 
-For automatic startup at boot and journal-based service logs on Linux, see [`docs/SYSTEMD_SERVICE.md`](docs/SYSTEMD_SERVICE.md). The repository includes the matching [`ruleops.service`](ruleops.service) systemd unit template.
-
-On the first visit, open the local URL on the computer running RULEOPS and create your application password (minimum 12 characters). The first person to complete this one-time setup becomes the administrator. Once the password is set, other devices can sign in using the same password.
-
-## Open from another device on the same network
-
-1. Start the server on the computer running RULEOPS.
-2. Keep that computer and the other device connected to the same trusted Wi-Fi/LAN.
-3. Read the `LAN` address printed in the server terminal, such as `http://192.168.1.25:8765`.
-4. Open that exact address in the other device's browser.
-
-Do not use `127.0.0.1` from the other device; that address points back to the device itself. If Windows Firewall asks, allow Python on **Private networks** only. If the LAN address is unreachable, check that the computer and client are on the same subnet and that the firewall allows inbound TCP port `8765`.
-
-## Password authentication and network security
-
-The entire Control Center is password-protected, including its APIs, file uploads, run controls, GPU diagnostics, logs and downloads.
-
-- On the first visit, create an application password (minimum 12 characters). There is no default password.
-- The password is stored as a salted PBKDF2-HMAC-SHA256 verifier in `auth.json`; the plain-text password is never written to disk.
-- Sign-in is rate-limited by client address. Five incorrect attempts trigger a five-minute lockout; repeated lockouts use progressive backoff up to one hour. Throttle state is persisted in `security.sqlite3` and survives server restarts.
-- Sessions use HttpOnly, SameSite=Strict cookies, expire after 12 hours, and are cleared when the server restarts.
-- The web server limits concurrent connections, enforces request/header timeouts, rejects slow uploads, and applies per-file, aggregate-upload and total application-data quotas.
-- A Content Security Policy restricts scripts to same-origin assets; login CSS and JavaScript are served as separate static files. Additional browser security headers are applied globally.
-- Use **Change password** in the top bar to update the password; other active sessions are revoked.
-- Use **Log out** in the top bar to end the current browser session.
-- Keep `auth.json` private and include it in your backups. Preserve `security.sqlite3` as well if you want failed-login throttling to survive an application upgrade. Both are ignored by Git.
-- To reset the password manually, stop the server and remove `auth.json`; the next visit will show the first-time password setup screen. Complete first-time setup locally before exposing a fresh installation to the LAN.
-
-The server binds to `0.0.0.0` by default so devices on the local network can connect. **Important:** this built-in server uses plain HTTP, so a password does not encrypt traffic on the network. Use it only on a trusted LAN, or place it behind a trusted VPN/TLS reverse proxy/SSH tunnel. Do not port-forward port `8765` or expose it directly to the public internet.
-
-### Web resource limits and hardening
-
-Default server limits are 16 concurrent connections, 20 GiB per upload request, 40 GiB aggregate temporary-upload ceiling, **10 GiB total RULEOPS data under `runs/`**, and a 1 GiB free-disk reserve. The 10 GiB aggregate data quota is the effective ceiling across run outputs, reusable library files, and temporary uploads. Uploads also have an 8-second idle timeout and a sustained minimum throughput check after a 30-second grace period. During engine execution, a watchdog stops the process if the data quota or free-space reserve is breached.
-
-For larger trusted-LAN workloads, limits can be adjusted with environment variables such as `RULEOPS_MAX_CONNECTIONS`, `RULEOPS_MAX_UPLOAD_FILE_BYTES`, `RULEOPS_MAX_UPLOAD_TOTAL_BYTES`, `RULEOPS_MAX_DATA_STORAGE_BYTES`, and `RULEOPS_MIN_FREE_DISK_BYTES`. See [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) for the full list and examples. Increase quotas only after checking free disk capacity.
-
-## CELF selection performance
-
-CELF uses upper bounds to narrow the challenger set, but every committed winner is verified with an exact marginal-gain score. For a single resident word chunk, exact batches deduplicate targets with a per-rule open-addressing table on the GPU; only per-rule counters are copied to the host, and the winning hit slots are retained/copied GPU-to-GPU. Multi-chunk inputs and the explicit fallback path retain compact hit-stream processing so duplicates across chunks are still removed exactly.
-
-The default `RANKER_EXACT_BATCH` and `RANKER_GREEDY_RESCORE_BATCH` are both `256`, subject to GPU dispatch and workspace limits. Set `RANKER_EXACT_GPU_DEDUP=0` to force the compact-result fallback, or `RANKER_GREEDY_PROFILE=1` to collect stage-level and exact-scoring timings.
-
-CELF progress keeps the selected-rule count separate from first-round rescoring work. After the first winner, `rule/s` and `rescored/s` use 30-second moving windows with a 10-second warm-up; ETA uses the recent `rule/s`, while `avg_rule/s` is the cumulative post-first-winner average. The elapsed clock remains end-to-end.
-
-See [`docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md`](docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md) for the implementation details, configuration reference, correctness constraints, profiling interpretation, and measured run results.
-
-For this PC only, start with:
+To run on a specific host/port instead of the default launcher:
 
 ```bash
 python app.py --host 127.0.0.1 --port 8765
 ```
 
-To use another port:
+## Typical pipeline
 
 ```bash
-python app.py --host 0.0.0.0 --port 9000
+# 1. Generate candidate rules from a base/target wordlist pair
+python run_rulest.py BASE.txt TARGET.txt --output candidates.rule
+
+# 2. Rank candidate rules against a wordlist + cracked-password sample (GPU)
+python run_ranker.py rank -w wordlist.txt -r candidates.rule -c cracked.txt -o ranking.csv
+
+# 3. Greedy/CELF max-coverage selection down to a target budget
+python run_ranker.py postprocess -r ranking.csv -w wordlist.txt -k cracked.txt \
+    -o celf_selected.rule --candidates 20000 --budget 5000
+
+# 4. Remove any remaining behaviorally equivalent rules
+python minimizer.py celf_selected.rule --output final.rule --workers 4
 ```
 
-On Windows, the launch script respects `RULEST_HOST` if you want to override the default, e.g. set `RULEST_HOST=127.0.0.1` before launching.
+Each step is also available from the Control Center UI.
 
-## Repeatable runs (RNG seed)
+## Project structure
 
-The **RNG seed** field in Engine configuration is optional. Enter an integer from `0` to `4294967295` to pass it to the engine as `--seed`. Reusing the same seed with the same BASE/TARGET files and all other settings fixes the engine's Python and NumPy random generators and Python hash ordering, making randomized steps repeatable. Leaving the field blank preserves the default behaviour, which uses a different random sequence between runs.
+```
+RULEOPS/
+├── app.py                  # Control Center web server
+├── run_rulest.py           # RULEST CLI entry point
+├── run_ranker.py           # Rule Ranker dispatcher CLI
+├── run_rulestripper.py     # Rulestripper CLI entry point
+├── minimizer.py            # Standalone rule minimizer
+├── concentrator.py         # Rule collection extraction/cleaning
+├── gpu_diagnostics.py      # OpenCL/GPU environment diagnostics
+├── rulest/                 # RULEST engine package
+├── rule_ranker/            # Ranking + CELF postprocessing package
+├── web/                    # Front-end assets
+├── docs/                   # Design notes, fixes, and performance logs
+└── tests/                  # Unit and integration tests
+```
 
-For the strongest repeatability, use the same RULEST version, Python/NumPy versions, OpenCL device and driver, uploaded files, and every other run option. Rare differences can still arise from floating-point reduction order in GPU/OpenCL operations; a fixed seed cannot control nondeterminism inside a GPU driver or hardware scheduler.
+## Documentation
 
-## Using the interface
+Deeper design notes live under [`docs/`](docs/), including:
 
-1. Upload BASE and TARGET wordlists in **Input files**. A custom seed-rules file is optional.
-2. Configure engine, optional **RNG seed**, Stage 0, genetic algorithm, rule selection and diagnostic settings. Use **Enable Stage 0** and **Enable Genetic** to turn the optional stages on or off.
-3. Click **Launch engine**. The phase card follows actual engine output; the live log is saved to `runs/<run-id>/engine.log`.
-4. Use **Pause**, **Resume**, or **Save & stop** to control a running job at safe engine checkpoints.
-5. During CELF selection, the live log emits a periodic non-TTY heartbeat with selected-rule count, measured `rules/s` (recent and average), target coverage, remaining heap size, rescoring counters, batch size and elapsed time—even when profiling is disabled. The default web heartbeat interval is 0.5 seconds; set `RULEST_CELF_LOG_INTERVAL` to a larger value to reduce log volume.
-6. The sidebar **LOCAL ENGINE** badge switches to **RUNNING** while any RULEST, Rule Ranker or Concentrator job is active; it also displays PAUSED, STOPPING, COMPLETE, STOPPED or ERROR as appropriate.
-7. Use the log wrap/expand controls and download generated outputs when the run ends.
-8. Uploaded BASE, TARGET and optional seed files are temporary server-side copies. They are automatically deleted when a run completes, fails or is stopped. Leftover uploads from an unexpected server shutdown are removed the next time the server starts. Generated outputs and `engine.log` are preserved.
+- [`docs/RANKER_README.md`](docs/RANKER_README.md) — Rule Ranker package/CLI reference
+- [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) — web-server limits and hardening
+- [`docs/SYSTEMD_SERVICE.md`](docs/SYSTEMD_SERVICE.md) — running as a Linux service
+- [`docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md`](docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md) — CELF selection algorithm, correctness constraints, and benchmarks
+- [`docs/INPUT_LIBRARY.md`](docs/INPUT_LIBRARY.md), [`docs/MEMORY_OPTIMIZATION.md`](docs/MEMORY_OPTIMIZATION.md) — supporting subsystems
 
-## Rule Ranker workflows
-
-Monitor cards use a muted section label above a separately spaced title and readable status detail. The Rule Ranker mode selector offers **Adaptive MAB** and **Legacy exhaustive** at the top of the ranking workspace.
-
-Use the persistent **RULEOPS sidebar** to open the six tools: expand **RULEST** for Run workspace, Engine tuning and GPU diagnostics, or select **Rule Ranker**, **Concentrator**, **Rulestripper**, **Rule Minimizer** or **Email Extractor** directly. Server-side jobs share the same application password, LAN address, live log, output area and single-job controller. Only one server-side job can run at a time, which avoids unintended competition for GPU memory and compute. Email Rule Extractor is a browser-only utility and does not start an engine job.
-
-Rule Ranker provides three workflows:
-
-1. **Rank rules (GPU):** upload a base wordlist, cracked-password list and candidate Hashcat `.rule` file. At the top of the Rule Ranker page, choose **Adaptive MAB** for multi-pass bandit screening or **Legacy exhaustive** to evaluate the full candidate set with the original ranking strategy. The two large mode buttons are shown before the shared uploads and remember your last selection for the browser session. MAB-only tuning controls are disabled automatically in Legacy mode. The main output is a ranked CSV.
-2. **Optimize ruleset (GPU coverage + CELF):** upload the base wordlist and cracked-password list, then select exactly one source: an existing `.rule` file or a ranking CSV. Configure the candidate limit, selection budget(s), GPU batch sizes, length limits and cost alpha. The output is a reduced coverage-focused `.rule` file. Uploading a `.rule` source automatically replaces a previously uploaded CSV source, and vice versa.
-3. **Analyze CSV (CPU):** upload a ranking CSV to create a summary, clean rules file and/or scored CSV. This workflow does not require GPU acceleration.
-
-All Ranker workflows stream their output into the shared **Live activity** panel and place generated files in the shared downloads list. Ranker supports cancellation (partial files already written are preserved); safe-checkpoint Pause/Resume is available only for the RULEST engine. Uploaded input files are temporary server-side copies and are removed after the job completes, fails or is cancelled. Re-upload wordlists and cracked-password lists before a subsequent Ranker workflow. Generated output files remain in `runs/<run-id>/`.
-
-The Ranker command-line package is also available directly through `run_ranker.py`; its original CLI options remain available. See [`docs/RANKER_README.md`](docs/RANKER_README.md) for standalone CLI examples.
-
-## Rulestripper integration
-
-Rulestripper extracts Hashcat rule chains empirically by decomposing TARGET words into BASE-word stems and transformations. The integrated runner is `run_rulestripper.py`; it keeps BASE/TARGET text in packed UTF-8 shared-memory buffers with `uint64` offsets, uses a compact shared BASE membership table and target-keyed shared postings, and sends only `(start, stop)` range descriptors through the multiprocessing pool. On Windows it explicitly uses the `spawn` start method; POSIX uses `fork` by default. The original 14 extraction modes and toggle-chain seeds remain available.
-
-Standalone example:
+## Testing
 
 ```bash
-python run_rulestripper.py BASE.txt TARGET.txt --output extracted.rule --workers 0 --chunk-size 0
+pytest
 ```
 
-In the Control Center, open **Rulestripper**, upload or select reusable BASE and TARGET wordlists, configure extraction depth and modes, then start the job. Upload acceptance is content-based rather than extension-based: ordinary non-empty text files are accepted with or without a suffix (for example `wordlist`, `targets.found` or `dump.data`), while obvious binary payloads are rejected.
+The test suite (`tests/`) covers the core engines, GPU-path parity checks
+(where an OpenCL device is available), the ranking/CELF pipeline, and the
+Control Center's web and authentication layers.
 
-## Rule Minimizer integration
+## License
 
-The standalone `minimizer.py` utility removes functionally equivalent Hashcat rules by comparing the outputs they produce over a configurable probe set. It preserves the first occurrence in the input ruleset, and supports built-in probes, additional words, an optional probe wordlist, worker processes and UTF-8 multibyte mode. It is exposed as **Rule Minimizer** in the sidebar and shares the Control Center's upload library, job monitor, cancellation and output browser.
-
-Standalone example:
-
-```bash
-python minimizer.py input.rule --output minimized.rule --workers 1
-```
-
-## Email Rule Extractor
-
-**Email Extractor** is a client-side page at `/email-rule-extractor.html`. It accepts plain email lists and `hash:email` files, can filter by domain, detects username/digit patterns and exports a Hashcat `.rule` file. Input data is processed in the browser and is not uploaded to the RULEOPS server.
-
-## GPU diagnostics
-
-The panel checks OpenCL and reports the Python interpreter, PyOpenCL status, platforms and devices. If PyOpenCL is missing, install it into the same interpreter used by the app:
-
-```bash
-python -m pip install --upgrade pyopencl
-```
-
-Installing PyOpenCL does not install the GPU manufacturer's OpenCL driver/runtime. If no OpenCL platform or GPU appears, install or repair the official graphics driver and the manufacturer's OpenCL runtime, then restart and check again.
-
-### Clear logs from the web interface
-
-Open **Live activity** and click **Clear log history**. After confirmation, the Control Center clears the visible log history and truncates the current run's saved `engine.log`. New engine messages continue to stream normally. Generated ruleset files are not deleted. Other browser sessions connected to the same server also reset their displayed history automatically.
-
-
-## Concentrator integration
-
-The web Control Center includes the original `concentrator.py` processor alongside RULEST Engine and Rule Ranker. It exposes the source CLI's four processing workflows:
-
-- **Extract** — frequency-ranked extraction or statistical (Markov-weighted) extraction.
-- **Combinatorial** — valid token-chain generation with target and length bounds.
-- **Markov** — Kneser–Ney training and best-first rule generation.
-- **Process & clean** — minimum-occurrence, top-N, functional-minimization, inverse and Hashcat cleanup filters in the source-defined order.
-
-RULEST, Rule Ranker, Concentrator, Rulestripper and Rule Minimizer share one authenticated web server, LAN listener, live log, output browser and upload-cleanup lifecycle. Only one job can use the engine at a time. Concentrator uses its original CLI through a non-interactive web mode; high-memory actions that need explicit approval are controlled by the **Confirm high-memory operations** switch. The standalone interactive CLI remains available by running `python concentrator.py` directly.
-
-## Sidebar navigation and run storage
-
-The sidebar is the primary application navigator. Select **RULEST** to expand its workspace, engine tuning and GPU diagnostics pages. Select **Rule Ranker**, **Concentrator**, **Rulestripper** or **Rule Minimizer** to open their integrated workspaces; **Email Extractor** opens its browser-only page. **Live activity** remains available as a shared monitor across all server-side tools. Under **System → Run storage**, review the number of saved run folders, files and disk usage. **Delete all run folders** removes saved RULEST, Ranker, Concentrator, Rulestripper and Minimizer run directories after an explicit confirmation. It is blocked while a job is active or an upload is in progress. The cleanup deliberately preserves `runs/uploads/`, `auth.json`, application files and configuration; generated outputs, logs and partial results in run folders are permanently deleted. On narrow screens, the sidebar becomes a compact horizontal tool bar; the RULEST submenu opens as a dropdown.
-
-## About, donations and support
-
-RULEOPS brings RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Email Rule Extractor together in one local-first toolchain. Processing runs on your machine and uses the CPU and GPU resources available to the application. The **About** page inside the Control Center describes each tool and provides project support information.
-
-### Optional donations
-
-If RULEOPS is useful to you, voluntary cryptocurrency donations are welcome and help support maintenance and future development. The wallet addresses are shown in the **About** page inside the application:
-
-- ETH: `0x597c06b19bc90876f6375b8d1348b34c94f223a4`
-- Bitcoin: `13jsg1BFDegtiz5q5h5AKYVQDwo8YAh8SJ`
-- Litecoin: `LLDEKP1L7Zs99cYHSVdxXHZPUaR5Hcpand`
-- Ravencoin: `RHXGULWc3jcgSHB9LAEmRCGnddRemnZ6hu`
-- Tron: `TWCr67GVVWYmPhDadGFzqWu5rcWuqwD8gi`
+See [`LICENSE`](LICENSE) for full terms.
 
 ### Support
 

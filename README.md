@@ -12,7 +12,7 @@ hand-tuned rule lists.
 > set-coverage optimization (CELF / greedy max-coverage algorithms applied
 > to rule selection). It is intended for authorized password-security
 > research and password-strength auditing on data you are permitted to
-> test. See [Responsible use](#responsible-use-and-scope) below.
+> test.
 
 ## Table of contents
 

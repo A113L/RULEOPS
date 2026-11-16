@@ -1760,16 +1760,21 @@
 .storage-workspace-grid{
   display:grid;
   grid-template-columns:minmax(0,1.65fr) minmax(330px,.9fr);
-  align-items:start;
+  align-items:stretch;
   gap:16px;
   width:100%;
 }
 .storage-management-column,.storage-intelligence-column{min-width:0;}
+.storage-intelligence-column{
+  display:flex;
+  flex-direction:column;
+}
 .storage-management-column>.panel{max-width:none;}
 .storage-intelligence-panel{
-  position:sticky;
-  top:76px;
-  max-height:calc(100vh - 92px);
+  position:static;
+  flex:1 1 0;
+  min-height:0;
+  max-height:none;
   overflow-y:auto;
   max-width:none;
   padding:17px 16px;

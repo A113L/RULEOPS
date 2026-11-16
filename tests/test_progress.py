@@ -372,3 +372,16 @@ class TestAnsiAwareWidth:
         colored_visible = len(re.sub(r"\x1b\[[0-9;]*m", "", colored._line()))
 
         assert colored_visible == plain_visible
+
+
+class TestResetRateWindow:
+    def test_reset_rate_window_starts_average_at_current_count(self):
+        bar = ProgressBar(total=10, desc="celf", unit="rule", enabled=False)
+        bar.update(4)
+        bar.reset_rate_window()
+        assert bar._rate_origin_count == 4
+        assert list(bar._rate_samples)[-1][1] == 4
+        assert len(bar._rate_samples) == 1
+        bar.update(1)
+        assert bar.n == 5
+        assert bar._rate_origin_count == 4

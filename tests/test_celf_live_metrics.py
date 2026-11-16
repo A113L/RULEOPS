@@ -89,22 +89,91 @@ def test_greedy_heartbeat_reports_selected_rate_and_lazy_upper_bounds(monkeypatc
         last_exact.update({i: target_sets[i] - covered_ids for i in indices})
         return [len(last_exact[i]) for i in indices]
 
+    dispatch = {"total": 0, "score": 0, "winner_compaction": 0, "clear": 0}
+
+    def score_bounds_with_dispatch(indices, covered):
+        dispatch["total"] += 2
+        dispatch["score"] += 2
+        return score_bounds(indices, covered)
+
+    def score_exact_with_dispatch(indices, covered):
+        dispatch["total"] += 1
+        dispatch["score"] += 1
+        return score_exact(indices, covered)
+
+    def on_select(_ids):
+        dispatch["total"] += 1
+        dispatch["clear"] += 1
+
     selected, covered = selection._celf_select_from_upper_bounds(
         ["A", "B", "C", "D"],
         [4, 3, 3, 2],
         4,
         score_one,
         budget=2,
-        score_batch_fn=score_bounds,
-        score_exact_batch_fn=score_exact,
+        on_select=on_select,
+        score_batch_fn=score_bounds_with_dispatch,
+        score_exact_batch_fn=score_exact_with_dispatch,
         rescore_batch_size=3,
+        gpu_dispatch_counts_fn=lambda: dict(dispatch),
     )
 
     assert selected
     assert int(covered.sum()) == sum(gain for _rule, gain in selected)
     greedy_lines = [line for line in events if "[CELF] Greedy selection" in line]
     assert greedy_lines
-    assert any("rules/s" in line and "(avg=" in line for line in greedy_lines)
+    assert any("rule/s=" in line and "avg_rule/s=" in line for line in greedy_lines)
+    assert any("rescored/s=" in line and "first_round=" in line and "ETA=" in line
+               for line in greedy_lines)
     assert any("exact_scans=" in line and "exact_record_scans=" in line for line in greedy_lines)
     assert any("lazy_upper_bound_candidates=" in line for line in greedy_lines)
     assert any("lazy_upper_bound_speed=" in line and "rules/s" in line for line in greedy_lines)
+
+
+def test_first_round_report_includes_actual_kernel_dispatch_counts(capsys):
+    import rulest.selection as selection
+
+    dispatch = {"total": 0, "score": 0, "winner_compaction": 0, "clear": 0}
+
+    def score_one(index, covered):
+        targets = [{0, 1}, {1, 2}][index]
+        return targets - set(np.flatnonzero(covered))
+
+    def score_bounds(indices, covered):
+        dispatch["total"] += 2
+        dispatch["score"] += 2
+        covered_ids = set(np.flatnonzero(covered))
+        targets = [{0, 1}, {1, 2}]
+        return [len(targets[index] - covered_ids) for index in indices]
+
+    def score_exact(indices, covered):
+        dispatch["total"] += 1
+        dispatch["score"] += 1
+        covered_ids = set(np.flatnonzero(covered))
+        targets = [{0, 1}, {1, 2}]
+        return [len(targets[index] - covered_ids) for index in indices]
+
+    def on_select(_ids):
+        dispatch["total"] += 1
+        dispatch["clear"] += 1
+
+    selection._celf_select_from_upper_bounds(
+        ["A", "B"], [2, 2], 3, score_one, budget=1,
+        on_select=on_select, score_batch_fn=score_bounds,
+        score_exact_batch_fn=score_exact, rescore_batch_size=2,
+        gpu_dispatch_counts_fn=lambda: dict(dispatch),
+    )
+    output = capsys.readouterr().out
+    assert "[CELF] First round complete" in output
+    assert "gpu_kernel_dispatches=" in output
+    assert "score=" in output and "clear=" in output
+
+
+def test_rolling_rule_rate_expires_when_no_progress_occurs_in_window():
+    from collections import deque
+    from rulest.selection import _rolling_rules_rate_details
+
+    samples = deque([(0.0, 0), (10.0, 10)])
+    rate, span = _rolling_rules_rate_details(samples, 10, 45.0, window=30.0)
+    assert rate == 0.0
+    assert span == 0.0

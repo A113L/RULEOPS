@@ -128,6 +128,12 @@ class GPUEngine:
         self._celf_pending_clear_buffers = []
         self._celf_pending_clear_host_arrays = []
         self._celf_clear_slots_buf = None
+        self._celf_kernel_dispatch_totals = {
+            "total": 0, "score": 0, "winner_compaction": 0, "clear": 0,
+        }
+        self._celf_kernel_dispatch_last = {
+            "total": 0, "score": 0, "winner_compaction": 0, "clear": 0,
+        }
         self._celf_profile = {
             "calls": 0, "batch_calls": 0, "singleton_calls": 0, "candidate_scores": 0,
             "wall_s": 0.0, "host_enqueue_s": 0.0, "host_alloc_s": 0.0, "wait_wall_s": 0.0,
@@ -1775,6 +1781,12 @@ class GPUEngine:
 
     def celf_prepare_candidate_pool(self, chains):
         """Prepare token buffers and candidate chain sequences once per CELF run."""
+        self._celf_kernel_dispatch_totals = {
+            "total": 0, "score": 0, "winner_compaction": 0, "clear": 0,
+        }
+        self._celf_kernel_dispatch_last = {
+            "total": 0, "score": 0, "winner_compaction": 0, "clear": 0,
+        }
         _pool_t0 = time.perf_counter()
         chains = list(chains)
         if not chains:
@@ -1862,6 +1874,37 @@ class GPUEngine:
                 f"GPU buffer allocation+upload={time.perf_counter() - _pool_alloc_t0:.3f}s"
             )
 
+    def _celf_begin_kernel_operation(self):
+        self._celf_kernel_dispatch_last = {
+            "total": 0, "score": 0, "winner_compaction": 0, "clear": 0,
+        }
+
+    def _celf_note_kernel_dispatch(self, category):
+        """Count an actual enqueue_nd_range_kernel call (not fills/copies)."""
+        if category not in {"score", "winner_compaction", "clear"}:
+            raise ValueError(f"Unknown CELF kernel dispatch category: {category}")
+        totals = self._celf_kernel_dispatch_totals
+        last = self._celf_kernel_dispatch_last
+        totals["total"] += 1
+        totals[category] += 1
+        last["total"] += 1
+        last[category] += 1
+
+    def celf_dispatch_counts(self):
+        """Return cumulative and most-recent CELF OpenCL kernel launch counts."""
+        totals = dict(getattr(self, "_celf_kernel_dispatch_totals", {}) or {})
+        last = dict(getattr(self, "_celf_kernel_dispatch_last", {}) or {})
+        return {
+            "total": int(totals.get("total", 0)),
+            "score": int(totals.get("score", 0)),
+            "winner_compaction": int(totals.get("winner_compaction", 0)),
+            "clear": int(totals.get("clear", 0)),
+            "last_total": int(last.get("total", 0)),
+            "last_score": int(last.get("score", 0)),
+            "last_winner_compaction": int(last.get("winner_compaction", 0)),
+            "last_clear": int(last.get("clear", 0)),
+        }
+
     def celf_score_candidate_indices_gpu(
         self, candidate_indices, record_hits=False, exact_counts=False,
     ):
@@ -1889,6 +1932,7 @@ class GPUEngine:
         enables per-candidate target-ID deduplication without hit-slot readback;
         `record_hits` is the singleton winner mode that also records matched slots.
         """
+        self._celf_begin_kernel_operation()
         _profile_on = os.environ.get("RULEST_CELF_PROFILE") == "1"
         _wall_t0 = time.perf_counter()
         _host_enqueue_s = 0.0
@@ -2034,6 +2078,7 @@ class GPUEngine:
                 np.int32(score_mode), np.int32(seen_generation),
             )
             event = cl.enqueue_nd_range_kernel(self.queue, self.kernel_celf_score, (global_size,), (self.local_work_size,))
+            self._celf_note_kernel_dispatch("score")
             if _profile_on: _kernel_events.append(event)
             # NOTE: do NOT report `word_end` here. The kernel above is enqueued
             # asynchronously (no .wait()) -- it has not run yet, let alone
@@ -2293,6 +2338,7 @@ class GPUEngine:
         if not self.kernel_celf_compact:
             raise RuntimeError("CELF GPU bitmap compaction kernel is unavailable")
 
+        self._celf_begin_kernel_operation()
         started = time.perf_counter()
         cl.enqueue_fill_buffer(self.queue, self._celf_winner_count_buf, np.int32(0), 0, 4)
         global_size = (
@@ -2311,6 +2357,7 @@ class GPUEngine:
             self.queue, self.kernel_celf_compact,
             (max(self.local_work_size, global_size),), (self.local_work_size,),
         )
+        self._celf_note_kernel_dispatch("winner_compaction")
         count_event = cl.enqueue_copy(
             self.queue, self._celf_winner_count_host,
             self._celf_winner_count_buf, is_blocking=False,
@@ -2358,11 +2405,13 @@ class GPUEngine:
 
     def celf_clear_last_hit_slots(self):
         """Clear the winning target slots directly from the reusable GPU buffer."""
+        self._celf_begin_kernel_operation()
         n_slots = int(getattr(self, "_celf_last_hit_count", 0))
         if n_slots > 0:
             global_size = ((n_slots + self.local_work_size - 1) // self.local_work_size) * self.local_work_size
             self.kernel_celf_clear.set_args(self._celf_active_buf, self._celf_hit_slots_buf, np.int32(n_slots))
             cl.enqueue_nd_range_kernel(self.queue, self.kernel_celf_clear, (global_size,), (self.local_work_size,))
+            self._celf_note_kernel_dispatch("clear")
         self._celf_active_version = getattr(self, "_celf_active_version", 0) + 1
         self._celf_last_single_cache = None
         self._celf_winner_snapshot_valid = False
@@ -2409,6 +2458,7 @@ class GPUEngine:
 
     def celf_clear_target_ids(self, target_ids):
         """Clear exact winner target IDs using a persistent upload buffer."""
+        self._celf_begin_kernel_operation()
         target_ids = sorted({int(target_id) for target_id in target_ids})
         slots = [int(self._celf_target_slots_host[target_id]) for target_id in target_ids
                  if 0 <= target_id < self._celf_target_count
@@ -2422,6 +2472,7 @@ class GPUEngine:
         global_size = ((len(slots) + self.local_work_size - 1) // self.local_work_size) * self.local_work_size
         self.kernel_celf_clear.set_args(self._celf_active_buf, self._celf_clear_slots_buf, np.int32(len(slots)))
         cl.enqueue_nd_range_kernel(self.queue, self.kernel_celf_clear, (global_size,), (self.local_work_size,))
+        self._celf_note_kernel_dispatch("clear")
         # Preserve the async H2D source array until the next queue synchronization.
         self._celf_pending_clear_host_arrays.append(slots_np)
         self._celf_active_version = getattr(self, "_celf_active_version", 0) + 1
@@ -2461,8 +2512,11 @@ class GPUEngine:
         if not p or not p.get("calls"):
             return None
         calls = max(1, int(p["calls"]))
+        dispatch = self.celf_dispatch_counts()
         return (
             "score calls={calls:,} (batch={batch:,}, singleton={single:,}), "
+            "GPU kernel launches={dispatch_total:,} "
+            "(score={dispatch_score:,}, winner_compaction={dispatch_compaction:,}, clear={dispatch_clear:,}); "
             "candidates={candidates:,}; wall={wall:.3f}s; host alloc={alloc:.3f}s; host enqueue={enqueue:.3f}s; "
             "GPU kernel={kernel:.3f}s; H2D={h2d:.3f}s; fills={fills:.3f}s; "
             "readback={readback:.3f}s; synchronization wait={wait:.3f}s; "
@@ -2475,6 +2529,10 @@ class GPUEngine:
             "singletons={upper_singletons:,}/{exact_singletons:,}/{record_singletons:,}; "
             "avg wall/call={avg:.2f}ms".format(
                 calls=int(p["calls"]), batch=int(p["batch_calls"]), single=int(p["singleton_calls"]),
+                dispatch_total=int(dispatch.get("total", 0)),
+                dispatch_score=int(dispatch.get("score", 0)),
+                dispatch_compaction=int(dispatch.get("winner_compaction", 0)),
+                dispatch_clear=int(dispatch.get("clear", 0)),
                 candidates=int(p["candidate_scores"]), wall=float(p["wall_s"]),
                 alloc=float(p["host_alloc_s"]), enqueue=float(p["host_enqueue_s"]), kernel=float(p["kernel_gpu_s"]),
                 h2d=float(p["h2d_gpu_s"]), fills=float(p["fill_gpu_s"]),

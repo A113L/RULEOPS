@@ -251,19 +251,27 @@ def _celf_log_interval():
     return min(10.0, max(0.25, value))
 
 
-def _rolling_rules_rate(samples, count, now, window=5.0):
-    """Smoothed recent candidate/rule throughput, avoiding per-batch spikes."""
+def _rolling_rules_rate_details(samples, count, now, window=30.0):
+    """Return smoothed recent rate and its actual sample span."""
     count = int(count)
     if not samples or count > samples[-1][1]:
         samples.append((float(now), count))
     cutoff = float(now) - max(1.0, float(window))
-    while len(samples) > 2 and samples[1][0] <= cutoff:
+    while len(samples) > 1 and samples[1][0] <= cutoff:
         samples.popleft()
+    if len(samples) < 2 or samples[-1][0] < cutoff:
+        return 0.0, 0.0
     first_time, first_count = samples[0]
-    elapsed = float(now) - first_time
+    elapsed = float(now) - max(first_time, cutoff)
     if elapsed <= 1e-9:
-        return 0.0
-    return max(0.0, (count - first_count) / elapsed)
+        return 0.0, 0.0
+    return max(0.0, (count - first_count) / elapsed), elapsed
+
+
+def _rolling_rules_rate(samples, count, now, window=5.0):
+    """Backward-compatible rate-only wrapper used by upper-bound progress."""
+    rate, _span = _rolling_rules_rate_details(samples, count, now, window=window)
+    return rate
 
 
 def _format_progress_bar(done, total, width=24):
@@ -370,6 +378,7 @@ def _celf_select_from_upper_bounds(
     on_select=None, score_batch_fn=None, rescore_batch_size=32,
     on_scan_progress=None, score_exact_batch_fn=None,
     capture_exact_winner_fn=None, materialize_winner_ids_fn=None,
+    gpu_dispatch_counts_fn=None,
 ):
     """Heap CELF with admissible bounds and optional batched exact rescoring.
 
@@ -445,10 +454,69 @@ def _celf_select_from_upper_bounds(
     progress_enabled = bool(sys.stderr.isatty())
     last_refresh = [0.0]
     t0 = time.monotonic()
-    selected_rate_samples = deque([(t0, 0)])
     upper_rate_samples = deque([(t0, 0)])
-    last_selected_rate = [0.0]
     last_upper_rate = [0.0]
+    post_first_winner_started_at = None
+    post_first_winner_exact_baseline = 0
+    post_first_winner_selected_samples = deque()
+    post_first_winner_rescored_samples = deque()
+    first_round_summary = None
+    reset_progress_rate_after_update = False
+
+    def _read_gpu_dispatch_counts():
+        if gpu_dispatch_counts_fn is None:
+            return {"total": 0, "score": 0, "winner_compaction": 0, "clear": 0}
+        try:
+            counts = gpu_dispatch_counts_fn()
+        except Exception as exc:
+            log_warn(f"[CELF] Could not read GPU kernel-dispatch counters: {exc}")
+            return {"total": 0, "score": 0, "winner_compaction": 0, "clear": 0}
+        if not isinstance(counts, dict):
+            return {"total": 0, "score": 0, "winner_compaction": 0, "clear": 0}
+        return {
+            key: max(0, int(counts.get(key, 0)))
+            for key in ("total", "score", "winner_compaction", "clear")
+        }
+
+    dispatch_counts_at_greedy_start = _read_gpu_dispatch_counts()
+
+    def _steady_metrics(now):
+        if post_first_winner_started_at is None:
+            return {
+                "recent_rule_rate": 0.0, "avg_rule_rate": 0.0,
+                "rescored_rate": 0.0, "eta_rate": 0.0,
+                "eta_seconds": None, "steady_elapsed": 0.0,
+            }
+        steady_elapsed = max(1e-9, float(now) - post_first_winner_started_at)
+        selected_after_first = max(0, len(selected) - 1)
+        recent_rule_rate, _rule_span = _rolling_rules_rate_details(
+            post_first_winner_selected_samples, selected_after_first,
+            now, window=30.0,
+        )
+        avg_rule_rate = selected_after_first / steady_elapsed
+        rescored_after_first = max(0, exact_scans - post_first_winner_exact_baseline)
+        recent_rescored_rate, _rescore_span = _rolling_rules_rate_details(
+            post_first_winner_rescored_samples, rescored_after_first,
+            now, window=30.0,
+        )
+        # The post-first-winner average is only a warm-up fallback. Once ten
+        # seconds have elapsed, ETA follows the moving window strictly; if no
+        # rules were selected in that window, report ETA as still calculating
+        # rather than projecting stale cumulative throughput.
+        eta_rate = avg_rule_rate if steady_elapsed < 10.0 else recent_rule_rate
+        eta_total = limit if budget is not None else approx_total_without_budget
+        eta_seconds = None
+        if eta_total is not None and eta_rate > 0:
+            eta_seconds = max(0, int(eta_total) - len(selected)) / eta_rate
+        return {
+            "recent_rule_rate": recent_rule_rate,
+            "avg_rule_rate": avg_rule_rate,
+            "rescored_rate": recent_rescored_rate,
+            "eta_rate": eta_rate,
+            "eta_seconds": eta_seconds,
+            "steady_elapsed": steady_elapsed,
+        }
+
     heap_operation_s = [0.0]
     score_callback_s = [0.0]
     winner_commit_s = [0.0]
@@ -507,34 +575,46 @@ def _celf_select_from_upper_bounds(
             elapsed = max(now - t0, 1e-9)
             selected_pct = 100.0 * len(selected) / max(1, limit)
             coverage_pct = 100.0 * recovered / max(1, target_count)
-            last_selected_rate[0] = _rolling_rules_rate(
-                selected_rate_samples, len(selected), now, window=5.0
-            )
             last_upper_rate[0] = _rolling_rules_rate(
                 upper_rate_samples, upper_bound_candidates, now, window=5.0
             )
-            average_selected_rate = len(selected) / elapsed
-            average_upper_rate = upper_bound_candidates / elapsed
+            steady = _steady_metrics(now)
+            if first_round_summary is None:
+                first_round_text = "running"
+            else:
+                first_round_text = (
+                    f"{first_round_summary['elapsed']:.1f}s/"
+                    f"{first_round_summary['gpu_dispatches']:,} GPU launches"
+                )
+            eta_text = (
+                f"{steady['eta_seconds']:.1f}s"
+                if steady["eta_seconds"] is not None else "calculating"
+            )
             return (
                 f"[CELF] Greedy selection | selected={len(selected):,}/{limit:,} "
-                f"({selected_pct:.1f}%) | speed={last_selected_rate[0]:,.2f} rules/s "
-                f"(avg={average_selected_rate:,.2f} rules/s) | recovered={recovered:,}/{target_count:,} "
+                f"({selected_pct:.1f}%) | rule/s={steady['recent_rule_rate']:,.2f} "
+                f"| avg_rule/s={steady['avg_rule_rate']:,.2f} "
+                f"| rescored/s={steady['rescored_rate']:,.2f} "
+                f"| ETA={eta_text} | first_round={first_round_text} "
+                f"| recovered={recovered:,}/{target_count:,} "
                 f"({coverage_pct:.1f}%) | heap={len(heap):,} | exact_scans={exact_scans:,} "
                 f"| exact_batches={exact_batches:,} | exact_record_scans={exact_record_scans:,} "
                 f"| exact_gain_candidates={exact_gain_only + exact_batch_candidates:,} "
                 f"| lazy_upper_bound_candidates={upper_bound_candidates:,} "
                 f"| lazy_upper_bound_batches={upper_bound_batches:,} "
                 f"| lazy_upper_bound_speed={last_upper_rate[0]:,.2f} rules/s "
-                f"(avg={average_upper_rate:,.2f} rules/s) | batch={current_batch_size} "
-                f"| elapsed={elapsed:.1f}s"
+                f"| batch={current_batch_size} | elapsed={elapsed:.1f}s"
             )
 
         def report_scan(done=None, total=None):
             if progress_enabled:
+                steady = _steady_metrics(time.monotonic())
                 postfix = {
                     "selected": cyan(str(len(selected))),
                     "recovered": cyan(f"{recovered:,}"),
-                    "speed": cyan(f"{last_selected_rate[0]:,.1f} rules/s"),
+                    "rule/s": cyan(f"{steady['recent_rule_rate']:,.1f}"),
+                    "avg_rule/s": cyan(f"{steady['avg_rule_rate']:,.1f}"),
+                    "rescored/s": cyan(f"{steady['rescored_rate']:,.1f}"),
                     "upper": cyan(f"{upper_bound_candidates:,}"),
                     "exact": cyan(f"{exact_scans:,}"),
                     "batch": cyan(str(current_batch_size)),
@@ -879,10 +959,66 @@ def _celf_select_from_upper_bounds(
             selected.append((rules[best_index], len(best_ids)))
             winner_commit_s[0] += time.perf_counter() - _commit_t0
             selection_now = time.monotonic()
-            last_selected_rate[0] = _rolling_rules_rate(
-                selected_rate_samples, len(selected), selection_now, window=5.0
-            )
+            if len(selected) == 1:
+                dispatch_after_first = _read_gpu_dispatch_counts()
+                first_round_summary = {
+                    "elapsed": max(0.0, selection_now - t0),
+                    "exact_candidates": int(exact_scans),
+                    "exact_batches": int(exact_batches),
+                    "exact_record_scans": int(exact_record_scans),
+                    "lazy_upper_bound_candidates": int(upper_bound_candidates),
+                    "lazy_upper_bound_batches": int(upper_bound_batches),
+                    "gpu_dispatches": max(
+                        0, dispatch_after_first["total"] - dispatch_counts_at_greedy_start["total"]
+                    ),
+                    "gpu_score_dispatches": max(
+                        0, dispatch_after_first["score"] - dispatch_counts_at_greedy_start["score"]
+                    ),
+                    "gpu_compaction_dispatches": max(
+                        0, dispatch_after_first["winner_compaction"] - dispatch_counts_at_greedy_start["winner_compaction"]
+                    ),
+                    "gpu_clear_dispatches": max(
+                        0, dispatch_after_first["clear"] - dispatch_counts_at_greedy_start["clear"]
+                    ),
+                }
+                log_info(
+                    "[CELF] First round complete | "
+                    f"winner={rules[best_index]!r} | exact_gain={best_gain:,} | "
+                    f"elapsed={first_round_summary['elapsed']:.2f}s | "
+                    f"exact_candidates={first_round_summary['exact_candidates']:,} "
+                    f"(batches={first_round_summary['exact_batches']:,}, "
+                    f"record_scans={first_round_summary['exact_record_scans']:,}) | "
+                    f"lazy_upper_bound_candidates={first_round_summary['lazy_upper_bound_candidates']:,} "
+                    f"(batches={first_round_summary['lazy_upper_bound_batches']:,}) | "
+                    f"gpu_kernel_dispatches={first_round_summary['gpu_dispatches']:,} "
+                    f"(score={first_round_summary['gpu_score_dispatches']:,}, "
+                    f"winner_compaction={first_round_summary['gpu_compaction_dispatches']:,}, "
+                    f"clear={first_round_summary['gpu_clear_dispatches']:,})"
+                )
+                post_first_winner_started_at = selection_now
+                post_first_winner_exact_baseline = int(exact_scans)
+                post_first_winner_selected_samples = deque([(selection_now, 0)])
+                post_first_winner_rescored_samples = deque([(selection_now, 0)])
+                reset_progress_rate_after_update = True
+            else:
+                steady_selected = max(0, len(selected) - 1)
+                if (not post_first_winner_selected_samples or
+                        steady_selected > post_first_winner_selected_samples[-1][1]):
+                    post_first_winner_selected_samples.append((selection_now, steady_selected))
+            if post_first_winner_started_at is not None:
+                post_first_winner_rescored = max(
+                    0, exact_scans - post_first_winner_exact_baseline
+                )
+                if (not post_first_winner_rescored_samples or
+                        post_first_winner_rescored > post_first_winner_rescored_samples[-1][1]):
+                    post_first_winner_rescored_samples.append((selection_now, post_first_winner_rescored))
             progress.update(1)
+            if reset_progress_rate_after_update:
+                reset_rate_window = getattr(progress, "reset_rate_window", None)
+                if callable(reset_rate_window):
+                    reset_rate_window()
+                    progress.refresh(force=True)
+                reset_progress_rate_after_update = False
             report_scan()
 
     if sum(gain for _, gain in selected) != int(covered.sum()):
@@ -1052,6 +1188,12 @@ class _GpuExactScorer:
                 f"GPU CELF hit-recording mismatch: gain={gain}, distinct target IDs={len(target_ids)}"
             )
         return gain, target_ids
+
+    def gpu_dispatch_counts(self):
+        method = getattr(self.gpu_engine, "celf_dispatch_counts", None)
+        if not callable(method):
+            return {}
+        return method()
 
     def mark_selected(self, target_ids):
         # Clear the exact target IDs returned by the winner scan. Do not infer
@@ -1226,6 +1368,7 @@ def select_rules_by_marginal_coverage(
                     getattr(scorer, "materialize_exact_winner_target_ids", None)
                     if exact_batch_enabled else None
                 ),
+                gpu_dispatch_counts_fn=getattr(scorer, "gpu_dispatch_counts", None),
             )
         except _CelfExactBatchMismatch as exc:
             if not exact_batch_enabled:
@@ -1266,6 +1409,7 @@ def select_rules_by_marginal_coverage(
                 rescore_batch_size=recompute_batch_size,
                 on_scan_progress=scan_progress,
                 score_exact_batch_fn=None,
+                gpu_dispatch_counts_fn=getattr(scorer, "gpu_dispatch_counts", None),
             )
         log_info(
             f"[CELF] Selected {bold(str(len(selected)))} rules; exact recovery "
@@ -1274,6 +1418,18 @@ def select_rules_by_marginal_coverage(
         return selected, covered
     finally:
         if scorer is not None:
+            try:
+                dispatch_counts = scorer.gpu_dispatch_counts()
+                if isinstance(dispatch_counts, dict):
+                    log_info(
+                        "[CELF GPU DISPATCH] Actual OpenCL kernel launches | "
+                        f"total={int(dispatch_counts.get('total', 0)):,} | "
+                        f"score={int(dispatch_counts.get('score', 0)):,} | "
+                        f"winner_compaction={int(dispatch_counts.get('winner_compaction', 0)):,} | "
+                        f"clear={int(dispatch_counts.get('clear', 0)):,}"
+                    )
+            except Exception as exc:
+                log_warn(f"[CELF] Could not report GPU kernel-dispatch counters: {exc}")
             try:
                 scorer.gpu_engine.celf_report_profile()
             except Exception as exc:

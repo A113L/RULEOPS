@@ -30,6 +30,8 @@ def test_process_proxy_exposes_celf_methods_and_workspace_metadata(monkeypatch):
             return {2, 4}
         if method == "celf_profile_summary":
             return "profile-summary"
+        if method == "celf_dispatch_counts":
+            return {"total": 9, "score": 6, "winner_compaction": 1, "clear": 2}
         return None
 
     monkeypatch.setattr(proxy, "_call", fake_call)
@@ -46,6 +48,9 @@ def test_process_proxy_exposes_celf_methods_and_workspace_metadata(monkeypatch):
     proxy.celf_release_target_table()
     proxy.celf_report_profile()
     assert proxy.celf_profile_summary() == "profile-summary"
+    assert proxy.celf_dispatch_counts() == {
+        "total": 9, "score": 6, "winner_compaction": 1, "clear": 2
+    }
 
     score_call = next(call for call in calls if call[0] == "celf_score_chains_gpu")
     assert score_call[1] == (["rule"],)

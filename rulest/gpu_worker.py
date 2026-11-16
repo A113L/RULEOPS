@@ -501,6 +501,11 @@ class ProcessEngineProxy:
     def celf_profile_summary(self):
         return self._call('celf_profile_summary', _raise_on_error=True)
 
+    def celf_dispatch_counts(self):
+        """Read actual CELF OpenCL kernel launch counters from the worker."""
+        result = self._call('celf_dispatch_counts', _raise_on_error=True)
+        return result if isinstance(result, dict) else {}
+
     def evaluate_chains_for_ga(self, chains, return_counts=False):
         r = self._call('evaluate_chains_for_ga', chains, return_counts=return_counts)
         return r if r is not None else {}

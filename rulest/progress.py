@@ -81,6 +81,7 @@ class ProgressBar:  # RULEST_CELF_PROGRESS_RATE_FIX_V1
         self.n = max(0, int(initial))
         self.postfix = ""
         self.start_time = time.monotonic()
+        self._rate_origin_count = self.n
         self._rate_window_seconds = 15.0
         self._rate_samples = deque([(self.start_time, self.n)])
         self.last_render = 0.0
@@ -98,6 +99,20 @@ class ProgressBar:  # RULEST_CELF_PROGRESS_RATE_FIX_V1
     def _heartbeat_loop(self):
         while not self._stop.wait(self.min_interval):
             self.refresh()
+
+    def reset_rate_window(self):
+        """Start a fresh elapsed/rate baseline at the current progress count.
+
+        CELF uses this after committing its first winner: the first expensive
+        exact round is reported separately, while selected-rule throughput and
+        ETA describe steady-state work from that point onward.
+        """
+        with self._lock:
+            now = time.monotonic()
+            self.start_time = now
+            self._rate_origin_count = self.n
+            self._rate_samples = deque([(now, self.n)])
+            self.last_render = 0.0
 
     def _recent_rate(self, now=None):
         """Return (units/second, sample span) over the trailing rate window."""
@@ -166,7 +181,7 @@ class ProgressBar:  # RULEST_CELF_PROGRESS_RATE_FIX_V1
     def _line(self):
         now = time.monotonic()
         elapsed = max(0.0, now - self.start_time)
-        avg_rate = self.n / elapsed if elapsed > 0 else 0.0
+        avg_rate = max(0, self.n - self._rate_origin_count) / elapsed if elapsed > 0 else 0.0
         current_rate, sample_span = self._recent_rate(now)
         # One rate figure, not two: pick whichever is the more informative
         # one (trailing-window once it has enough samples, else the overall

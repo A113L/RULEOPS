@@ -28,7 +28,10 @@ def test_celf_score_kernel_launch_uses_flat_word_candidate_ndrange():
 def test_celf_web_heartbeat_reports_rules_per_second_and_is_responsive():
     root = Path(__file__).resolve().parents[1]
     selection_source = (root / "rulest" / "selection.py").read_text(encoding="utf-8")
-    assert 'speed={last_selected_rate[0]:,.2f} rules/s' in selection_source
-    assert '(avg={average_selected_rate:,.2f} rules/s) | recovered=' in selection_source
+    assert "rule/s={steady['recent_rule_rate']" in selection_source
+    assert "avg_rule/s={steady['avg_rule_rate']" in selection_source
+    assert "rescored/s={steady['rescored_rate']" in selection_source
+    assert 'first_round={first_round_text}' in selection_source
+    assert 'window=30.0' in selection_source
     assert 'os.environ.get("RULEST_CELF_LOG_INTERVAL", "0.5")' in selection_source
     assert 'unit="rules"' in selection_source

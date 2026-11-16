@@ -101,7 +101,7 @@ def test_email_extractor_is_local_client_side_page():
     js = (ROOT / "web" / "email-rule-extractor.js").read_text(encoding="utf-8")
     assert 'src="/email-rule-extractor.js?v=2.6.7&metrics=2.6.7&eta=20261115"' in html
     assert 'href="/email-rule-extractor.css?v=2.6.7&metrics=2.6.7&eta=20261115"' in html
-    assert 'href="/styles.css?v=2.6.4-email-sidebar&build=2.6.4&metrics=2.6.5&eta=20261115"' in html
+    assert 'href="/styles.css?v=2.6.4-email-sidebar&ui-polish=20261116a&build=2.6.4&metrics=2.6.5&eta=20261115"' in html
     assert "hcrt.pages.dev" not in html + js
     assert not re.search(r"<script\b(?![^>]*\bsrc=)[^>]*>", html, flags=re.I)
     assert "FileReader" in js

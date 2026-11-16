@@ -170,7 +170,7 @@ def test_login_page_and_main_assets_are_separated_by_authentication(tmp_path, mo
         request = urllib.request.Request(base + "/", headers={"Cookie": cookie})
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
-            assert "Run workspace" in page
+            assert "RULEST" in page
             assert "PASSWORD SESSION" in page
             assert "Change password" in page
         request = urllib.request.Request(base + "/app.js", headers={"Cookie": cookie})

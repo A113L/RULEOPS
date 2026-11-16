@@ -86,3 +86,50 @@ def test_about_sidebar_uses_remaining_space_for_ruleops_brand_emblem():
     assert '.about-grid{align-items:stretch}' in css
     assert '.about-brand-emblem-panel{' in css
     assert 'flex:1 1 280px' in css
+
+
+def test_all_about_tool_cards_have_styled_navigation_links():
+    root = Path(app.__file__).resolve().parent
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+
+    expected = {
+        'data-tool="rulest"': ('href="#workspace"', 'data-nav-tool="rulest"'),
+        'data-tool="ranker"': ('href="#ranker"', 'data-nav-tool="ranker"'),
+        'data-tool="concentrator"': ('href="#concentrator"', 'data-nav-tool="concentrator"'),
+        'data-tool="rulestripper"': ('href="#rulestripper"', 'data-nav-tool="rulestripper"'),
+        'data-tool="minimizer"': ('href="#minimizer"', 'data-nav-tool="minimizer"'),
+        'data-tool="email-extractor"': ('href="/email-rule-extractor.html"',),
+    }
+    for card_marker, link_bits in expected.items():
+        card_start = html.index(card_marker, html.index('id="about-grid"'))
+        card_end = html.index('</article>', card_start)
+        card = html[card_start:card_end]
+        assert 'class="about-tool-link"' in card
+        for bit in link_bits:
+            assert bit in card
+
+    assert '.usecase-card .about-tool-link{' in css
+    assert '.usecase-card .about-tool-link:focus-visible{' in css
+    assert '.usecase-card[data-tool="email-extractor"]' in css
+
+
+def test_rulest_label_and_eta_icon_are_consistent():
+    root = Path(app.__file__).resolve().parent
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    email_html = (root / "web" / "email-rule-extractor.html").read_text(encoding="utf-8")
+    js = (root / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert '<h1>RULEST<span class="title-period">.</span></h1>' in html
+    assert '<strong>RULEST</strong>' in html
+    assert 'Run workspace' not in html
+    assert 'Run workspace' not in js
+    assert '⌛' not in html + email_html
+    assert 'metric-icon">◴' in html + email_html
+
+
+def test_storage_intelligence_scrollbar_is_narrow_and_theme_scoped():
+    root = Path(app.__file__).resolve().parent
+    css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+    assert '.storage-intelligence-panel::-webkit-scrollbar{width:7px;height:7px;}' in css
+    assert '.storage-intelligence-panel{\n  scrollbar-width:thin;' in css

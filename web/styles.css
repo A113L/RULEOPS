@@ -1881,3 +1881,245 @@
   .storage-intel-section{margin-top:13px;padding-top:11px;}
   .storage-intelligence-total b{font-size:20px;}
 }
+
+/* RULEOPS UI refinement: clearer type, consistent ETA glyphs and tool-card actions. */
+body{
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+.breadcrumb{font-size:11.5px;}
+.nav-main-copy b{font-size:11.5px;}
+.nav-main-copy small{font-size:8.5px;}
+.page-heading p{font-size:12.5px;}
+.metric-label{font-size:9.5px;}
+.metric-note{font-size:9.5px;}
+.metric-icon{font:600 14px/1 var(--mono);}
+.panel-heading p,.advanced-trigger p{font-size:10.5px;}
+.field>span{font-size:10.5px;}
+.field small{font-size:8.5px;}
+.toggle-row b{font-size:10.5px;}
+.toggle-row small{font-size:9.5px;}
+.upload-head h3{font-size:11.5px;}
+.upload-head small,.drop-zone small,.file-state{font-size:9.5px;}
+.drop-zone strong{font-size:10.5px;}
+.usecase-head b{font-size:13px;}
+.usecase-head small{font-size:9.5px;}
+.usecase-list li{font-size:10.5px;line-height:1.58;}
+.about-copy{font-size:11.5px;}
+.about-feature-tags span{font-size:8.5px;}
+
+/* Distinct, accessible links for every About tool card. */
+.usecase-card[data-tool="rulest"]{--tool-link:#c8f19d;--tool-link-border:#526b42;--tool-link-bg:#1b291d;}
+.usecase-card[data-tool="ranker"]{--tool-link:#a9d7ff;--tool-link-border:#405e7a;--tool-link-bg:#172638;}
+.usecase-card[data-tool="concentrator"]{--tool-link:#d0bbff;--tool-link-border:#57466f;--tool-link-bg:#241e32;}
+.usecase-card[data-tool="rulestripper"]{--tool-link:#a8e5d8;--tool-link-border:#3d6b65;--tool-link-bg:#172b2a;}
+.usecase-card[data-tool="minimizer"]{--tool-link:#e6d09a;--tool-link-border:#6a5b3b;--tool-link-bg:#2a261b;}
+.usecase-card[data-tool="email-extractor"]{--tool-link:#e0b9e9;--tool-link-border:#644a68;--tool-link-bg:#2a1f2d;}
+.usecase-card .about-tool-link{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  align-self:flex-start;
+  gap:7px;
+  width:fit-content;
+  max-width:100%;
+  min-height:31px;
+  margin-top:auto;
+  padding:6px 10px;
+  border:1px solid var(--tool-link-border,#526b42);
+  border-radius:7px;
+  background:linear-gradient(135deg,var(--tool-link-bg,#1b291d),rgba(14,20,27,.88));
+  color:var(--tool-link,#c8f19d);
+  font:750 9.5px/1.25 var(--sans);
+  letter-spacing:.015em;
+  text-decoration:none;
+  box-shadow:inset 0 1px 0 #ffffff08,0 3px 10px #0002;
+  transition:transform .16s ease,border-color .16s ease,background .16s ease,box-shadow .16s ease,filter .16s ease;
+}
+.usecase-card .about-tool-link:hover{
+  transform:translateY(-1px);
+  border-color:var(--tool-link);
+  background:linear-gradient(135deg,var(--tool-link-bg),rgba(24,34,42,.96));
+  color:#f0f5ec;
+  box-shadow:inset 0 1px 0 #ffffff10,0 5px 14px #0004;
+}
+.usecase-card .about-tool-link:focus-visible{
+  outline:2px solid var(--tool-link);
+  outline-offset:3px;
+}
+.usecase-list{margin-bottom:13px;}
+
+/* Narrow scrollbar, scoped only to the independently scrolling Storage Intelligence card. */
+.storage-intelligence-panel{
+  scrollbar-width:thin;
+  scrollbar-color:#61794d #101720;
+  scrollbar-gutter:stable;
+}
+.storage-intelligence-panel::-webkit-scrollbar{width:7px;height:7px;}
+.storage-intelligence-panel::-webkit-scrollbar-track{
+  border:1px solid #202a35;
+  border-radius:10px;
+  background:#101720;
+}
+.storage-intelligence-panel::-webkit-scrollbar-thumb{
+  min-height:28px;
+  border:2px solid #101720;
+  border-radius:10px;
+  background:linear-gradient(180deg,#708b55,#465b3e);
+}
+.storage-intelligence-panel::-webkit-scrollbar-thumb:hover{
+  background:linear-gradient(180deg,#91b66a,#607d4a);
+}
+
+/* Storage Intelligence microtype is raised slightly for legibility; card geometry stays compact. */
+.storage-intelligence-heading p{font-size:9.5px;}
+.storage-intel-kicker{font-size:8px;}
+.storage-intelligence-total small{font-size:8.5px;}
+.storage-intel-quota>small{font-size:8px;}
+.storage-intel-section-title b{font-size:10px;}
+.storage-intel-section-title>span{font-size:8px;}
+.storage-intel-breakdown-label{font-size:9px;}
+.storage-intel-breakdown-label b{font-size:8.5px;}
+.storage-intel-cleanup-row b{font-size:9px;}
+.storage-intel-cleanup-row small{font-size:8px;}
+.storage-intel-cleanup-row strong em{font-size:8px;}
+.storage-intel-library-card small{font-size:8px;}
+.storage-intel-item-copy b{font-size:9px;}
+.storage-intel-item-copy small{font-size:8px;}
+.storage-intel-item-meta b{font-size:8.5px;}
+.storage-intel-item-meta small{font-size:8px;}
+.storage-intel-event-copy b{font-size:9px;}
+.storage-intel-event-copy small{font-size:8px;}
+.storage-intel-event-copy em{font-size:8px;}
+.storage-intel-placeholder{font-size:9px;}
+.storage-intel-footnote{font-size:8px;}
+.storage-intel-updated{font-size:8px;}
+
+@media(max-width:650px){
+  .usecase-card .about-tool-link{min-height:33px;font-size:10px;}
+  .storage-intelligence-panel{scrollbar-gutter:auto;}
+}
+
+
+/* --- Shared utility controls: refresh, pause/resume and cancel --- */
+.library-refresh,
+.storage-intelligence-refresh {
+  display:inline-grid;
+  place-items:center;
+  border:1px solid #354252;
+  border-radius:8px;
+  background:linear-gradient(145deg,#19222d,#121923);
+  color:#aab8c8;
+  box-shadow:inset 0 1px 0 #ffffff08,0 2px 7px #0003;
+  transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease,box-shadow .16s ease;
+}
+.library-refresh:hover:not(:disabled),
+.storage-intelligence-refresh:hover:not(:disabled) {
+  border-color:#789b55;
+  background:linear-gradient(145deg,#202d25,#17221d);
+  color:#c9f69a;
+  box-shadow:0 4px 12px #0004,0 0 0 1px #b8f36b12;
+  transform:translateY(-1px);
+}
+.library-refresh:focus-visible,
+.storage-intelligence-refresh:focus-visible,
+.control-buttons button:focus-visible,
+.ranker-cancel-button:focus-visible,
+#rulestripper-cancel:focus-visible,
+#minimizer-cancel:focus-visible {
+  outline:2px solid #b8f36b;
+  outline-offset:2px;
+}
+.library-refresh:disabled,
+.storage-intelligence-refresh:disabled {opacity:.42;cursor:not-allowed;transform:none;box-shadow:none}
+
+.control-buttons button {
+  min-height:34px;
+  height:auto;
+  padding:6px 7px;
+  border:1px solid #354252;
+  border-radius:8px;
+  background:linear-gradient(145deg,#1b2430,#141b25);
+  color:#b8c4d2;
+  font-weight:650;
+  transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease,box-shadow .16s ease;
+}
+.control-buttons button:not(:disabled):hover {
+  border-color:#789b55;
+  background:linear-gradient(145deg,#202d25,#17221d);
+  color:#d4efb4;
+  transform:translateY(-1px);
+  box-shadow:0 4px 12px #0004;
+}
+.control-buttons #stop-run,
+.ranker-cancel-button,
+#rulestripper-cancel,
+#minimizer-cancel {
+  border:1px solid #70464d;
+  border-radius:8px;
+  background:linear-gradient(145deg,#302129,#21191f);
+  color:#e7b7bc;
+  font-weight:700;
+  transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease,box-shadow .16s ease;
+}
+.control-buttons #stop-run:not(:disabled):hover,
+.ranker-cancel-button:not(:disabled):hover,
+#rulestripper-cancel:not(:disabled):hover,
+#minimizer-cancel:not(:disabled):hover {
+  border-color:#bd737c;
+  background:linear-gradient(145deg,#47282e,#302027);
+  color:#ffdadd;
+  transform:translateY(-1px);
+  box-shadow:0 4px 13px #0005,0 0 0 1px #ff797f12;
+}
+.control-buttons #stop-run:disabled,
+.ranker-cancel-button:disabled,
+#rulestripper-cancel:disabled,
+#minimizer-cancel:disabled {opacity:.38;cursor:not-allowed;transform:none;box-shadow:none}
+
+/* Keep the FREE TOOLCHAIN message compact so the application version stays visible. */
+.sidebar-bottom {padding-top:7px}
+.gpu-card {margin-bottom:12px}
+.sidebar-about-card {margin:7px 0 6px;padding:10px 11px}
+.sidebar-about-card p {margin-top:5px;line-height:1.45}
+.side-foot {line-height:1.55}
+@media (max-height:760px) and (min-width:651px) {
+  .sidebar {padding-top:17px;padding-bottom:12px}
+  .brand {padding-bottom:22px}
+  .side-label {padding-bottom:8px}
+  .nav-item {height:38px}
+  .sidebar-utility {margin-top:13px;padding-top:10px}
+  .gpu-card {padding:9px 10px;margin-bottom:8px}
+  .gpu-card p {margin:7px 0 3px}
+  .sidebar-about-card {padding:8px 10px;margin:5px 0 4px}
+  .sidebar-about-card p {font-size:9px}
+  .side-foot {font-size:8px;line-height:1.4}
+}
+
+
+/* Rule Minimizer: keep the free-form probe editor on the same deep surface as inputs. */
+.field textarea#minimizer-extra-probes {
+  display:block;
+  width:100%;
+  min-width:0;
+  min-height:76px;
+  padding:9px 10px;
+  border:1px solid #303a49;
+  border-radius:6px;
+  outline:none;
+  background:linear-gradient(150deg,#0c121a 0%,#0a1018 100%);
+  color:#dce4ef;
+  font:10px/1.55 var(--sans);
+  letter-spacing:.005em;
+  resize:vertical;
+  transition:border-color .16s ease,box-shadow .16s ease,background .16s ease;
+}
+.field textarea#minimizer-extra-probes::placeholder {
+  color:#596678;
+  opacity:1;
+}
+.field textarea#minimizer-extra-probes:focus {
+  border-color:#8dbb5c;
+  background:#0d141d;
+  box-shadow:0 0 0 2px #b8f36b13;
+}

@@ -18,6 +18,29 @@ def _isolated_run_storage(tmp_path, monkeypatch, status="idle"):
     return data, uploads, state
 
 
+def _write_dataset_manifest(folder, *, tool="rulest", mode="default", input_payloads=(b"base", b"target")):
+    import hashlib
+    import json
+
+    inputs = []
+    for slot, payload in enumerate(input_payloads, start=1):
+        inputs.append({
+            "slot": slot,
+            "name": f"input-{slot}.txt",
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        })
+    manifest = {
+        "schema_version": 1,
+        "tool": tool,
+        "mode": mode,
+        "created_at": 1_700_000_000,
+        "inputs": inputs,
+    }
+    manifest["dataset_fingerprint"] = app._dataset_fingerprint(tool, mode, inputs)
+    (folder / app.RUN_DATASET_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_run_storage_summary_counts_only_run_directories(tmp_path, monkeypatch):
     data, uploads, _ = _isolated_run_storage(tmp_path, monkeypatch)
     run_a = data / "abc123"
@@ -215,18 +238,32 @@ def test_scan_finds_empty_and_log_only_directories_but_preserves_outputs_and_upl
     assert (uploads / "input.txt").is_file()
 
 
-def test_scan_detects_exact_directory_duplicates_by_relative_path_and_sha256(tmp_path, monkeypatch):
+def test_scan_groups_repeated_dataset_runs_not_identical_output_folders(tmp_path, monkeypatch):
     data, uploads, state = _isolated_run_storage(tmp_path, monkeypatch)
     first = data / "run-first"
     second = data / "run-second"
-    different_layout = data / "run-other-layout"
-    for folder in (first, second, different_layout):
+    different_dataset = data / "run-different-input"
+    different_tool = data / "run-different-tool"
+    for folder in (first, second, different_dataset, different_tool):
         folder.mkdir()
-    for folder in (first, second):
-        (folder / "rules" ).mkdir()
-        (folder / "rules" / "output.rule").write_bytes(b"$1\n$2\n")
-        (folder / "engine.log").write_bytes(b"same engine log")
-    (different_layout / "output.rule").write_bytes(b"$1\n$2\n")
+
+    # The first two runs used the same input contents, but produced different outputs.
+    # Input names are deliberately not part of the identity.
+    (first / "engine.log").write_text("first attempt\n", encoding="utf-8")
+    (first / "result-a.rule").write_bytes(b"$1\n$2\n")
+    (second / "engine.log").write_text("second attempt\n", encoding="utf-8")
+    (second / "nested").mkdir()
+    (second / "nested" / "result-b.rule").write_bytes(b"different output\n")
+    _write_dataset_manifest(first)
+    _write_dataset_manifest(second)
+
+    # Identical-looking output is not enough when the source dataset differs.
+    (different_dataset / "result-a.rule").write_bytes(b"$1\n$2\n")
+    _write_dataset_manifest(different_dataset, input_payloads=(b"other base", b"target"))
+
+    # Identical inputs used by another tool are kept in a separate group.
+    (different_tool / "result-a.rule").write_bytes(b"$1\n$2\n")
+    _write_dataset_manifest(different_tool, tool="ranker", mode="rank")
     state["run_dir"] = str(second)
 
     scan = app.scan_run_storage_cleanup_candidates()
@@ -234,11 +271,14 @@ def test_scan_detects_exact_directory_duplicates_by_relative_path_and_sha256(tmp
     assert scan["duplicate_group_count"] == 1
     assert scan["duplicate_directories"] == 1
     group = scan["duplicate_groups"][0]
-    assert group["keep"] == "run-second"  # active STATE.run_dir is preserved
+    assert group["tool"] == "rulest"
+    assert group["mode"] == "default"
+    assert group["keep"] == "run-second"  # the current run is always preserved
     assert group["duplicates"] == ["run-first"]
-    assert group["files"] == 2
-    assert group["reclaimable_bytes"] == (len(b"$1\n$2\n") + len(b"same engine log"))
-    assert (data / "run-other-layout").is_dir()
+    assert group["reclaimable_bytes"] > len(b"$1\n$2\n")
+    assert group["inputs"]
+    assert (data / "run-different-input").is_dir()
+    assert (data / "run-different-tool").is_dir()
     assert uploads.is_dir()
 
 
@@ -267,31 +307,38 @@ def test_delete_log_only_runs_rechecks_candidates_and_preserves_non_log_files(tm
     assert state["run_dir"] is None and state["outputs"] == []
 
 
-def test_delete_duplicates_keeps_one_copy_and_only_removes_exact_matches(tmp_path, monkeypatch):
-    data, uploads, _ = _isolated_run_storage(tmp_path, monkeypatch)
-    folders = [data / name for name in ("copy-a", "copy-b", "copy-c")]
-    for folder in folders:
+def test_delete_repeated_dataset_runs_keeps_one_and_preserves_other_datasets(tmp_path, monkeypatch):
+    data, uploads, state = _isolated_run_storage(tmp_path, monkeypatch)
+    folders = [data / name for name in ("run-a", "run-b", "run-c")]
+    for index, folder in enumerate(folders):
         folder.mkdir()
-        (folder / "output.txt").write_bytes(b"identical output\n")
-        (folder / "nested").mkdir()
-        (folder / "nested" / "meta.bin").write_bytes(b"\x00\x01\x02")
-    (folders[2] / "output.txt").write_bytes(b"different output\n")
+        (folder / "engine.log").write_text(f"attempt {index}\n", encoding="utf-8")
+        (folder / f"output-{index}.txt").write_text(f"different result {index}\n", encoding="utf-8")
+        _write_dataset_manifest(folder)
+
+    unrelated = data / "unrelated-run"
+    unrelated.mkdir()
+    (unrelated / "output-0.txt").write_text("different result 0\n", encoding="utf-8")
+    _write_dataset_manifest(unrelated, input_payloads=(b"different base", b"target"))
     (uploads / "input.txt").write_text("upload", encoding="utf-8")
 
+    state["run_dir"] = str(folders[1])
     scan = app.scan_run_storage_cleanup_candidates()
     assert scan["duplicate_group_count"] == 1
-    assert scan["duplicate_directories"] == 1
+    assert scan["duplicate_directories"] == 2
     keep_name = scan["duplicate_groups"][0]["keep"]
-    duplicate_name = scan["duplicate_groups"][0]["duplicates"][0]
+    duplicate_names = set(scan["duplicate_groups"][0]["duplicates"])
+    assert keep_name == "run-b"
+    assert duplicate_names == {"run-a", "run-c"}
 
     result = app.delete_duplicate_run_directories()
 
-    assert result["deleted_directories"] == 1
-    assert result["deleted_names"] == [duplicate_name]
+    assert result["deleted_directories"] == 2
+    assert set(result["deleted_names"]) == duplicate_names
     assert result["retained_directories"] == [keep_name]
     assert (data / keep_name).is_dir()
-    assert not (data / duplicate_name).exists()
-    assert (data / "copy-c").is_dir()  # differing checksum was not touched
+    assert all(not (data / name).exists() for name in duplicate_names)
+    assert (data / "unrelated-run").is_dir()
     assert (uploads / "input.txt").is_file()
 
 
@@ -396,7 +443,9 @@ def test_targeted_run_storage_http_endpoints_require_authentication_and_csrf(tmp
         duplicate_a.mkdir()
         duplicate_b.mkdir()
         (duplicate_a / "result.rule").write_bytes(b"$1\n$2\n")
-        (duplicate_b / "result.rule").write_bytes(b"$1\n$2\n")
+        (duplicate_b / "result.rule").write_bytes(b"different result\n")
+        _write_dataset_manifest(duplicate_a)
+        _write_dataset_manifest(duplicate_b)
         response, scan = request_json("/api/run-storage/scan", {}, cookie=cookie, csrf=csrf)
         assert response.code == 200 and scan["duplicate_directories"] == 1
         response, duplicate_result = request_json("/api/run-storage/delete-duplicates", {}, cookie=cookie, csrf=csrf)
@@ -532,3 +581,70 @@ def test_storage_intelligence_ui_has_dashboard_sections_and_refresh_route():
     assert ".storage-intel-quota" in css
     assert ".storage-workspace-grid" in css
     assert ".storage-intelligence-panel" in css
+
+
+def test_minimizer_additional_probe_words_uses_the_dark_ruleops_input_surface():
+    css = (Path(app.__file__).resolve().parent / "web" / "styles.css").read_text(encoding="utf-8")
+    assert ".field textarea#minimizer-extra-probes" in css
+    assert "background:linear-gradient(150deg,#0c121a 0%,#0a1018 100%)" in css
+    assert ".field textarea#minimizer-extra-probes:focus" in css
+
+
+def test_run_dataset_manifest_records_ordered_input_content_fingerprints(tmp_path, monkeypatch):
+    base_file = tmp_path / "base.txt"
+    target_file = tmp_path / "target.txt"
+    base_file.write_bytes(b"base dataset\n")
+    target_file.write_bytes(b"target dataset\n")
+    upload_meta = dict(app.UPLOADS_META)
+    upload_meta.update({
+        "base": {"path": base_file, "name": "base.txt"},
+        "target": {"path": target_file, "name": "target.txt"},
+        "seed": None,
+    })
+    monkeypatch.setattr(app, "UPLOADS_META", upload_meta)
+    run_dir = tmp_path / "run-manifest"
+    run_dir.mkdir()
+
+    manifest = app._write_run_dataset_manifest(run_dir, "rulest", "default")
+
+    assert manifest is not None
+    assert manifest["tool"] == "rulest"
+    assert manifest["mode"] == "default"
+    assert [item["slot"] for item in manifest["inputs"]] == [1, 2]
+    assert [item["name"] for item in manifest["inputs"]] == ["base.txt", "target.txt"]
+    assert app._read_run_dataset_manifest(run_dir)["dataset_fingerprint"] == manifest["dataset_fingerprint"]
+
+    # Tampering with the stored fingerprint makes the manifest ineligible for cleanup.
+    manifest["dataset_fingerprint"] = "0" * 64
+    (run_dir / app.RUN_DATASET_MANIFEST).write_text(__import__("json").dumps(manifest), encoding="utf-8")
+    assert app._read_run_dataset_manifest(run_dir) is None
+
+
+def test_run_dataset_fingerprint_changes_when_tool_mode_or_input_order_changes():
+    import hashlib
+
+    def record(slot, value):
+        return {"slot": slot, "name": f"input-{slot}.txt", "size": len(value), "sha256": hashlib.sha256(value).hexdigest()}
+
+    first = [record(1, b"base"), record(2, b"target")]
+    swapped = [record(1, b"target"), record(2, b"base")]
+    expected = app._dataset_fingerprint("rulest", "default", first)
+
+    assert app._dataset_fingerprint("rulest", "default", swapped) != expected
+    assert app._dataset_fingerprint("ranker", "default", first) != expected
+    assert app._dataset_fingerprint("rulest", "alternate", first) != expected
+    # Display names do not alter identity when the actual ordered contents match.
+    renamed = [dict(item, name=f"renamed-{item['slot']}") for item in first]
+    assert app._dataset_fingerprint("rulest", "default", renamed) == expected
+
+
+def test_storage_cleanup_controls_and_probe_editor_follow_ruleops_theme():
+    root = Path(app.__file__).resolve().parent
+    css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    assert ".control-buttons #stop-run" in css
+    assert ".ranker-cancel-button" in css
+    assert "#rulestripper-cancel" in css and "#minimizer-cancel" in css
+    assert ".library-refresh" in css and ".storage-intelligence-refresh" in css
+    assert ".field textarea#minimizer-extra-probes" in css
+    assert "Find empty and repeated runs" in html

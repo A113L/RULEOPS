@@ -700,11 +700,11 @@ function renderStorageIntelligence(data) {
       empty: 'Run the folder scan to find eligible items.',
     },
     {
-      label: 'Exact duplicate run folders',
+      label: 'Repeated dataset runs',
       count: data.cleanup?.duplicate_run_count,
       bytes: data.cleanup?.duplicate_run_bytes,
       scanned: data.cleanup?.run_scanned_at,
-      empty: 'Run the folder scan to verify duplicate folders.',
+      empty: 'Scan to find repeated runs using the same input datasets.',
     },
     {
       label: 'Duplicate library / work files',
@@ -960,19 +960,23 @@ function renderRunStorageScan(data) {
   if (duplicateGroups.length) {
     duplicateGroups.forEach((group, index) => {
       const copies = group.duplicates || [];
+      const toolNames = { rulest: 'RULEST', ranker: 'Rule Ranker', concentrator: 'Concentrator', rulestripper: 'Rulestripper', minimizer: 'Rule Minimizer' };
+      const inputNames = (group.inputs || []).map((item) => item.name).filter(Boolean);
+      const inputSummary = inputNames.length ? inputNames.join(' + ') : 'Recorded input datasets';
+      const sourceNote = group.manifest_source === 'inferred from saved command log' ? ' · inferred from saved command log' : '';
       appendStorageCandidateRow(
         duplicateList,
-        `Group ${index + 1} · keep ${group.keep}`,
-        `Delete: ${copies.join(', ')} · ${Number(group.files || 0).toLocaleString()} file(s) per copy · ${formatStorageBytes(group.reclaimable_bytes)} reclaimable`
+        `${toolNames[group.tool] || group.tool} · ${group.mode} · keep ${group.keep}`,
+        `Same input data: ${inputSummary} · remove: ${copies.join(', ')} · ${formatStorageBytes(group.reclaimable_bytes)} recoverable${sourceNote}`
       );
     });
   } else {
     const empty = document.createElement('span'); empty.className = 'storage-candidate-empty';
-    empty.textContent = 'No exact duplicate folders found.'; duplicateList.appendChild(empty);
+    empty.textContent = 'No repeated runs with matching input datasets were identified.'; duplicateList.appendChild(empty);
   }
 
   const skipped = Number(data.skipped_unsafe_directories || 0);
-  const scanText = `Scanned ${Number(data.scanned_directories || 0).toLocaleString()} run folder(s). Found ${Number(data.log_only_count || 0).toLocaleString()} empty/log-only folder(s) and ${duplicateCount.toLocaleString()} duplicate copy/copies across ${Number(data.duplicate_group_count || 0).toLocaleString()} group(s).`;
+  const scanText = `Scanned ${Number(data.scanned_directories || 0).toLocaleString()} run folder(s). Found ${Number(data.log_only_count || 0).toLocaleString()} empty/log-only folder(s) and ${duplicateCount.toLocaleString()} older run(s) across ${Number(data.duplicate_group_count || 0).toLocaleString()} repeated-dataset group(s). Groups match tool, workflow and ordered input contents; output files and run settings may differ.`;
   summary.textContent = skipped ? `${scanText} Skipped ${skipped.toLocaleString()} folder(s) containing links, special files or unreadable/changing content.` : scanText;
   results.hidden = false;
   const active = currentStatus === 'running' || currentStatus === 'stopping';
@@ -984,8 +988,8 @@ async function scanRunStorage() {
   const feedback = $('storage-scan-feedback');
   if (!button || button.disabled) return;
   button.disabled = true;
-  button.textContent = 'Hashing run files…';
-  if (feedback) feedback.textContent = 'Scanning run folders and calculating SHA-256 checksums. Large runs may take a while.';
+  button.textContent = 'Matching input datasets…';
+  if (feedback) feedback.textContent = 'Checking recorded input fingerprints and inferring older runs from saved command logs where possible. Large input files may take a while to hash.';
   $('storage-scan-results').hidden = true;
   try {
     const result = await apiPost('/api/run-storage/scan', {});
@@ -1031,21 +1035,21 @@ async function deleteDuplicateRunDirectories() {
   const reclaimable = formatStorageBytes(lastRunStorageScan?.duplicate_reclaimable_bytes || 0);
   const button = $('delete-duplicate-directories');
   if (!button || button.disabled || !copies) return;
-  if (!window.confirm(`Delete ${copies} exact duplicate run folder(s) from ${groups} group(s)? One copy per group will be retained (the current run folder when applicable; otherwise the newest copy). Estimated space reclaimed: ${reclaimable}.`)) return;
+  if (!window.confirm(`Delete ${copies} older run folder(s) from ${groups} repeated-dataset group(s)? Each group uses the same tool, workflow and ordered input file contents. Output files and run settings may differ, so the removed runs may contain different results. RULEOPS will keep the currently selected run when it belongs to a group; otherwise it keeps the most recently modified run. Estimated space reclaimed: ${reclaimable}. This cannot be undone.`)) return;
   button.disabled = true;
-  $('storage-scan-feedback').textContent = 'Rechecking checksums and deleting redundant copies…';
+  $('storage-scan-feedback').textContent = 'Rechecking input dataset fingerprints and removing selected older runs…';
   try {
     const result = await apiPost('/api/run-storage/delete-duplicates', {});
     lastRunStorageScan = null;
     $('storage-scan-results').hidden = true;
     $('storage-scan-summary').textContent = 'Run a new scan to review remaining cleanup candidates.';
-    $('storage-scan-feedback').textContent = `Cleanup complete. Deleted ${Number(result.deleted_directories || 0).toLocaleString()} duplicate folder(s); retained ${Number((result.retained_directories || []).length).toLocaleString()} representative folder(s). ${result.failures?.length ? `Some folders were skipped: ${result.failures.join('; ')}` : ''}`;
-    toast(`Deleted ${result.deleted_directories || 0} duplicate folder(s).`);
+    $('storage-scan-feedback').textContent = `Cleanup complete. Deleted ${Number(result.deleted_directories || 0).toLocaleString()} older repeated-dataset run folder(s); retained ${Number((result.retained_directories || []).length).toLocaleString()} representative folder(s). ${result.failures?.length ? `Some folders were skipped: ${result.failures.join('; ')}` : ''}`;
+    toast(`Deleted ${result.deleted_directories || 0} older repeated-dataset run folder(s).`);
     await pollStatus();
     await loadRunStorageSummary();
     await loadStorageIntelligence(true);
   } catch (error) {
-    $('storage-scan-feedback').textContent = `Could not delete duplicate folders: ${error.message}`;
+    $('storage-scan-feedback').textContent = `Could not remove older repeated-dataset runs: ${error.message}`;
     toast(error.message, true);
     await loadRunStorageSummary();
   }
@@ -1644,7 +1648,7 @@ function setActiveTool(tool, scroll = false) {
   if (systemView) systemView.hidden = true;
 
   const activeToolLabels = {
-    rulest: 'Run workspace',
+    rulest: 'RULEST',
     ranker: 'Rule Ranker',
     concentrator: 'Concentrator',
     rulestripper: 'Rulestripper',
@@ -2037,7 +2041,7 @@ function initializeApp() {
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(href)) setActiveTool('rulest');
 
     const breadcrumbLabels = {
-      '#workspace': 'Run workspace', '#tuning': 'Engine tuning',
+      '#workspace': 'RULEST', '#tuning': 'Engine tuning',
       '#gpu-diagnostic': 'GPU diagnostics', '#ranker': 'Rule Ranker',
       '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
@@ -2127,11 +2131,11 @@ function initializeApp() {
       button.setAttribute('aria-current', 'page');
     }
     const labels = {
-      '#workspace': 'Run workspace', '#tuning': 'Engine tuning', '#gpu-diagnostic': 'GPU diagnostics',
+      '#workspace': 'RULEST', '#tuning': 'Engine tuning', '#gpu-diagnostic': 'GPU diagnostics',
       '#ranker': 'Rule Ranker', '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
     const breadcrumb = document.querySelector('.breadcrumb strong');
-    if (breadcrumb) breadcrumb.textContent = labels[wanted] || (activeTool === 'ranker' ? 'Rule Ranker' : activeTool === 'concentrator' ? 'Concentrator' : activeTool === 'rulestripper' ? 'Rulestripper' : activeTool === 'minimizer' ? 'Rule Minimizer' : 'Run workspace');
+    if (breadcrumb) breadcrumb.textContent = labels[wanted] || (activeTool === 'ranker' ? 'Rule Ranker' : activeTool === 'concentrator' ? 'Concentrator' : activeTool === 'rulestripper' ? 'Rulestripper' : activeTool === 'minimizer' ? 'Rule Minimizer' : 'RULEST');
   };
   const handleNavigationState = () => {
     const hash = window.location.hash;

@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 DATA = ROOT / "runs"
 UPLOADS = DATA / "uploads"
+RUN_DATASET_MANIFEST = ".ruleops-run.json"
 AUTH_FILE = ROOT / "auth.json"
 DATA.mkdir(exist_ok=True)
 UPLOADS.mkdir(exist_ok=True)
@@ -772,7 +773,7 @@ def search_library_assets(query: str, limit: int = 300) -> dict:
                     if not (current_path / name).is_symlink()
                 )
                 for filename in sorted(file_names, key=str.casefold):
-                    if needle not in filename.casefold():
+                    if filename == RUN_DATASET_MANIFEST or needle not in filename.casefold():
                         continue
                     candidate = current_path / filename
                     try:
@@ -1087,6 +1088,8 @@ def _scan_library_duplicate_records() -> tuple[list[dict], list[dict]]:
                 directory_names[:] = safe_directories
 
                 for filename in sorted(file_names, key=str.casefold):
+                    if filename == RUN_DATASET_MANIFEST:
+                        continue
                     candidate = current_path / filename
                     try:
                         relative_path = candidate.relative_to(run_root).as_posix()
@@ -1453,6 +1456,8 @@ def upload_meta_for_library_asset(category: str, asset_id: str) -> dict:
     return {
         "path": path, "name": _library_asset_display_name(path.name), "size": stat.st_size,
         "library": True, "asset_id": path.name, "category": category,
+        "sha256": _library_asset_sha256(category, path, stat),
+        "file_signature": _library_file_signature(stat),
     }
 
 
@@ -1616,87 +1621,349 @@ def _assert_run_storage_cleanup_idle() -> None:
         raise RuntimeError("Wait for active uploads to finish before scanning or deleting run folders.")
 
 
-def _run_directory_snapshot(directory: Path) -> dict | None:
-    """Hash regular files without following symlinks; reject unstable/unsafe trees.
+def _run_input_metadata(tool: str, mode: str) -> list[dict]:
+    """Return selected input slots in command-line order for run identity."""
+    if tool == "rulest":
+        fields = ["base", "target", "seed"]
+    elif tool == "ranker" and mode == "rank":
+        fields = ["ranker_wordlist", "ranker_rules", "ranker_cracked"]
+    elif tool == "ranker" and mode == "optimize":
+        source = "ranker_source_csv" if UPLOADS_META.get("ranker_source_csv") else "ranker_source_rules"
+        fields = [source, "ranker_wordlist", "ranker_cracked"]
+    elif tool == "ranker" and mode == "analyze":
+        fields = ["ranker_analysis_csv"]
+    elif tool == "concentrator":
+        fields = ["concentrator_files"]
+    elif tool == "rulestripper":
+        fields = ["rulestripper_base", "rulestripper_target"]
+    elif tool == "minimizer":
+        fields = ["minimizer_rules", "minimizer_probe"]
+    else:
+        return []
 
-    Relative paths are part of the signature, so a duplicate has the same file
-    layout and exact file contents (SHA-256), not merely the same total size.
-    """
-    records = []
-    total_bytes = 0
-    latest_mtime_ns = 0
+    selected = []
+    for field in fields:
+        value = UPLOADS_META.get(field)
+        if field == "concentrator_files":
+            selected.extend(item for item in (value or []) if isinstance(item, dict))
+        elif isinstance(value, dict):
+            selected.append(value)
+    return selected
+
+
+def _stable_run_input_record(meta: dict, slot: int) -> dict:
+    """Build a content identity for one selected dataset without loading it into RAM."""
+    raw_path = meta.get("path")
+    if not raw_path:
+        raise ValueError("A selected run input has no file path.")
+    path = Path(raw_path)
+    before = os.lstat(str(path))
+    if stat_module.S_ISLNK(before.st_mode) or not stat_module.S_ISREG(before.st_mode):
+        raise ValueError("A selected run input is not a regular, non-symlink file.")
+    before_signature = _library_file_signature(before)
+
+    digest = meta.get("sha256")
+    cached_signature = meta.get("file_signature")
+    if not digest or tuple(cached_signature or ()) != before_signature:
+        if meta.get("library") and meta.get("category") in {"wordlists", "rules"}:
+            digest = _library_asset_sha256(str(meta["category"]), path, before)
+        else:
+            digest = _sha256_file(path)
+
+    after = os.lstat(str(path))
+    if _library_file_signature(after) != before_signature:
+        raise ValueError("A selected run input changed while its dataset identity was being recorded.")
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("A selected run input did not produce a valid SHA-256 checksum.")
+    return {
+        "slot": int(slot),
+        "name": safe_name(meta.get("name") or path.name, "input"),
+        "size": int(before.st_size),
+        "sha256": digest,
+    }
+
+
+def _dataset_fingerprint(tool: str, mode: str, inputs: list[dict]) -> str:
+    """Fingerprint the tool/workflow and ordered input contents, excluding run options."""
+    identity = {
+        "tool": str(tool),
+        "mode": str(mode),
+        "inputs": [
+            {"slot": int(item["slot"]), "size": int(item["size"]), "sha256": str(item["sha256"])}
+            for item in inputs
+        ],
+    }
+    payload = json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _write_run_dataset_manifest(run_dir: Path, tool: str, mode: str) -> dict | None:
+    """Persist run inputs at launch so future scans can find repeated dataset runs."""
+    selected = _run_input_metadata(tool, mode)
+    if not selected:
+        return None
+    try:
+        inputs = [_stable_run_input_record(item, index + 1) for index, item in enumerate(selected)]
+        manifest = {
+            "schema_version": 1,
+            "tool": str(tool),
+            "mode": str(mode),
+            "created_at": time.time(),
+            "inputs": inputs,
+        }
+        manifest["dataset_fingerprint"] = _dataset_fingerprint(tool, mode, inputs)
+        target = run_dir / RUN_DATASET_MANIFEST
+        temporary = run_dir / (RUN_DATASET_MANIFEST + ".tmp")
+        temporary.write_text(json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+        return manifest
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+        try:
+            (run_dir / (RUN_DATASET_MANIFEST + ".tmp")).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def _validated_run_dataset_manifest(manifest: object) -> dict | None:
+    """Validate a manifest and recompute its fingerprint rather than trusting its field."""
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        return None
+    tool = manifest.get("tool")
+    mode = manifest.get("mode")
+    inputs = manifest.get("inputs")
+    if tool not in {"rulest", "ranker", "concentrator", "rulestripper", "minimizer"}:
+        return None
+    if not isinstance(mode, str) or not mode or len(mode) > 40:
+        return None
+    if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_CONCENTRATOR_FILES:
+        return None
+    normalized = []
+    for expected_slot, item in enumerate(inputs, start=1):
+        if not isinstance(item, dict):
+            return None
+        try:
+            slot = int(item.get("slot"))
+            size = int(item.get("size"))
+            digest = str(item.get("sha256", ""))
+            name = str(item.get("name", "input"))
+        except (TypeError, ValueError):
+            return None
+        if slot != expected_slot or size < 0 or not re.fullmatch(r"[a-f0-9]{64}", digest):
+            return None
+        normalized.append({"slot": slot, "size": size, "sha256": digest, "name": name[:220]})
+    fingerprint = _dataset_fingerprint(tool, mode, normalized)
+    stored_fingerprint = manifest.get("dataset_fingerprint")
+    if stored_fingerprint and not hmac.compare_digest(str(stored_fingerprint), fingerprint):
+        return None
+    return {
+        "tool": tool,
+        "mode": mode,
+        "inputs": normalized,
+        "dataset_fingerprint": fingerprint,
+        "created_at": float(manifest.get("created_at") or 0),
+        "source": "recorded",
+    }
+
+
+def _read_run_dataset_manifest(directory: Path) -> dict | None:
+    """Read a small, regular manifest from a direct run folder without following links."""
+    path = directory / RUN_DATASET_MANIFEST
+    try:
+        before = os.lstat(str(path))
+        if stat_module.S_ISLNK(before.st_mode) or not stat_module.S_ISREG(before.st_mode) or before.st_size > 128 * 1024:
+            return None
+        with path.open("r", encoding="utf-8") as stream:
+            raw = json.load(stream)
+        after = os.lstat(str(path))
+        if _library_file_signature(before) != _library_file_signature(after):
+            return None
+        return _validated_run_dataset_manifest(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _legacy_run_dataset_manifest(directory: Path) -> dict | None:
+    """Infer older run inputs from their saved web command log where all inputs remain available."""
+    log_path = directory / "engine.log"
+    try:
+        info = os.lstat(str(log_path))
+        if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
+            return None
+        with log_path.open("rb") as stream:
+            if info.st_size > 4 * 1024 * 1024:
+                stream.seek(-4 * 1024 * 1024, os.SEEK_END)
+            log_text = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    tool = mode = None
+    if "Starting rulest engine" in log_text or "run_rulest.py" in log_text:
+        tool, mode = "rulest", "default"
+    else:
+        ranker_match = re.search(r"Starting Rule Ranker workflow:\s*([a-z]+)", log_text, re.IGNORECASE)
+        concentrator_match = re.search(r"Starting Concentrator workflow:\s*([a-z]+)", log_text, re.IGNORECASE)
+        if ranker_match:
+            tool, mode = "ranker", ranker_match.group(1).lower()
+        elif concentrator_match:
+            tool, mode = "concentrator", concentrator_match.group(1).lower()
+        elif "Starting Rulestripper" in log_text or "run_rulestripper.py" in log_text:
+            tool, mode = "rulestripper", "extract"
+        elif "Starting Rule Minimizer" in log_text or "minimizer.py" in log_text:
+            tool, mode = "minimizer", "minimize"
+    if not tool or not mode:
+        return None
+
+    command_lines = []
+    for line in log_text.splitlines():
+        marker = line.find("[WEB]")
+        if marker < 0:
+            continue
+        payload = line[marker + len("[WEB]"):].strip()
+        if tool == "rulest" and "run_rulest.py" in payload and "--output" in payload:
+            command_lines.append(payload)
+        elif tool == "ranker" and any(flag in payload for flag in ("--wordlist", "--ranking-csv", "--rules-file", "--input")):
+            command_lines.append(payload)
+        elif tool == "concentrator" and "-ob" in payload:
+            command_lines.append(payload)
+        elif tool == "rulestripper" and "run_rulestripper.py" in payload and "--output" in payload:
+            command_lines.append(payload)
+        elif tool == "minimizer" and "minimizer.py" in payload and "-o" in payload:
+            command_lines.append(payload)
+    if not command_lines:
+        return None
+    command = command_lines[-1]
+
+    candidates = []
+    for category in ("wordlists", "rules"):
+        try:
+            folder = library_category_dir(category)
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+            for candidate in folder.iterdir():
+                if not _safe_library_filename(candidate.name) or _is_library_derived_cache(candidate.name):
+                    continue
+                metadata = os.lstat(str(candidate))
+                if stat_module.S_ISREG(metadata.st_mode) and not stat_module.S_ISLNK(metadata.st_mode):
+                    candidates.append({"path": candidate.resolve(strict=True), "name": _library_asset_display_name(candidate.name),
+                                       "size": metadata.st_size, "library": True, "category": category})
+        except OSError:
+            continue
+    try:
+        for candidate in UPLOADS.iterdir():
+            metadata = os.lstat(str(candidate))
+            if stat_module.S_ISREG(metadata.st_mode) and not stat_module.S_ISLNK(metadata.st_mode):
+                candidates.append({"path": candidate.resolve(strict=True), "name": candidate.name,
+                                   "size": metadata.st_size, "library": False})
+    except OSError:
+        pass
+
+    hits = []
+    seen_paths = set()
+    for candidate in candidates:
+        path_text = str(candidate["path"])
+        position = command.find(path_text)
+        if position < 0 or path_text in seen_paths:
+            continue
+        seen_paths.add(path_text)
+        candidate["_position"] = position
+        hits.append(candidate)
+    hits.sort(key=lambda item: (item["_position"], -len(str(item["path"]))))
+
+    expected = {
+        ("rulest", "default"): (2, 3),
+        ("ranker", "rank"): (3, 3),
+        ("ranker", "optimize"): (3, 3),
+        ("ranker", "analyze"): (1, 1),
+        ("rulestripper", "extract"): (2, 2),
+        ("minimizer", "minimize"): (1, 2),
+        ("concentrator", mode): (1, MAX_CONCENTRATOR_FILES),
+    }.get((tool, mode))
+    if expected is None or not expected[0] <= len(hits) <= expected[1]:
+        return None
+
+    inputs = []
+    try:
+        for index, meta in enumerate(hits, start=1):
+            inputs.append(_stable_run_input_record(meta, index))
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        return None
+    return {
+        "tool": tool,
+        "mode": mode,
+        "inputs": inputs,
+        "dataset_fingerprint": _dataset_fingerprint(tool, mode, inputs),
+        "created_at": 0.0,
+        "source": "inferred from saved command log",
+    }
+
+
+def _run_directory_metadata(directory: Path) -> dict | None:
+    """Inspect a run folder without hashing output data; reject links/special files."""
     try:
         if directory.is_symlink() or not directory.is_dir():
             return None
+        directory_stat = directory.lstat()
     except OSError:
         return None
+
+    file_count = 0
+    total_bytes = 0
+    latest_mtime_ns = int(getattr(directory_stat, "st_mtime_ns", directory_stat.st_mtime * 1_000_000_000))
+    log_files = 0
+    visible_files = []
+    snapshot_records = []
 
     def raise_walk_error(error):
         raise error
 
     try:
-        for root, dir_names, file_names in os.walk(
-            directory, topdown=True, followlinks=False, onerror=raise_walk_error
-        ):
+        for root, dir_names, file_names in os.walk(directory, topdown=True, followlinks=False, onerror=raise_walk_error):
             root_path = Path(root)
             safe_dir_names = []
-            for name in sorted(dir_names):
+            for name in sorted(dir_names, key=str.casefold):
                 child = root_path / name
-                info = child.lstat()
-                if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISDIR(info.st_mode):
+                child_stat = child.lstat()
+                if stat_module.S_ISLNK(child_stat.st_mode) or not stat_module.S_ISDIR(child_stat.st_mode):
                     return None
                 safe_dir_names.append(name)
             dir_names[:] = safe_dir_names
-
-            for name in sorted(file_names):
-                file_path = root_path / name
-                before = file_path.lstat()
-                if stat_module.S_ISLNK(before.st_mode) or not stat_module.S_ISREG(before.st_mode):
+            for name in sorted(file_names, key=str.casefold):
+                child = root_path / name
+                child_stat = child.lstat()
+                if stat_module.S_ISLNK(child_stat.st_mode) or not stat_module.S_ISREG(child_stat.st_mode):
                     return None
-
-                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-                descriptor = os.open(file_path, flags)
-                digest = hashlib.sha256()
-                size_read = 0
-                with os.fdopen(descriptor, "rb") as stream:
-                    opened = os.fstat(stream.fileno())
-                    if (not stat_module.S_ISREG(opened.st_mode)
-                            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
-                        return None
-                    while True:
-                        chunk = stream.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        digest.update(chunk)
-                        size_read += len(chunk)
-                    after_open = os.fstat(stream.fileno())
-
-                after_path = file_path.lstat()
-                stable_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                final_identity = (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns)
-                opened_identity = (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns)
-                if (stable_identity != final_identity or stable_identity != opened_identity
-                        or size_read != before.st_size):
-                    return None
-
-                records.append({
-                    "path": file_path.relative_to(directory).as_posix(),
-                    "size": before.st_size,
-                    "sha256": digest.hexdigest(),
+                file_count += 1
+                total_bytes += int(child_stat.st_size)
+                child_mtime_ns = int(getattr(child_stat, "st_mtime_ns", child_stat.st_mtime * 1_000_000_000))
+                latest_mtime_ns = max(latest_mtime_ns, child_mtime_ns)
+                relative = child.relative_to(directory).as_posix()
+                snapshot_records.append({
+                    "path": relative,
+                    "size": int(child_stat.st_size),
+                    "mtime_ns": child_mtime_ns,
+                    "mode": int(child_stat.st_mode),
                 })
-                total_bytes += before.st_size
-                latest_mtime_ns = max(latest_mtime_ns, before.st_mtime_ns)
+                if relative == RUN_DATASET_MANIFEST or name == "control.txt":
+                    continue
+                visible_files.append(relative)
+                if Path(name).suffix.lower() == ".log":
+                    log_files += 1
     except (OSError, ValueError):
         return None
 
-    records.sort(key=lambda item: item["path"])
-    signature_data = json.dumps(records, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    empty = not visible_files
+    log_only = empty or log_files == len(visible_files)
     return {
-        "records": records,
-        "files": len(records),
+        "files": len(visible_files),
+        "physical_files": file_count,
         "bytes": total_bytes,
+        "log_files": log_files,
+        "empty": empty,
+        "log_only": log_only,
+        "has_non_log_outputs": bool(visible_files) and log_files < len(visible_files),
         "latest_mtime_ns": latest_mtime_ns,
-        "fingerprint": hashlib.sha256(signature_data).hexdigest(),
+        "snapshot_records": snapshot_records,
     }
 
 
@@ -1708,8 +1975,13 @@ def _is_direct_run_directory(directory: Path) -> bool:
         return False
 
 
+def _run_dataset_manifest_for_directory(directory: Path) -> dict | None:
+    """Prefer a recorded fingerprint; infer older runs only from a saved web command."""
+    return _read_run_dataset_manifest(directory) or _legacy_run_dataset_manifest(directory)
+
+
 def _scan_run_storage_candidates_unlocked() -> dict:
-    """Collect empty/log-only directories and exact-content duplicate groups."""
+    """Find empty/log-only folders and repeated runs of the same tool input datasets."""
     log_only = []
     grouped = {}
     skipped_unsafe = 0
@@ -1723,35 +1995,42 @@ def _scan_run_storage_candidates_unlocked() -> dict:
 
     for directory in _iter_run_directories():
         scanned += 1
-        snapshot = _run_directory_snapshot(directory)
-        if snapshot is None:
+        metadata = _run_directory_metadata(directory)
+        if metadata is None:
             skipped_unsafe += 1
             continue
 
-        records = snapshot["records"]
-        log_files = sum(1 for item in records if Path(item["path"]).suffix.lower() == ".log")
-        if log_files == len(records):
+        if metadata["log_only"]:
             log_only.append({
                 "name": directory.name,
-                "files": snapshot["files"],
-                "log_files": log_files,
-                "bytes": snapshot["bytes"],
-                "empty": snapshot["files"] == 0,
+                "files": metadata["files"],
+                "log_files": metadata["log_files"],
+                "bytes": metadata["bytes"],
+                "empty": metadata["empty"],
+                "snapshot_records": metadata["snapshot_records"],
             })
 
-        # Empty folders are cleanup candidates, but not duplicate runs: an empty
-        # signature carries no useful identity and would collapse unrelated jobs.
-        if snapshot["files"] == 0:
+        # Log-only or empty attempts are handled by the separate cleanup action.
+        if not metadata["has_non_log_outputs"]:
             continue
-        grouped.setdefault(snapshot["fingerprint"], []).append({
+
+        manifest = _run_dataset_manifest_for_directory(directory)
+        if manifest is None:
+            continue
+        fingerprint = manifest["dataset_fingerprint"]
+        grouped.setdefault(fingerprint, []).append({
             "name": directory.name,
-            "files": snapshot["files"],
-            "bytes": snapshot["bytes"],
-            "latest_mtime_ns": snapshot["latest_mtime_ns"],
             "path": directory,
+            "tool": manifest["tool"],
+            "mode": manifest["mode"],
+            "inputs": manifest["inputs"],
+            "manifest_source": manifest["source"],
+            "files": metadata["files"],
+            "bytes": metadata["bytes"],
+            "latest_mtime_ns": metadata["latest_mtime_ns"],
         })
 
-    duplicate_groups = []
+    repeated_groups = []
     for fingerprint, entries in grouped.items():
         if len(entries) < 2:
             continue
@@ -1759,37 +2038,46 @@ def _scan_run_storage_candidates_unlocked() -> dict:
             item for item in entries
             if current_run_dir is not None and item["path"].resolve() == current_run_dir
         ]
-        # Preserve STATE.run_dir if it is one of the copies; otherwise keep newest.
+        # Keep the most recently touched run unless the last selected run is in the group.
         keeper = current_entries[0] if current_entries else max(
             entries, key=lambda item: (item["latest_mtime_ns"], item["name"])
         )
-        duplicate_names = sorted(item["name"] for item in entries if item is not keeper)
-        duplicate_groups.append({
+        duplicate_entries = sorted(
+            (item for item in entries if item is not keeper),
+            key=lambda item: item["name"].casefold(),
+        )
+        repeated_groups.append({
             "fingerprint": fingerprint,
+            "tool": keeper["tool"],
+            "mode": keeper["mode"],
+            "inputs": [{"name": item.get("name", f"Input {item['slot']}"), "size": item["size"]}
+                       for item in keeper["inputs"]],
+            "manifest_source": keeper["manifest_source"],
             "keep": keeper["name"],
-            "duplicates": duplicate_names,
+            "duplicates": [item["name"] for item in duplicate_entries],
+            "duplicate_bytes": {item["name"]: item["bytes"] for item in duplicate_entries},
             "files": keeper["files"],
             "bytes_each": keeper["bytes"],
-            "reclaimable_bytes": keeper["bytes"] * len(duplicate_names),
+            "reclaimable_bytes": sum(item["bytes"] for item in duplicate_entries),
         })
 
-    duplicate_groups.sort(key=lambda item: (item["keep"].lower(), item["fingerprint"]))
+    repeated_groups.sort(key=lambda item: (item["tool"], item["mode"], item["keep"].casefold()))
     log_only.sort(key=lambda item: item["name"].lower())
     return {
         "scanned_directories": scanned,
         "log_only_directories": log_only,
         "log_only_count": len(log_only),
         "log_only_bytes": sum(item["bytes"] for item in log_only),
-        "duplicate_groups": duplicate_groups,
-        "duplicate_group_count": len(duplicate_groups),
-        "duplicate_directories": sum(len(item["duplicates"]) for item in duplicate_groups),
-        "duplicate_reclaimable_bytes": sum(item["reclaimable_bytes"] for item in duplicate_groups),
+        "duplicate_groups": repeated_groups,
+        "duplicate_group_count": len(repeated_groups),
+        "duplicate_directories": sum(len(item["duplicates"]) for item in repeated_groups),
+        "duplicate_reclaimable_bytes": sum(item["reclaimable_bytes"] for item in repeated_groups),
         "skipped_unsafe_directories": skipped_unsafe,
     }
 
 
 def scan_run_storage_cleanup_candidates() -> dict:
-    """Hash saved runs and list folders that can be safely cleaned up."""
+    """Identify logs-only runs and repeated runs that used the same input datasets."""
     with _run_storage_maintenance():
         result = _scan_run_storage_candidates_unlocked()
     scanned_at = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -1804,7 +2092,8 @@ def scan_run_storage_cleanup_candidates() -> dict:
     result["scanned_at"] = scanned_at
     _record_storage_activity(
         "Run folder scan",
-        f"Checked {result['scanned_directories']:,} folders · {result['log_only_count']:,} log-only · {result['duplicate_directories']:,} duplicate(s)",
+        f"Checked {result['scanned_directories']:,} folders · {result['log_only_count']:,} log-only · "
+        f"{result['duplicate_directories']:,} repeated dataset run(s)",
     )
     return result
 
@@ -1834,10 +2123,9 @@ def delete_log_only_run_directories() -> dict:
             if not _is_direct_run_directory(directory):
                 failures.append(f"{item['name']}: folder is no longer a safe run directory")
                 continue
-            snapshot = _run_directory_snapshot(directory)
-            if snapshot is None or any(
-                Path(record["path"]).suffix.lower() != ".log" for record in snapshot["records"]
-            ):
+            current_metadata = _run_directory_metadata(directory)
+            if (current_metadata is None or not current_metadata["log_only"]
+                    or current_metadata["snapshot_records"] != item.get("snapshot_records")):
                 failures.append(f"{item['name']}: contents changed after the scan; skipped")
                 continue
             try:
@@ -1862,12 +2150,19 @@ def delete_log_only_run_directories() -> dict:
 
 
 def delete_duplicate_run_directories() -> dict:
-    """Delete exact duplicate run copies while retaining one folder per group."""
+    """Remove older repeated runs while retaining one representative per dataset group."""
     with _run_storage_maintenance():
         scan = _scan_run_storage_candidates_unlocked()
         deleted = []
         retained = []
         failures = []
+        current_run_dir = None
+        if STATE.get("run_dir"):
+            try:
+                current_run_dir = Path(STATE["run_dir"]).resolve()
+            except OSError:
+                current_run_dir = None
+
         for group in scan["duplicate_groups"]:
             retained.append(group["keep"])
             for name in group["duplicates"]:
@@ -1875,11 +2170,17 @@ def delete_duplicate_run_directories() -> dict:
                 if not _is_direct_run_directory(directory):
                     failures.append(f"{name}: folder is no longer a safe run directory")
                     continue
-                snapshot = _run_directory_snapshot(directory)
-                if snapshot is None or snapshot["fingerprint"] != group["fingerprint"]:
-                    failures.append(f"{name}: contents changed after the scan; skipped")
-                    continue
                 try:
+                    resolved = directory.resolve(strict=True)
+                    if current_run_dir is not None and resolved == current_run_dir:
+                        failures.append(f"{name}: the currently selected run is protected")
+                        continue
+                    metadata = _run_directory_metadata(directory)
+                    manifest = _run_dataset_manifest_for_directory(directory)
+                    if (metadata is None or not metadata["has_non_log_outputs"] or manifest is None
+                            or manifest["dataset_fingerprint"] != group["fingerprint"]):
+                        failures.append(f"{name}: run inputs or folder safety changed after the scan; skipped")
+                        continue
                     shutil.rmtree(directory)
                     deleted.append(name)
                 except OSError as exc:
@@ -1896,13 +2197,17 @@ def delete_duplicate_run_directories() -> dict:
 
     if deleted:
         _invalidate_storage_scan_snapshots()
-        add_log(f"[WEB] Run storage duplicate cleanup removed {len(deleted)} duplicate director{'y' if len(deleted) == 1 else 'ies'}.")
+        add_log(f"[WEB] Repeated-dataset cleanup removed {len(deleted)} older run director{'y' if len(deleted) == 1 else 'ies'}.")
+        # Count only folders that were actually deleted; a concurrent or unsafe
+        # candidate skipped during the recheck must not inflate recovered space.
         reclaimed = sum(
-            int(group.get("bytes_each", 0)) * sum(1 for name in group.get("duplicates", []) if name in deleted)
+            int(group.get("duplicate_bytes", {}).get(name, 0))
             for group in scan["duplicate_groups"]
+            for name in group.get("duplicates", [])
+            if name in deleted
         )
         _record_storage_activity(
-            "Duplicate run folders removed",
+            "Repeated dataset runs removed",
             f"Deleted {len(deleted):,} redundant run folder(s)", reclaimed,
         )
     return result
@@ -2027,6 +2332,8 @@ def storage_intelligence_summary() -> dict:
                 directory_names[:] = safe_names
 
                 for filename in file_names:
+                    if source == "run" and filename == RUN_DATASET_MANIFEST:
+                        continue
                     candidate_path = current_path / filename
                     try:
                         metadata = candidate_path.lstat()
@@ -2951,7 +3258,7 @@ def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_b
         cleanup_uploaded_files(log_message=True)
         if error is None:
             for item in sorted(run_dir.iterdir()):
-                if item.is_file() and item.name != "control.txt":
+                if item.is_file() and item.name not in {"control.txt", RUN_DATASET_MANIFEST}:
                     outputs.append({"name": item.name, "size": item.stat().st_size})
         with LOCK:
             PROCESS = None
@@ -3950,12 +4257,18 @@ class Handler(BaseHTTPRequestHandler):
                             _library_asset_sha256(category, destination, metadata, known_digest=upload_digest)
                         except (OSError, ValueError, sqlite3.Error):
                             pass
+                stored_stat = os.stat(str(stored), follow_symlinks=False)
                 meta = {
                     "path": stored, "name": _library_asset_display_name(asset_id), "size": length,
                     "library": True, "asset_id": asset_id, "category": category,
+                    "sha256": upload_digest, "file_signature": _library_file_signature(stored_stat),
                 }
             else:
-                meta = {"path": stored, "name": filename, "size": length, "library": False}
+                stored_stat = os.stat(str(stored), follow_symlinks=False)
+                meta = {
+                    "path": stored, "name": filename, "size": length, "library": False,
+                    "sha256": upload_digest, "file_signature": _library_file_signature(stored_stat),
+                }
             replaced = []
             with LOCK:
                 if concentrator and field == "concentrator_files":
@@ -4109,6 +4422,7 @@ class Handler(BaseHTTPRequestHandler):
             control_file.write_text("", encoding="ascii")
             try:
                 cmd, output_name = build_command(options, run_dir)
+                run_manifest = _write_run_dataset_manifest(run_dir, "rulest", "default")
             except Exception as exc:
                 self.send_json({"error": str(exc)}, 400)
                 return
@@ -4123,6 +4437,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             add_log("[WEB] Starting rulest engine…")
             add_log("[WEB] BASE / TARGET inputs are mounted from the reusable library; temporary workflow files are cleaned after the job.")
+            add_log("[WEB] Run input fingerprint recorded for repeated-dataset detection." if run_manifest else "[WEB] Run input fingerprint unavailable; this run may not appear in repeated-dataset scans.")
             add_log("[WEB] " + " ".join(cmd[2:]))
         thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, control_file, "rulest", storage_baseline_bytes), daemon=True)
         with LOCK:
@@ -4154,6 +4469,7 @@ class Handler(BaseHTTPRequestHandler):
             run_dir.mkdir(parents=True, exist_ok=True)
             try:
                 cmd, output_name = build_ranker_command(str(mode), options, run_dir)
+                run_manifest = _write_run_dataset_manifest(run_dir, "ranker", str(mode))
             except Exception as exc:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 self.send_json({"error": str(exc)}, 400)
@@ -4169,6 +4485,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             add_log(f"[WEB] Starting Rule Ranker workflow: {mode}.")
             add_log("[WEB] Wordlists and rules are retained in the reusable library; workflow-specific temporary files are removed after the job.")
+            add_log("[WEB] Run input fingerprint recorded for repeated-dataset detection." if run_manifest else "[WEB] Run input fingerprint unavailable; this run may not appear in repeated-dataset scans.")
             add_log("[WEB] " + " ".join(cmd[3:]))
         ranker_env = ranker_env_overrides(mode, options)
         if ranker_env["RANKER_GREEDY_PROFILE"] == "1":
@@ -4205,6 +4522,7 @@ class Handler(BaseHTTPRequestHandler):
             run_dir.mkdir(parents=True, exist_ok=True)
             try:
                 cmd, output_name = build_concentrator_command(mode, options, run_dir)
+                run_manifest = _write_run_dataset_manifest(run_dir, "concentrator", mode)
             except Exception as exc:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 self.send_json({"error": str(exc)}, 400)
@@ -4220,6 +4538,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             add_log(f"[WEB] Starting Concentrator workflow: {mode}.")
             add_log("[WEB] Rule inputs are retained in the reusable library after the job.")
+            add_log("[WEB] Run input fingerprint recorded for repeated-dataset detection." if run_manifest else "[WEB] Run input fingerprint unavailable; this run may not appear in repeated-dataset scans.")
             add_log("[WEB] " + " ".join(cmd[3:]))
         thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, None, "concentrator", storage_baseline_bytes), daemon=True)
         with LOCK:
@@ -4257,6 +4576,8 @@ class Handler(BaseHTTPRequestHandler):
             run_dir.mkdir(parents=True, exist_ok=True)
             try:
                 cmd, output_name = builder(options, run_dir)
+                workflow_mode = "extract" if tool == "rulestripper" else "minimize"
+                run_manifest = _write_run_dataset_manifest(run_dir, tool, workflow_mode)
             except Exception as exc:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 self.send_json({"error": str(exc)}, 400)
@@ -4273,6 +4594,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             add_log(f"[WEB] Starting {friendly}…")
             add_log("[WEB] Inputs are mounted from the reusable library; temporary workflow files are cleaned after the job.")
+            add_log("[WEB] Run input fingerprint recorded for repeated-dataset detection." if run_manifest else "[WEB] Run input fingerprint unavailable; this run may not appear in repeated-dataset scans.")
             add_log("[WEB] " + " ".join(cmd[2:]))
         thread = threading.Thread(target=run_worker, args=(cmd, run_id, run_dir, None, tool, storage_baseline_bytes), daemon=True)
         with LOCK:

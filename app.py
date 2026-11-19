@@ -4680,7 +4680,10 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             return
         action = data.get("action")
-        command = {"pause": "p", "resume": "r", "stop": "q"}.get(action)
+        command = {
+            "pause": "p", "resume": "r",
+            "stop": "q", "early_quit": "q", "quit": "q",
+        }.get(action)
         if command is None:
             self.send_json({"error": "Unsupported control action."}, 400)
             return
@@ -4695,10 +4698,16 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["pause_requested"] = True
             elif action == "resume":
                 STATE["pause_requested"] = False
-            elif action == "stop":
+            elif action in ("stop", "early_quit", "quit"):
                 STATE["status"] = "stopping"
                 STATE["pause_requested"] = False
-        labels = {"pause": "Pause requested", "resume": "Resume requested", "stop": "Partial-save exit requested"}
+        labels = {
+            "pause": "Pause requested",
+            "resume": "Resume requested",
+            "stop": "Partial-save exit requested",
+            "early_quit": "Partial-save exit requested",
+            "quit": "Partial-save exit requested",
+        }
         add_log(f"[WEB] {labels[action]}.")
         self.send_json({"ok": True, "action": action})
 

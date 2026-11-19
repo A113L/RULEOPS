@@ -243,3 +243,22 @@ def test_unsupported_rules_remain_distinct_in_offset_minimizer():
     counter = Counter({'Q': 2, 'M': 3, 'u': 1})
     result = minimize_by_signature(counter, PROBES)
     assert set(result) == {'Q', 'M', 'u'}
+
+
+def test_final_collision_resolution_aborts_cleanly_on_early_quit(monkeypatch):
+    import numpy as np
+    import rulest.minimize as minimize_module
+
+    records = np.zeros(2, dtype=minimize_module._record_dtype(2))
+    records["idx"] = np.array([0, 1], dtype=records.dtype["idx"])
+    records["kind"] = 0
+    records["sig"] = b"\x00" * 16
+    keep_mask = np.zeros(2, dtype=np.bool_)
+    monkeypatch.setattr(minimize_module._kb, "poll", lambda: True)
+
+    completed = minimize_module._resolve_final_collisions(
+        records, 2, ["l", "l l"], Counter({"l": 5, "l l": 3}), keep_mask
+    )
+
+    assert completed is False
+    assert keep_mask.tolist() == [False, False]

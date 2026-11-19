@@ -734,3 +734,22 @@ def test_gpu_scorer_keeps_compact_candidate_index_api_after_archived_celf_restor
         ((2,), False, True),
     ]
     scorer.close()
+
+
+def test_selection_skips_gpu_setup_when_quit_arrives_during_target_prep(monkeypatch):
+    import rulest.selection as selection
+
+    monkeypatch.setattr(selection, "_rulest_dedupe_targets_with_progress", lambda words: ["target"])
+    poll_results = iter((False, True))
+    monkeypatch.setattr(selection._kb, "poll", lambda: next(poll_results, True))
+
+    class NoGpuAccess:
+        def __getattr__(self, name):
+            raise AssertionError(f"GPU setup should not be touched: {name}")
+
+    selected, covered = selection.select_rules_by_marginal_coverage(
+        NoGpuAccess(), ["base"], ["target"], ["l"], max_depth=2
+    )
+    assert selected == []
+    assert covered.dtype == np.bool_
+    assert covered.tolist() == [False]

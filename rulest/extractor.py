@@ -72,7 +72,10 @@ class GPUExtractor:
         seeds = []
         try:
             with open(self.seed_rules_file,'r',encoding='latin-1') as f:
-                for line in f:
+                for line_number, line in enumerate(f, 1):
+                    if line_number % 8192 == 0 and _kb.poll():
+                        log_warn("[SEED] Early exit while reading custom seed rules")
+                        break
                     line=line.strip('\n\r')
                     if line and not line.startswith('#') and self.validator.validate_rule_for_gpu(line):
                         seeds.append(line)
@@ -105,12 +108,25 @@ class GPUExtractor:
 
     def extract_rules(self, base_words, target_words, **depth_overrides):
         all_counts = Counter()
+
+        def _validated_counts():
+            return Counter({
+                rule: count for rule, count in all_counts.items()
+                if HashcatRuleValidator.validate_rule_for_gpu(rule) and rule.isascii()
+            })
+
+        if _kb.poll():
+            log_warn("[QUIT] Extraction skipped before Stage 0 / GPU initialization")
+            return _validated_counts()
         rules = self.rules_gen.generate_gpu_compatible_rules()
         ts_singles = []
         ts_chains = []
         ts_sbd = defaultdict(set)
         builtin_set = set(rules)
         all_seeds = self.load_seed_rules()
+        if _kb.poll():
+            log_warn("[QUIT] Stopped while loading seed rules — skipping extraction")
+            return _validated_counts()
         n_s0_chains_to_stage2 = 0
         ts_extra_singles = []  # defined early to avoid UnboundLocalError
 
@@ -131,6 +147,10 @@ class GPUExtractor:
                                                    workers=self.token_strip_workers,
                                                    chunk_size=self.token_strip_chunk_size,
                                                    bloom_mb=self.token_strip_bloom_mb)
+                if _kb.poll():
+                    log_warn("[S0] Early exit — skipping later stages after preserving completed Stage 0 work")
+                    stage_profiler.note("STAGE 0 — Token-Strip", extra="partial: early exit")
+                    return _validated_counts()
                 for r in ts_all:
                     d = len(r.split())
                     if d==1: ts_singles.append(r)
@@ -145,6 +165,8 @@ class GPUExtractor:
                     toggle_max_depth = min(12, self.user_max_depth)
                     toggle = _generate_toggle_chain_seeds(toggle_max_depth)
                     for tc in toggle:
+                        if _kb.poll():
+                            break
                         d = len(tc.split())
                         if d>=2 and d <= self.user_max_depth:
                             ts_chains.append(tc)
@@ -155,6 +177,16 @@ class GPUExtractor:
                     all_seeds = list(all_seeds) + ts_chains
                 n_s0_chains_to_stage2 += len(ts_chains)
                 _s0t.set_count(len(target_words))
+
+        if _kb.poll():
+            log_warn("[QUIT] Stage 0 finished at a safe boundary — skipping GPU stages")
+            for stage_name in (
+                "Bloom filter build", "STAGE 1 — Single Rule Search",
+                "STAGE S — Seed Extraction", "STAGE 2 — Rule Chain Search",
+                "STAGE 3 — Genetic Algorithm",
+            ):
+                stage_profiler.note(stage_name, extra="skipped: early exit")
+            return _validated_counts()
 
         is_explicit_multi = (
             self.device_spec is not None
@@ -187,6 +219,10 @@ class GPUExtractor:
             self.gpu_engine = GPUEngine(self.params)
             if not self.gpu_engine.initialize_gpu(self.device_spec):
                 return all_counts
+        if _kb.poll():
+            log_warn("[QUIT] GPU initialized — stopping before bloom-filter preparation")
+            return _validated_counts()
+
         self.params = calculate_dynamic_parameters(self.base_count, self.target_count, self.gpu_engine.device,
                                                    self.params['TARGET_SECONDS']/3600,
                                                    bloom_mb_override=self.bloom_mb, bloom_no_shard=self.bloom_no_shard)
@@ -208,6 +244,9 @@ class GPUExtractor:
         if not base_words or not target_words:
             log_warn("Empty wordlist(s), aborting extraction")
             return Counter()
+        if _kb.poll():
+            log_warn("[QUIT] Skipping bloom-filter build")
+            return _validated_counts()
         log_info("[GPU]  Building bloom filter on GPU …")
         with stage_profiler.track("Bloom filter build", unit="word") as _bft:
             if not self.gpu_engine.compile_kernel(): return all_counts
@@ -215,6 +254,10 @@ class GPUExtractor:
             self.gpu_engine.upload_bloom_filter(bloom_filter)
             _bft.set_count(len(target_words))
             self._note_gpu_phase("Bloom filter build")
+
+        if _kb.poll():
+            log_warn("[QUIT] Bloom filter ready — skipping Stage 1 and later stages")
+            return _validated_counts()
 
         log_section("STAGE 1 — Single Rule Search")
         seed_note = f"  ({len(extra_valid)} from seeds)" if extra_valid else ""
@@ -226,13 +269,18 @@ class GPUExtractor:
             self._note_gpu_phase("STAGE 1 — Single Rule Search")
         t1 = time.time()
         all_counts.update(single)
+        if _kb.poll():
+            log_warn("[QUIT] Stage 1 stopped at a safe batch boundary — saving its completed results")
+            return _validated_counts()
 
         seed_hits = Counter()
         if self.builtin_seeds and not _kb.poll():
             log_section("STAGE S — Seed Extraction (families A-M)")
             with stage_profiler.track("STAGE S — Seed Extraction") as _sst:
                 sbd = self.gpu_engine.build_numeric_seed_families(max_depth=seed_pass_depth)
-                if ts_sbd:
+                if _kb.poll():
+                    log_warn("[SEED] Early exit during seed-family generation — skipping seed GPU scan")
+                elif ts_sbd:
                     n_injected = 0
                     n_ts_total = 0
                     for depth, chains in ts_sbd.items():
@@ -244,8 +292,9 @@ class GPUExtractor:
                     dupe_str = f"  ({n_dupes:,} already in builtin families)" if n_dupes else ""
                     if n_injected:
                         log_info(f"[SEED]    STAGE 0 injected {bold(cyan(str(n_injected)))} chain(s) into STAGE S sbd{dupe_str}")
-                seed_hits = self.gpu_engine.run_seed_extraction_pass(base_words, sbd, bloom_filter, rules_phase1)
-                all_counts.update(seed_hits)
+                if not _kb.quit_requested:
+                    seed_hits = self.gpu_engine.run_seed_extraction_pass(base_words, sbd, bloom_filter, rules_phase1)
+                    all_counts.update(seed_hits)
                 _sst.set_count(sum(len(v) for v in sbd.values()), unit="chain")
                 self._note_gpu_phase("STAGE S — Seed Extraction")
             ts = time.time()
@@ -258,6 +307,12 @@ class GPUExtractor:
                 stage_profiler.note("STAGE S — Seed Extraction", extra="skipped: --no-builtin-seeds")
             sbd = {}
             ts = t1
+
+        if _kb.poll():
+            log_warn("[QUIT] Seed extraction complete — skipping Stage 2 and Stage 3")
+            stage_profiler.note("STAGE 2 — Rule Chain Search", extra="skipped: early exit")
+            stage_profiler.note("STAGE 3 — Genetic Algorithm", extra="skipped: early exit")
+            return _validated_counts()
 
         self.params['MAX_CHAIN_DEPTH'] = self.user_max_depth
         self.gpu_engine.params = self.params
@@ -370,5 +425,4 @@ class GPUExtractor:
             truly_novel = sum(1 for r in ga_hits if r not in known_set)
             log_info(f"[S3]    {bold(cyan(str(new_from_ga)))} net new rules from STAGE 3  ({bold(green(str(len(ga_hits))))} total GA hits, {bold(cyan(str(truly_novel)))} genuinely novel)")
 
-        validated = Counter({r:c for r,c in all_counts.items() if HashcatRuleValidator.validate_rule_for_gpu(r) and r.isascii()})
-        return validated
+        return _validated_counts()

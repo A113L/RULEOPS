@@ -11,6 +11,7 @@ import time
 import shutil
 import hashlib
 import multiprocessing as mp
+import atexit
 from collections import Counter
 
 import numpy as np
@@ -58,6 +59,8 @@ _minimize_worker_probe_words = []
 def _minimize_worker_init(probe_words):
     global _minimize_worker_probe_words
     _minimize_worker_probe_words = probe_words
+    _kb.start(terminal=False, quiet=True)
+    atexit.register(_kb.stop)
 
 
 def _apply_compiled_chain(parts, word):
@@ -154,6 +157,8 @@ def _chunk_ranges(n_probes):
 
 def _minimize_worker_initial(task):
     index, rule, start, stop = task
+    if _kb.poll():
+        return index, b"\x00" * 16, _UNSUPPORTED_KIND + 1
     signature, kind = _probe_chunk_signature_raw(
         rule, _minimize_worker_probe_words, start, stop
     )
@@ -162,6 +167,8 @@ def _minimize_worker_initial(task):
 
 def _minimize_worker_refine(task):
     slot, rule, previous, previous_kind, start, stop = task
+    if _kb.poll():
+        return slot, b"\x00" * 16, _UNSUPPORTED_KIND + 1
     chunk_signature, chunk_kind = _probe_chunk_signature_raw(
         rule, _minimize_worker_probe_words, start, stop
     )
@@ -266,13 +273,19 @@ def _classify_and_compact(records, active_count, keep_mask):
 
 
 def _resolve_final_collisions(records, active_count, rules, rule_counter, keep_mask):
-    """Resolve the last collision groups with RuleEST's historical priority."""
+    """Resolve final groups; return False if q interrupts the safe scan."""
     if active_count <= 0:
-        return
+        return True
     active = records[:active_count]
     active.sort(order=("kind", "sig", "idx"), kind="quicksort")
+    if _kb.poll():
+        return False
     pos = 0
+    groups_seen = 0
     while pos < active_count:
+        if groups_seen % 1024 == 0 and _kb.poll():
+            return False
+        groups_seen += 1
         kind = int(active["kind"][pos])
         signature = active["sig"][pos]
         end = pos + 1
@@ -284,6 +297,8 @@ def _resolve_final_collisions(records, active_count, rules, rule_counter, keep_m
             # only an index; compare exact text to guard against hash collisions.
             seen_rules = set()
             for cursor in range(pos, end):
+                if (cursor - pos) % 4096 == 0 and _kb.poll():
+                    return False
                 index = int(active["idx"][cursor])
                 rule = rules[index]
                 if rule not in seen_rules:
@@ -295,6 +310,8 @@ def _resolve_final_collisions(records, active_count, rules, rule_counter, keep_m
             best_count = int(rule_counter[best_rule])
             best_depth = len(best_rule.split())
             for cursor in range(pos + 1, end):
+                if (cursor - pos) % 4096 == 0 and _kb.poll():
+                    return False
                 index = int(active["idx"][cursor])
                 rule = rules[index]
                 count = int(rule_counter[rule])
@@ -308,6 +325,7 @@ def _resolve_final_collisions(records, active_count, rules, rule_counter, keep_m
                     best_depth = depth
             keep_mask[best_index] = True
         pos = end
+    return True
 
 
 def minimize_by_signature(rule_counter, probe_words):
@@ -338,6 +356,8 @@ def _minimize_offsets(rule_counter, probe_words, chunks=None):
     records = np.empty(n_total, dtype=_record_dtype(n_total))
     records["idx"] = np.arange(n_total, dtype=records.dtype["idx"])
     keep_mask = np.zeros(n_total, dtype=np.bool_)
+    if _kb.poll():
+        return _log_minimize_result(rule_counter, n_total, n_total)
 
     pool = _make_pool(n_workers, use_mp, probe_words)
     batch_size = max(1, int(MINIMIZE_BATCH_SIZE))
@@ -357,7 +377,7 @@ def _minimize_offsets(rule_counter, probe_words, chunks=None):
                     for index in range(offset, stop_at)
                 )
                 for index, signature, kind in _imap(pool, _minimize_worker_initial, tasks):
-                    if _kb.poll():
+                    if _kb.poll() or kind > _UNSUPPORTED_KIND:
                         early_exit = True
                         log_warn("[MIN] Early exit — returning the original rule set without partial deduplication")
                         break
@@ -377,6 +397,9 @@ def _minimize_offsets(rule_counter, probe_words, chunks=None):
             return _log_minimize_result(rule_counter, n_total, n_total)
 
         active_count = _classify_and_compact(records, n_total, keep_mask)
+        if _kb.poll():
+            log_warn("[MIN] Early exit after probe compaction — returning the original rule set")
+            return _log_minimize_result(rule_counter, n_total, n_total)
         if active_count == 0:
             log_info("[MINIMIZE] All candidates are unique on the first probe batch; remaining probes skipped")
             return rule_counter
@@ -413,7 +436,7 @@ def _minimize_offsets(rule_counter, probe_words, chunks=None):
 
                     for slot, signature, kind in _imap(
                             pool, _minimize_worker_refine, refine_tasks(), chunksize=256):
-                        if _kb.poll():
+                        if _kb.poll() or kind > _UNSUPPORTED_KIND:
                             early_exit = True
                             log_warn("[MIN] Early exit — returning the original rule set without partial deduplication")
                             break
@@ -433,18 +456,29 @@ def _minimize_offsets(rule_counter, probe_words, chunks=None):
             if early_exit:
                 return _log_minimize_result(rule_counter, n_total, n_total)
             active_count = _classify_and_compact(records, active_count, keep_mask)
+            if _kb.poll():
+                log_warn("[MIN] Early exit after probe compaction — returning the original rule set")
+                return _log_minimize_result(rule_counter, n_total, n_total)
             log_info(
                 f"[MINIMIZE] Probe pass {pass_number}: "
                 f"{n_total - active_count:,} finalized, {active_count:,} unresolved"
             )
 
-        _resolve_final_collisions(records, active_count, rules, rule_counter, keep_mask)
+        if not _resolve_final_collisions(records, active_count, rules, rule_counter, keep_mask):
+            log_warn("[MIN] Early exit during final collision resolution — returning the original rule set")
+            return _log_minimize_result(rule_counter, n_total, n_total)
+        if _kb.poll():
+            log_warn("[MIN] Early exit after final collision resolution — returning the original rule set")
+            return _log_minimize_result(rule_counter, n_total, n_total)
         kept_count = int(np.count_nonzero(keep_mask))
         if kept_count == n_total:
             return rule_counter
 
         survivors = Counter()
         for index, rule in enumerate(rules):
+            if index % 16384 == 0 and _kb.poll():
+                log_warn("[MIN] Early exit while building survivors — returning the original rule set")
+                return _log_minimize_result(rule_counter, n_total, n_total)
             if keep_mask[index]:
                 survivors[rule] = rule_counter[rule]
         return _log_minimize_result(survivors, n_total, n_total)

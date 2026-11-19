@@ -14,7 +14,7 @@ import struct
 from collections.abc import Sequence
 from multiprocessing.shared_memory import SharedMemory
 
-from .common import log_info, log_error, bold, cyan, MAX_WORD_LEN
+from .common import log_info, log_error, bold, cyan, MAX_WORD_LEN, _kb, EarlyExitRequested
 from .tokenstrip_hashset import FlatHashSet64
 
 
@@ -266,9 +266,13 @@ def _normalize_line(line):
 
 def _count_valid_lines(filename):
     """First sequential pass: size the shared uint64 offset index/hash table."""
+    if _kb.poll():
+        raise EarlyExitRequested("Early quit requested before wordlist scan")
     count = 0
     with open(filename, "rb") as stream:
-        for line in stream:
+        for line_number, line in enumerate(stream, 1):
+            if line_number % 16384 == 0 and _kb.poll():
+                raise EarlyExitRequested("Early quit requested while sizing a wordlist")
             if _normalize_line(line) is not None:
                 count += 1
     return count
@@ -286,6 +290,8 @@ def load_wordlist(filename, *, retain_membership_index=False):
     that set to each Windows worker.
     """
     filename = os.fspath(filename)
+    if _kb.poll():
+        raise EarlyExitRequested("Early quit requested before wordlist loading")
     try:
         candidate_count = _count_valid_lines(filename)
         source_size = os.path.getsize(filename)
@@ -309,8 +315,12 @@ def load_wordlist(filename, *, retain_membership_index=False):
 
         data_size = 0
         unique_count = 0
+        if _kb.poll():
+            raise EarlyExitRequested("Early quit requested before wordlist population")
         with open(filename, "rb") as stream:
-            for line in stream:
+            for line_number, line in enumerate(stream, 1):
+                if line_number % 16384 == 0 and _kb.poll():
+                    raise EarlyExitRequested("Early quit requested while loading a wordlist")
                 word = _normalize_line(line)
                 if word is None or not membership.add(word):
                     continue

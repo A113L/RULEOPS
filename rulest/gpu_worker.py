@@ -18,7 +18,7 @@ from collections import Counter
 import numpy as np
 import pyopencl as cl
 
-from .common import log_warn, _BLOOM_ALREADY_ON_GPU
+from .common import log_warn, _BLOOM_ALREADY_ON_GPU, _kb
 from .gpu_engine import GPUEngine
 
 _WORKER_HEARTBEAT_SECS  = 3     # how often the child pings "still alive"
@@ -41,6 +41,7 @@ def _gpu_worker_entry(device_spec, params, cmd_q, res_q, hb_q):
     apart from 'driver wedged'."""
     eng = None
     stop_evt = None
+    _kb.start(terminal=False, quiet=True)
     try:
         os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
         eng = GPUEngine(params)
@@ -121,6 +122,7 @@ def _gpu_worker_entry(device_spec, params, cmd_q, res_q, hb_q):
                 eng.release_run_references()
             except Exception:
                 pass
+        _kb.stop()
 
 class _RemoteDeviceHandle:
     """Stand-in for a pyopencl Device across the process boundary — callers

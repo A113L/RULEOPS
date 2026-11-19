@@ -572,6 +572,8 @@ def _worker_init_p0(membership_spec, data_name, offsets_name, word_count, byte_l
         # supplies a compact shared-memory descriptor.
         _membership = membership_spec
     worker_state.p0_worker_base_set = _membership
+    _kb.start(terminal=False, quiet=True)
+    atexit.register(_kb.stop)
     _P0_WORD_BUFFER = PackedWordBuffer.attach(
         data_name, offsets_name, word_count, byte_length, encoding=word_encoding
     )
@@ -629,11 +631,16 @@ def _process_range_p0(word_range):
     max_depth, min_len, max_amb, max_pre, max_suf = _P0_WORKER_CONFIG
     base_set = worker_state.p0_worker_base_set
     found = set()
-    for word in _P0_WORD_BUFFER.range_view(start, stop):
+    processed_stop = start
+    for index in range(start, stop):
+        if _kb.poll():
+            break
+        word = _P0_WORD_BUFFER[index]
         found.update(_process_one_word_p0(
             word, base_set, max_depth, min_len, max_amb, max_pre, max_suf
         ))
-    return start, stop, found
+        processed_stop = index + 1
+    return start, processed_stop, found
 
 
 def _iter_word_ranges(n_words, chunk_size):
@@ -809,15 +816,14 @@ def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=
             ) as pbar:
                 t0 = time.time()
                 words_done = 0
+                quit_draining = False
                 for start, stop, result in pool.imap_unordered(
                     _process_range_p0,
                     _iter_word_ranges(n_words, chunk_size),
                     chunksize=1,
                 ):
-                    if _kb.poll():
-                        log_warn("[S0] Early exit — keeping rules found so far")
-                        pool.terminate()
-                        break
+                    # A worker may return a partial final chunk after q. Keep
+                    # everything it completed before shutting the pool down.
                     found.update(result)
                     completed_words = stop - start
                     words_done += completed_words
@@ -828,6 +834,13 @@ def extract_token_strip_rules(target_words, base_set, max_depth=0, min_stem_len=
                         refresh=False,
                     )
                     pbar.update(completed_words)
+                    if _kb.poll() and not quit_draining:
+                        # Stop accepting new work, but drain tasks already queued.
+                        # Each worker sees the shared q command at its next word
+                        # boundary and returns its own completed partial chunk.
+                        log_warn("[S0] Early exit — collecting completed worker chunks")
+                        pool.close()
+                        quit_draining = True
     finally:
         if packed_words_owner is not None:
             packed_words_owner.close()

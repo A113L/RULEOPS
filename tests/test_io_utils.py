@@ -122,3 +122,13 @@ if __name__ == "__main__":
     import pytest
     print(f"Running {__file__} directly — use `pytest {__file__}` for full output.\n")
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_wordlist_counting_honors_early_quit(tmp_path, monkeypatch):
+    import rulest.io_utils as io_utils
+    from rulest.common import EarlyExitRequested
+
+    path = _write(tmp_path, "large-enough.txt", (b"word\n" * 17000))
+    monkeypatch.setattr(io_utils._kb, "poll", lambda: True)
+    with pytest.raises(EarlyExitRequested):
+        io_utils._count_valid_lines(path)

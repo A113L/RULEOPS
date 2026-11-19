@@ -33,6 +33,7 @@ from .common import (
     log_info,
     log_section,
     log_warn,
+    _kb,
 )
 # RULEST_TARGET_DEDUPE_INPLACE_SORT_V9
 def _rulest_dedupe_targets_with_progress(target_words):
@@ -67,6 +68,10 @@ def _rulest_dedupe_targets_with_progress(target_words):
 
         write = 1
         for read in range(1, total):
+            if read % 4096 == 0 and _kb.poll():
+                # A partial target map is never used for scoring. The caller
+                # notices q and skips CELF instead of reporting false coverage.
+                break
             value = target_words[read]
             if value != target_words[write - 1]:
                 if write != read:
@@ -317,6 +322,8 @@ def _run_initial_upper_bound_pass(scorer, rules, rule_batch_size):
         mininterval=0.5,
     ) as progress:
         for start in range(0, total, batch_size):
+            if _kb.poll():
+                break
             chunk = rules[start:start + batch_size]
             batch_number = start // batch_size + 1
             batch_started = time.monotonic()
@@ -418,12 +425,22 @@ def _celf_select_from_upper_bounds(
             # just doesn't need per-rule Python work when cost is always 1.0.
             costs = _ConstantCosts(1.0)
         else:
-            costs = [_rule_cost(rule, cost_alpha) for rule in rules]
-        heap = [
-            (-float(bounds_arr[i]) / costs[int(i)], int(i), int(bounds_arr[i]))
-            for i in positive.tolist()
-        ]
+            costs = []
+            for position, rule in enumerate(rules):
+                if position % 16384 == 0 and _kb.poll():
+                    return [], covered
+                costs.append(_rule_cost(rule, cost_alpha))
+        if _kb.poll():
+            return [], covered
+        heap = []
+        for position, raw_index in enumerate(positive):
+            if position % 16384 == 0 and _kb.poll():
+                break
+            index = int(raw_index)
+            heap.append((-float(bounds_arr[index]) / costs[index], index, int(bounds_arr[index])))
         heapq.heapify(heap)
+        if _kb.poll():
+            return [], covered
         # Every rule this round can ever select comes from a heap entry, and
         # the heap is only ever seeded from (and re-pushed among) these
         # `positive` indices -- a candidate with bound<=0 never enters it and
@@ -703,6 +720,12 @@ def _celf_select_from_upper_bounds(
                 _heap_push((-priority(bound, index), int(index), bound))
 
         while heap and len(selected) < limit:
+            # A CELF round is the commit unit. If q arrives while resolving its
+            # contenders, discard that unfinished round and keep only the
+            # already-committed selection prefix.
+            if _kb.poll():
+                break
+            round_interrupted = False
             # Start each round with the strongest outstanding bound, but never
             # assume that its upper bound is the exact gain.
             _neg_seed_priority, seed_index, _seed_bound = _heap_pop()
@@ -729,6 +752,9 @@ def _celf_select_from_upper_bounds(
                 # This is exact (all gains use the same `covered` snapshot), and
                 # every surviving exact gain remains an admissible CELF bound.
                 while best_gain <= 0 and heap:
+                    if _kb.poll():
+                        round_interrupted = True
+                        break
                     dead_seed_entries = []
                     while heap and len(dead_seed_entries) < batch_size:
                         _neg_p, index, old_bound = _heap_pop()
@@ -793,6 +819,8 @@ def _celf_select_from_upper_bounds(
                             else:
                                 push(index, gain)
                     report_scan()
+                if round_interrupted:
+                    break
 
             if best_gain <= 0:
                 # The initial seed and every queued candidate in the rescue
@@ -801,6 +829,9 @@ def _celf_select_from_upper_bounds(
             fresh_this_round = set()
 
             while heap:
+                if _kb.poll():
+                    round_interrupted = True
+                    break
                 _neg_top, top_index, top_bound = heap[0]
                 top_index = int(top_index)
                 if not can_beat(top_bound, top_index, best_gain, best_index):
@@ -919,6 +950,14 @@ def _celf_select_from_upper_bounds(
                                     push(index, tightened_exact_gain)
                 report_scan()
 
+            if round_interrupted:
+                break
+
+            # A score callback may have completed a GPU batch while q arrived.
+            # Do not start winner materialization for an interrupted CELF round.
+            if _kb.poll():
+                break
+
             # Prefer the preserved exact bitmap from the winning batch. It avoids
             # another full BASE scan and never mutates CELF ordering. Keep the
             # verified recording scan as a fail-safe for older GPU proxies or
@@ -949,6 +988,11 @@ def _celf_select_from_upper_bounds(
                             "CELF exact-batch/recording score mismatch for "
                             f"candidate {best_index}: batch={best_gain}, recorded={recorded_gain}"
                         )
+
+            # Materialization/recording can itself take a full GPU scan. Check
+            # once more before mutating coverage so q never commits a half-round.
+            if _kb.poll():
+                break
 
             # Clear by the winner's exact target IDs, never by a transient buffer.
             _commit_t0 = time.perf_counter()
@@ -1250,19 +1294,36 @@ def select_rules_by_marginal_coverage(
 ):
     """One GPU upper-bound pass followed by exact batched lazy-greedy CELF recompute."""
     log_section("SELECTION — CELF (GPU hash table + exact batched lazy recompute)")
+    if _kb.poll():
+        log_warn("[CELF] Early exit before target preparation — skipping GPU selection")
+        return [], np.zeros(0, dtype=bool)
     unique_targets = _rulest_dedupe_targets_with_progress(target_words)
     target_count = len(unique_targets)
     empty_mask = np.zeros(target_count, dtype=bool)
+    if _kb.poll():
+        log_warn("[CELF] Early exit during target preparation — skipping GPU selection")
+        return [], empty_mask
     if not rules or not unique_targets or not base_words:
         return [], empty_mask
 
-    rules = list(dict.fromkeys(rule for rule in rules if rule and rule != ":" and rule.split()))
-    rules = [
-        rule for rule in rules
-        if sum(len(token) for token in rule.split()) + max(0, len(rule.split()) - 1)
-        <= MAX_CHAIN_STRING_LEN - 2
-        and len(rule.split()) <= MAX_HASHCAT_CHAIN
-    ]
+    deduped_rules = []
+    seen_rules = set()
+    for position, rule in enumerate(rules):
+        if position % 4096 == 0 and _kb.poll():
+            log_warn("[CELF] Early exit during candidate preparation — skipping GPU selection")
+            return [], empty_mask
+        if rule and rule != ":" and rule.split() and rule not in seen_rules:
+            seen_rules.add(rule)
+            deduped_rules.append(rule)
+    rules = []
+    for position, rule in enumerate(deduped_rules):
+        if position % 4096 == 0 and _kb.poll():
+            log_warn("[CELF] Early exit during candidate validation — skipping GPU selection")
+            return [], empty_mask
+        tokens = rule.split()
+        if (sum(len(token) for token in tokens) + max(0, len(tokens) - 1)
+                <= MAX_CHAIN_STRING_LEN - 2 and len(tokens) <= MAX_HASHCAT_CHAIN):
+            rules.append(rule)
     if not rules:
         log_warn("[CELF] No candidate rules fit the GPU chain limits")
         return [], empty_mask
@@ -1273,6 +1334,10 @@ def select_rules_by_marginal_coverage(
     # the CELF RPC surface rather than pretending to be a local GPUEngine.
     selection_engine = _resolve_single_engine(gpu_engine)
     restore_depth, effective_depth = _widen_depth(selection_engine, rules, max_depth)
+    if _kb.poll():
+        log_warn("[CELF] Early exit after GPU depth setup — skipping scoring")
+        _restore_depth(selection_engine, restore_depth)
+        return [], empty_mask
     rules = [rule for rule in rules if len(rule.split()) <= effective_depth]
     if not rules:
         _restore_depth(selection_engine, restore_depth)
@@ -1283,6 +1348,9 @@ def select_rules_by_marginal_coverage(
         scorer = _GpuExactScorer(
             selection_engine, base_words, unique_targets, pair_batch_size, rules
         )
+        if _kb.poll():
+            log_warn("[CELF] Early exit after GPU scorer setup — skipping scoring")
+            return [], empty_mask
         upper_bounds = [0] * len(rules)
         celf_engine = scorer.gpu_engine
         seen_words = int(celf_engine._celf_seen_words)
@@ -1297,6 +1365,9 @@ def select_rules_by_marginal_coverage(
         # Restore the archived CELF selection flow while keeping an exact,
         # web-visible upper-bound progress bar with throughput and ETA.
         upper_bounds = _run_initial_upper_bound_pass(scorer, rules, rule_batch_size)
+        if _kb.poll():
+            log_warn("[CELF] Early exit after upper-bound scan — skipping greedy rounds")
+            return [], empty_mask
 
         # The exact-rescore batch inside the CELF heap loop stays at a fixed
         # default of 32 — unlike the upper-bound pass's rule_batch_size (and

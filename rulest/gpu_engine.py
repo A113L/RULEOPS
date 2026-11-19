@@ -897,6 +897,8 @@ class GPUEngine:
         for target, use_hot in [(hot_budget, True), (count, False)]:
             att = 0
             while len(gen) < target and att < max_att:
+                if _kb.poll():
+                    return gen
                 att += 1
                 if use_hot and hot:
                     hp = random.randint(0, depth-1)
@@ -913,23 +915,31 @@ class GPUEngine:
         sbd = defaultdict(set)
         # A
         for depth in range(1, min(4, max_depth)+1):
+            if _kb.poll(): return dict(sbd)
             for combo in itertools.product(digits, repeat=depth):
+                if _kb.poll(): return dict(sbd)
                 sbd[depth].add(' '.join(f'^{ch}' for ch in reversed(combo)))
         # B
         for depth in range(1, min(4, max_depth)+1):
+            if _kb.poll(): return dict(sbd)
             for combo in itertools.product(digits, repeat=depth):
+                if _kb.poll(): return dict(sbd)
                 sbd[depth].add(' '.join(f'${ch}' for ch in combo))
         # C
         for depth in range(1, min(4, max_depth)+1):
             for ops in itertools.product(['^','$'], repeat=depth):
-                for digs in itertools.product(digits, repeat=depth):
+                for position, digs in enumerate(itertools.product(digits, repeat=depth)):
+                    if position % 512 == 0 and _kb.poll(): return dict(sbd)
                     sbd[depth].add(' '.join(f'{o}{d}' for o,d in zip(ops,digs)))
         # D
         transform_ops = ['l','u','c','C','t','r','d','f','E','k','K','{','}','[',']']
         t_digit_ops = [f'^{d}' for d in digits] + [f'${d}' for d in digits] + ['[',']']
         for depth in range(2, min(4, max_depth)+1):
+            if _kb.poll(): return dict(sbd)
             for t_op in transform_ops:
-                for ops in itertools.product(t_digit_ops, repeat=depth-1):
+                if _kb.poll(): return dict(sbd)
+                for position, ops in enumerate(itertools.product(t_digit_ops, repeat=depth-1)):
+                    if position % 512 == 0 and _kb.poll(): return dict(sbd)
                     seed = f"{t_op} {' '.join(ops)}"
                     if HashcatRuleValidator.validate_rule_for_gpu(seed):
                         sbd[depth].add(seed)
@@ -940,24 +950,32 @@ class GPUEngine:
         years4 = [str(y) for y in range(1960,2031)]
         date4 = set(); date6 = set(); date8 = set()
         for d in days:
+            if _kb.poll(): return dict(sbd)
             for m in months:
                 date4.add(d+m); date4.add(m+d)
         for y in years4: date4.add(y)
         for d in days:
+            if _kb.poll(): return dict(sbd)
             for m in months:
-                for y in years2:
+                for position, y in enumerate(years2):
+                    if position % 32 == 0 and _kb.poll(): return dict(sbd)
                     date6.add(d+m+y); date6.add(m+d+y)
         for d in days:
+            if _kb.poll(): return dict(sbd)
             for m in months:
-                for y in years4:
+                for position, y in enumerate(years4):
+                    if position % 32 == 0 and _kb.poll(): return dict(sbd)
                     date8.add(d+m+y); date8.add(m+d+y)
         for dset,bd in ((date4,4),(date6,6),(date8,8)):
+            if _kb.poll(): return dict(sbd)
             if bd>max_depth: continue
             for ds in dset:
+                if _kb.poll(): return dict(sbd)
                 sbd[bd].add(' '.join(f'${c}' for c in ds))
                 sbd[bd].add(' '.join(f'^{c}' for c in reversed(ds)))
         if max_depth>=5:
-            for ds in date4:
+            for position, ds in enumerate(date4):
+                if position % 128 == 0 and _kb.poll(): return dict(sbd)
                 app = ' '.join(f'${c}' for c in ds)
                 pre = ' '.join(f'^{c}' for c in reversed(ds))
                 for t_op in transform_ops:
@@ -966,12 +984,15 @@ class GPUEngine:
                             sbd[5].add(chain)
         bracket_ops = ['[',']']
         for dset,bd,br in ((date4,4,range(2,5)),(date6,6,range(1,3)),(date8,8,range(1,2))):
+            if _kb.poll(): return dict(sbd)
             for num_b in br:
+                if _kb.poll(): return dict(sbd)
                 nd = bd+num_b
                 if nd>max_depth: continue
                 for brackets in itertools.product(bracket_ops, repeat=num_b):
                     bpfx = ' '.join(brackets)
-                    for ds in dset:
+                    for position, ds in enumerate(dset):
+                        if position % 256 == 0 and _kb.poll(): return dict(sbd)
                         app = ' '.join(f'${c}' for c in ds)
                         pre = ' '.join(f'^{c}' for c in reversed(ds))
                         for chain in (f"{bpfx} {app}", f"{bpfx} {pre}"):
@@ -979,25 +1000,33 @@ class GPUEngine:
                                 sbd[nd].add(chain)
         # F
         for depth in range(1, min(3,max_depth)+1):
+            if _kb.poll(): return dict(sbd)
             for combo in itertools.product(SPECIAL_CHARS_TOP, repeat=depth):
+                if _kb.poll(): return dict(sbd)
                 chain = ' '.join(f'${ch}' for ch in combo)
                 if HashcatRuleValidator.validate_rule_for_gpu(chain): sbd[depth].add(chain)
         # G
         for depth in range(1, min(3,max_depth)+1):
+            if _kb.poll(): return dict(sbd)
             for combo in itertools.product(SPECIAL_CHARS_TOP, repeat=depth):
+                if _kb.poll(): return dict(sbd)
                 chain = ' '.join(f'^{ch}' for ch in reversed(combo))
                 if HashcatRuleValidator.validate_rule_for_gpu(chain): sbd[depth].add(chain)
         # H
         sp_ops_top = [f'${ch}' for ch in SPECIAL_CHARS_TOP] + [f'^{ch}' for ch in SPECIAL_CHARS_TOP]
         for depth in range(2, min(3,max_depth)+1):
+            if _kb.poll(): return dict(sbd)
             for t_op in transform_ops:
+                if _kb.poll(): return dict(sbd)
                 for ops in itertools.product(sp_ops_top, repeat=depth-1):
                     seed = f"{t_op} {' '.join(ops)}"
                     if HashcatRuleValidator.validate_rule_for_gpu(seed): sbd[depth].add(seed)
         # I
         for depth in range(2, min(4,max_depth)+1):
+            if _kb.poll(): return dict(sbd)
             n_digits = depth-1
-            for digit_combo in itertools.product(digits, repeat=n_digits):
+            for position, digit_combo in enumerate(itertools.product(digits, repeat=n_digits)):
+                if position % 128 == 0 and _kb.poll(): return dict(sbd)
                 for sp in SPECIAL_CHARS_CORE:
                     app = ' '.join(f'${d}' for d in digit_combo) + f' ${sp}'
                     if HashcatRuleValidator.validate_rule_for_gpu(app): sbd[depth].add(app)
@@ -1005,29 +1034,35 @@ class GPUEngine:
                     if HashcatRuleValidator.validate_rule_for_gpu(pre): sbd[depth].add(pre)
         # J
         for op in LEET_OPS:
+            if _kb.poll(): return dict(sbd)
             if HashcatRuleValidator.validate_rule_for_gpu(op): sbd[1].add(op)
         if max_depth>=2:
             leet_followup = [f'${d}' for d in digits] + [f'^{d}' for d in digits] + \
                             [f'${ch}' for ch in SPECIAL_CHARS_CORE] + [f'^{ch}' for ch in SPECIAL_CHARS_CORE]
             for leet_op in LEET_OPS:
-                for follow in leet_followup:
+                if _kb.poll(): return dict(sbd)
+                for position, follow in enumerate(leet_followup):
+                    if position % 16 == 0 and _kb.poll(): return dict(sbd)
                     chain = f"{leet_op} {follow}"
                     if HashcatRuleValidator.validate_rule_for_gpu(chain): sbd[2].add(chain)
             for l1 in LEET_OPS:
                 for l2 in LEET_OPS:
+                    if _kb.poll(): return dict(sbd)
                     if l1!=l2 and HashcatRuleValidator.validate_rule_for_gpu(f"{l1} {l2}"):
                         sbd[2].add(f"{l1} {l2}")
         # K
         if max_depth>=2:
             for t1 in transform_ops:
                 for t2 in transform_ops:
+                    if _kb.poll(): return dict(sbd)
                     chain = f"{t1} {t2}"
                     if HashcatRuleValidator.validate_rule_for_gpu(chain): sbd[2].add(chain)
         # L
         for depth in range(2, min(3,max_depth)+1):
             n_digits = depth-1
             for sp in SPECIAL_CHARS_CORE:
-                for digit_combo in itertools.product(digits, repeat=n_digits):
+                for position, digit_combo in enumerate(itertools.product(digits, repeat=n_digits)):
+                    if position % 128 == 0 and _kb.poll(): return dict(sbd)
                     app = f'${sp} ' + ' '.join(f'${d}' for d in digit_combo)
                     if HashcatRuleValidator.validate_rule_for_gpu(app): sbd[depth].add(app)
                     pre = ' '.join(f'^{d}' for d in digit_combo) + f' ^{sp}'
@@ -1036,6 +1071,7 @@ class GPUEngine:
         if max_depth>=2:
             for leet_op in LEET_OPS:
                 for t_op in transform_ops:
+                    if _kb.poll(): return dict(sbd)
                     if HashcatRuleValidator.validate_rule_for_gpu(f"{leet_op} {t_op}"):
                         sbd[2].add(f"{leet_op} {t_op}")
                     if HashcatRuleValidator.validate_rule_for_gpu(f"{t_op} {leet_op}"):
@@ -1071,15 +1107,29 @@ class GPUEngine:
 
     def generate_informed_chains(self, rules, single_found, max_depth, seed_chains=None, prebuilt_sbd=None):
         max_depth = min(max_depth, MAX_HASHCAT_CHAIN)
-        valid = [r for r in rules if HashcatRuleValidator.validate_rule_for_gpu(r)]
-        if not valid: return []
+        valid = []
+        for position, rule in enumerate(rules):
+            if position % 4096 == 0 and _kb.poll(): return []
+            if HashcatRuleValidator.validate_rule_for_gpu(rule):
+                valid.append(rule)
+        if not valid or _kb.poll(): return []
         found_s = set(single_found.keys()) if single_found else set()
-        hot = [r for r in valid if r in found_s]
-        chains = set(valid)
+        if _kb.poll(): return []
+        hot = []
+        for position, rule in enumerate(valid):
+            if position % 4096 == 0 and _kb.poll(): return []
+            if rule in found_s: hot.append(rule)
+        chains = set()
+        for position, rule in enumerate(valid):
+            if position % 4096 == 0 and _kb.poll(): return []
+            chains.add(rule)
         if seed_chains:
-            for sc in seed_chains:
+            for position, sc in enumerate(seed_chains):
+                if position % 4096 == 0 and _kb.poll(): return []
                 if sc.count(' ') >= 1: chains.add(sc)
         for depth in range(2, max_depth+1):
+            if _kb.poll():
+                break
             budget = self.params.get(f'CHAIN_GEN_LIMIT_{depth}', 0)
             if budget <= 0: continue
             budget = min(budget, len(valid)**depth)
@@ -1128,7 +1178,11 @@ class GPUEngine:
                 if _kb.poll(): break
                 cb = chains[ci:ci + cbs]
                 seqs, depths = self._compute_chain_seqs(cb)
+                interrupted = False
                 for wi in range(0, len(base_words), wsb):
+                    if _kb.poll():
+                        interrupted = True
+                        break
                     end = min(wi + wsb, len(base_words))
                     bd = self.get_word_batch_data(wi, end)
                     if bd['num_words'] == 0: continue
@@ -1142,7 +1196,8 @@ class GPUEngine:
                         self._consecutive_errors = 0
                         counter.update(found)
                         hits_total += len(found)
-                if self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS: break
+                if interrupted or self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS:
+                    break
                 delta = len(cb) * len(base_words)
                 total_combos += delta
                 if _shared_combos is not None and _shared_lock is not None:
@@ -1205,6 +1260,7 @@ class GPUEngine:
             enqueue_t0 = time.perf_counter() if _profile is not None else None
             word_batch = max(1, int(self.params.get('WORD_SUB_BATCH', 20000)))
             for word_start in range(0, n_words_total, word_batch):
+                _kb.check_pause()
                 n_words = min(word_batch, n_words_total - word_start)
                 total = n_words * len(chains)
                 global_size = ((total + self.local_work_size - 1) // self.local_work_size) * self.local_work_size
@@ -1374,6 +1430,8 @@ class GPUEngine:
             )
             started = time.monotonic()
             for ci in range(0, len(chains), cbs):
+                if _kb.poll():
+                    break
                 cb = chains[ci:ci + cbs]
                 seqs, depths = self._compute_chain_seqs(cb)
                 if resident_base:
@@ -1382,7 +1440,11 @@ class GPUEngine:
                     )
                 else:
                     batch_counts = {chain: 0 for chain in cb}
+                    interrupted = False
                     for wi in range(0, n_words_total, wsb):
+                        if _kb.poll():
+                            interrupted = True
+                            break
                         end = min(wi + wsb, n_words_total)
                         bd = self.get_word_batch_data(wi, end)
                         part = self._run_chain_count_kernel(
@@ -1392,6 +1454,8 @@ class GPUEngine:
                             for chain, count in part.items():
                                 if chain in batch_counts:
                                     batch_counts[chain] += int(count)
+                    if interrupted:
+                        break
                 if batch_counts:
                     for chain, count in batch_counts.items():
                         if chain in hit_words:
@@ -1417,9 +1481,12 @@ class GPUEngine:
         completed_batches = 0
         processed_pairs = 0
         for ci in range(0, len(chains), cbs):
+            if _kb.poll():
+                break
             cb = chains[ci:ci+cbs]
             seqs, depths = self._compute_chain_seqs(cb)
             for wi in range(0, n_words_total, wsb):
+                _kb.check_pause()
                 end = min(wi + wsb, n_words_total)
                 bd = self.get_word_batch_data(wi, end)
                 if bd['num_words']:
@@ -2039,6 +2106,7 @@ class GPUEngine:
         word_batch = n_words_total if self._celf_words_resident else max(1, int(self.params.get("WORD_SUB_BATCH", 20000)))
         n_words_total = len(self._base_words_precomputed[1])
         for word_start in range(0, n_words_total, word_batch):
+            _kb.check_pause()
             word_end = min(word_start + word_batch, n_words_total)
             if self._celf_words_resident:
                 num_words = word_end - word_start

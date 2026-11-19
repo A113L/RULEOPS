@@ -14,6 +14,7 @@ import functools
 import shutil
 import threading
 import random
+import tempfile
 from collections import defaultdict
 
 from . import state
@@ -80,7 +81,16 @@ except ImportError:
     _HAS_MSVCRT = False
 
 class KeyboardController:
+    """One pause/resume/early-quit state machine for every RULEST process.
+
+    The parent process owns terminal input (or the web control file). A local
+    CLI run creates a small control file when it has a TTY, then broadcasts
+    keystrokes to child processes through that file. Spawned/forked workers
+    attach their own read-only listener and observe the same p/r/q sequence.
+    """
+
     def __init__(self):
+        self._owner_pid = os.getpid()
         self._paused = False
         self._quit = False
         self._lock = threading.Lock()
@@ -89,18 +99,62 @@ class KeyboardController:
         self._control_file = os.environ.get('RULEST_CONTROL_FILE')
         self._control_offset = 0
         self._active = False
+        self._quiet = False
+        self._owns_control_file = False
 
-    def start(self):
+    def _reset_after_fork(self):
+        """Discard inherited thread/lock state and start a fresh worker listener."""
+        pid = os.getpid()
+        if pid == self._owner_pid:
+            return
+        self._owner_pid = pid
+        self._paused = False
+        self._quit = False
+        self._lock = threading.Lock()
+        self._thread = None
+        self._control_thread = None
+        self._active = False
+        # Replay the command stream in the child. This restores the current
+        # paused/quit state even when the parent received p before forking.
+        self._control_offset = 0
+        self._quiet = True
+        self._owns_control_file = False
+        self._control_file = os.environ.get('RULEST_CONTROL_FILE') or self._control_file
+
+    def start(self, *, terminal=True, quiet=False):
+        self._reset_after_fork()
         if self._active:
             return
+        # A controller can be reused by an embedded caller or a test runner.
+        # Refresh the externally supplied path on every new run instead of
+        # retaining the previous run's control file and read offset.
+        env_control_file = os.environ.get('RULEST_CONTROL_FILE')
+        if env_control_file != self._control_file:
+            self._control_file = env_control_file
+            self._control_offset = 0
+        with self._lock:
+            self._paused = False
+            self._quit = False
+        has_terminal = bool(terminal and sys.stdin.isatty() and (_HAS_TERMIOS or _HAS_MSVCRT))
+
+        # A local terminal run still needs an IPC channel for GPU/CPU workers.
+        # Only the parent reads the keyboard; workers read this file instead.
+        if has_terminal and not self._control_file:
+            fd, path = tempfile.mkstemp(prefix='rulest-control-', suffix='.txt')
+            os.close(fd)
+            self._control_file = path
+            self._owns_control_file = True
+            os.environ['RULEST_CONTROL_FILE'] = path
+
         has_control_file = bool(self._control_file)
-        has_terminal = sys.stdin.isatty() and (_HAS_TERMIOS or _HAS_MSVCRT)
         if not (has_control_file or has_terminal):
             return
+        self._quiet = bool(quiet)
         self._active = True
-        # The web control panel sends p/r/q commands through this file because
-        # subprocess stdin is not an interactive terminal.
-        if has_control_file:
+
+        # In an interactive parent, commands are broadcast directly from the
+        # keyboard reader. In web/headless mode this process reads the file.
+        if has_control_file and not has_terminal:
             self._control_thread = threading.Thread(
                 target=self._reader_control_file, daemon=True, name='control-file-listener'
             )
@@ -110,7 +164,39 @@ class KeyboardController:
             self._thread.start()
 
     def stop(self):
+        self._reset_after_fork()
         self._active = False
+        with self._lock:
+            self._paused = False
+        current = threading.current_thread()
+        for thread in (self._thread, self._control_thread):
+            if thread is not None and thread is not current and thread.is_alive():
+                thread.join(timeout=0.5)
+        self._thread = None
+        self._control_thread = None
+        with self._lock:
+            self._paused = False
+            self._quit = False
+        if self._owns_control_file and self._control_file:
+            path = self._control_file
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            if os.environ.get('RULEST_CONTROL_FILE') == path:
+                os.environ.pop('RULEST_CONTROL_FILE', None)
+            self._control_file = None
+            self._owns_control_file = False
+
+    def _broadcast(self, command):
+        path = self._control_file
+        if not path:
+            return
+        try:
+            with open(path, 'a', encoding='ascii') as stream:
+                stream.write(command + '\n')
+        except OSError:
+            pass
 
     def _reader_control_file(self):
         while self._active:
@@ -122,63 +208,83 @@ class KeyboardController:
                 for command in incoming.splitlines():
                     command = command.strip().lower()
                     if command in ('p', 'r', 'q'):
-                        self._handle(command)
+                        self._handle(command, broadcast=False)
             except FileNotFoundError:
                 pass
             except OSError:
-                # A transient file-access issue should not kill the engine's
-                # keyboard/control listener; the next polling cycle retries.
+                # A transient file-access issue should not kill the listener.
                 pass
             time.sleep(0.1)
 
     def check_pause(self):
-        """Block while paused (unless quit was requested). Call from every
-        long-running stage loop so [p]/[r] work outside STAGE 1/2 as well."""
-        while True:
+        """Block at a safe checkpoint while paused; quit always releases it."""
+        while self._active:
             with self._lock:
                 if not self._paused or self._quit:
                     return
-            time.sleep(0.15)
+            time.sleep(0.05)
 
     def poll(self):
-        """Honour pause, then report whether quit was requested.
-        Preferred one-liner for stage loops: ``if _kb.poll(): break``."""
+        """Wait out pause and return True once early quit has been requested."""
         self.check_pause()
         return self.quit_requested
+
+    @property
+    def paused(self):
+        with self._lock:
+            return self._paused
 
     @property
     def quit_requested(self):
         with self._lock:
             return self._quit
 
-    def _handle(self, ch):
+    def request(self, action):
+        """Apply an action through the same state machine used by keyboard/UI."""
+        command = {'pause': 'p', 'resume': 'r', 'early_quit': 'q', 'quit': 'q', 'stop': 'q'}.get(action)
+        if command is None:
+            raise ValueError(f'Unsupported RULEST control action: {action!r}')
+        self._handle(command, broadcast=True)
+
+    def _handle(self, ch, *, broadcast=False):
         ch = ch.lower()
-        if ch == 'p':
-            with self._lock:
-                if self._quit: return
+        if ch not in ('p', 'r', 'q'):
+            return
+        if broadcast:
+            self._broadcast(ch)
+        message = None
+        with self._lock:
+            if ch == 'p':
+                if self._quit or self._paused:
+                    return
                 self._paused = True
-            w = shutil.get_terminal_size((80,24)).columns
-            print(f"\n{yellow('─'*w)}")
-            print(f"{yellow('│')} {bold('PAUSED')}  —  press {bold(green('r'))} resume  |  {bold(yellow('q'))} save & quit")
-            print(f"{yellow('─'*w)}")
-        elif ch == 'r':
-            with self._lock:
-                if not self._paused: return
+                message = 'PAUSED'
+            elif ch == 'r':
+                if self._quit or not self._paused:
+                    return
                 self._paused = False
-            w = shutil.get_terminal_size((80,24)).columns
-            print(f"\n{green('─'*w)}")
-            print(f"{green('│')} {bold('RESUMED')}")
-            print(f"{green('─'*w)}\n")
-        elif ch == 'q':
-            with self._lock:
+                message = 'RESUMED'
+            else:
                 already = self._quit
                 self._quit = True
                 self._paused = False
-            if not already:
-                w = shutil.get_terminal_size((80,24)).columns
-                print(f"\n{yellow('─'*w)}")
-                print(f"{yellow('│')} {bold(yellow('EARLY EXIT REQUESTED'))}  —  finishing current batch then saving …")
-                print(f"{yellow('─'*w)}\n")
+                if not already:
+                    message = 'EARLY EXIT REQUESTED'
+        if self._quiet or message is None:
+            return
+        w = shutil.get_terminal_size((80, 24)).columns
+        if message == 'PAUSED':
+            print(f"\n{yellow('─' * w)}")
+            print(f"{yellow('│')} {bold('PAUSED')}  —  press {bold(green('r'))} resume  |  {bold(yellow('q'))} save & quit")
+            print(f"{yellow('─' * w)}")
+        elif message == 'RESUMED':
+            print(f"\n{green('─' * w)}")
+            print(f"{green('│')} {bold('RESUMED')}")
+            print(f"{green('─' * w)}\n")
+        else:
+            print(f"\n{yellow('─' * w)}")
+            print(f"{yellow('│')} {bold(yellow('EARLY EXIT REQUESTED'))}  —  finishing current safe batch then saving …")
+            print(f"{yellow('─' * w)}\n")
 
     def _reader_termios(self):
         fd = sys.stdin.fileno()
@@ -186,21 +292,32 @@ class KeyboardController:
         try:
             _tty.setcbreak(fd)
             while self._active:
-                if _select.select([sys.stdin],[],[],0.15)[0]:
-                    self._handle(sys.stdin.read(1))
-        except Exception: pass
+                if _select.select([sys.stdin], [], [], 0.15)[0]:
+                    self._handle(sys.stdin.read(1), broadcast=True)
+        except Exception:
+            pass
         finally:
-            try: _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
-            except Exception: pass
+            try:
+                _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
+            except Exception:
+                pass
 
     def _reader_msvcrt(self):
         while self._active:
-            if _msvcrt.kbhit(): self._handle(_msvcrt.getwch())
-            else: time.sleep(0.05)
+            if _msvcrt.kbhit():
+                self._handle(_msvcrt.getwch(), broadcast=True)
+            else:
+                time.sleep(0.05)
 
     def _reader(self):
-        if _HAS_TERMIOS: self._reader_termios()
-        elif _HAS_MSVCRT: self._reader_msvcrt()
+        if _HAS_TERMIOS:
+            self._reader_termios()
+        elif _HAS_MSVCRT:
+            self._reader_msvcrt()
+
+class EarlyExitRequested(Exception):
+    """Raised when early quit is requested during a phase with no results yet."""
+
 
 _kb = KeyboardController()
 

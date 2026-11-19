@@ -693,6 +693,9 @@ class GeneticRuleEvolver:
                         f"budget left={budget_left:.0f}s"
                     )
                     hit_words = self.evaluate_population(pop)
+                    if _kb.quit_requested:
+                        log_warn("[S3] Early exit — discarding the in-progress generation")
+                        break
                     raw = {c: _hit_count(hits) for c, hits in hit_words.items()}
                     raw_scaled = raw if scale==1.0 else {c: int(round(h*scale)) for c,h in raw.items()}
                     self._update_sig_registry(raw_scaled)

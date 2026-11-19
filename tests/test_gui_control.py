@@ -482,3 +482,135 @@ def test_build_command_accepts_zero_rng_seed(tmp_path, monkeypatch):
     })
     command, _ = app.build_command({"output_name": "rules.txt", "rng_seed": 0}, tmp_path)
     assert command[command.index("--seed") + 1] == "0"
+
+
+def _wait_for_shared_early_quit(control_file, result_queue):
+    """Small spawned worker used to verify that the run control is broadcast."""
+    os.environ["RULEST_CONTROL_FILE"] = str(control_file)
+    from rulest.common import _kb
+    _kb.start(terminal=False, quiet=True)
+    deadline = time.time() + 5
+    while time.time() < deadline and not _kb.quit_requested:
+        time.sleep(0.02)
+    result_queue.put(_kb.quit_requested)
+    _kb.stop()
+
+
+def test_parent_early_quit_is_broadcast_to_spawned_worker(tmp_path, monkeypatch):
+    import multiprocessing as mp
+
+    control_file = tmp_path / "control.txt"
+    control_file.write_text("", encoding="ascii")
+    monkeypatch.setenv("RULEST_CONTROL_FILE", str(control_file))
+
+    controller = KeyboardController()
+    controller.start(terminal=False)
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    worker = ctx.Process(
+        target=_wait_for_shared_early_quit,
+        args=(str(control_file), result_queue),
+    )
+    try:
+        worker.start()
+        controller.request("early_quit")
+        assert result_queue.get(timeout=6) is True
+        worker.join(timeout=3)
+        assert worker.exitcode == 0
+        assert control_file.read_text(encoding="ascii").splitlines() == ["q"]
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout=2)
+        controller.stop()
+
+
+def test_keyboard_controller_request_broadcasts_pause_and_resume(tmp_path, monkeypatch):
+    control_file = tmp_path / "control.txt"
+    control_file.write_text("", encoding="ascii")
+    monkeypatch.setenv("RULEST_CONTROL_FILE", str(control_file))
+    controller = KeyboardController()
+    controller.start(terminal=False, quiet=True)
+    try:
+        controller.request("pause")
+        assert controller.paused
+        controller.request("resume")
+        assert not controller.paused
+        assert control_file.read_text(encoding="ascii").splitlines() == ["p", "r"]
+    finally:
+        controller.stop()
+
+
+def _observe_shared_pause_resume_quit(control_file, result_queue):
+    os.environ["RULEST_CONTROL_FILE"] = str(control_file)
+    from rulest.common import _kb
+    _kb.start(terminal=False, quiet=True)
+    result_queue.put("ready")
+    deadline = time.time() + 8
+    while time.time() < deadline and not _kb.paused:
+        time.sleep(0.02)
+    paused = _kb.paused
+    result_queue.put(("paused", paused))
+    while time.time() < deadline and _kb.paused:
+        time.sleep(0.02)
+    resumed = not _kb.paused
+    while time.time() < deadline and not _kb.quit_requested:
+        time.sleep(0.02)
+    result_queue.put(("finished", resumed, _kb.quit_requested))
+    _kb.stop()
+
+
+def test_parent_pause_resume_and_quit_reach_spawned_worker(tmp_path, monkeypatch):
+    import multiprocessing as mp
+
+    control_file = tmp_path / "control.txt"
+    control_file.write_text("", encoding="ascii")
+    monkeypatch.setenv("RULEST_CONTROL_FILE", str(control_file))
+    controller = KeyboardController()
+    controller.start(terminal=False, quiet=True)
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    worker = ctx.Process(
+        target=_observe_shared_pause_resume_quit,
+        args=(str(control_file), result_queue),
+    )
+    try:
+        worker.start()
+        assert result_queue.get(timeout=6) == "ready"
+        controller.request("pause")
+        assert result_queue.get(timeout=3) == ("paused", True)
+        controller.request("resume")
+        controller.request("early_quit")
+        assert result_queue.get(timeout=6) == ("finished", True, True)
+        worker.join(timeout=3)
+        assert worker.exitcode == 0
+        assert control_file.read_text(encoding="ascii").splitlines() == ["p", "r", "q"]
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout=2)
+        controller.stop()
+
+
+def test_keyboard_controller_refreshes_control_file_between_runs(tmp_path, monkeypatch):
+    first_file = tmp_path / "control-first.txt"
+    second_file = tmp_path / "control-second.txt"
+    first_file.write_text("", encoding="ascii")
+    second_file.write_text("", encoding="ascii")
+    monkeypatch.setenv("RULEST_CONTROL_FILE", str(first_file))
+    controller = KeyboardController()
+    controller.start(terminal=False, quiet=True)
+    controller.request("pause")
+    assert controller.paused
+    controller.stop()
+    assert not controller.paused and not controller.quit_requested
+
+    monkeypatch.setenv("RULEST_CONTROL_FILE", str(second_file))
+    controller.start(terminal=False, quiet=True)
+    try:
+        controller.request("resume")
+        controller.request("stop")
+        assert second_file.read_text(encoding="ascii").splitlines() == ["r", "q"]
+        assert first_file.read_text(encoding="ascii").splitlines() == ["p"]
+    finally:
+        controller.stop()

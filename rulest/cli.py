@@ -8,6 +8,7 @@ import gc
 import time
 import shutil
 import argparse
+import atexit
 import datetime
 import multiprocessing as mp
 from collections import defaultdict
@@ -18,7 +19,7 @@ from . import state
 from .common import (
     print_banner, _print_controls, log_info, log_warn, log_error,
     bold, cyan, green, yellow, red, dim, _kb, safe_worker_count, set_global_seed,
-    MAX_HASHCAT_CHAIN, BUILTIN_PROBES,
+    MAX_HASHCAT_CHAIN, BUILTIN_PROBES, EarlyExitRequested,
 )
 from .devices import list_devices
 from .extractor import GPUExtractor
@@ -208,17 +209,45 @@ def main():
         log_info(f"  {bold(dim('SELECT'))}  : {dim('frequency')} — sort by raw GPU hit count (--select-mode greedy to enable)")
     print()
 
-    # Keep both corpora resident in Shared Memory.  The base loader retains
-    # its compact membership table when Stage 0 is enabled, so Windows spawn
-    # workers attach to one table rather than receiving a pickled Python set.
-    base_words = load_wordlist(
-        args.base_wordlist,
-        retain_membership_index=bool(args.token_strip and args.token_strip_bloom_mb == 0),
-    )
-    target_words = load_wordlist(args.target_wordlist)
-    print()
-
+    # Start the one run-wide controller before reading either corpus. The
+    # same control stream is inherited by Stage 0, minimizer and GPU workers.
     _kb.start()
+    atexit.register(_kb.stop)
+
+    # Keep both corpora resident in Shared Memory. The loader also checks the
+    # shared controller between file blocks, so q can stop this phase cleanly.
+    base_words = None
+    target_words = None
+    try:
+        base_words = load_wordlist(
+            args.base_wordlist,
+            retain_membership_index=bool(args.token_strip and args.token_strip_bloom_mb == 0),
+        )
+        target_words = load_wordlist(args.target_wordlist)
+    except EarlyExitRequested:
+        log_warn("[QUIT] Early exit during wordlist loading — no rules had been generated")
+        for _wordlist in (base_words, target_words):
+            close_wordlist = getattr(_wordlist, "close", None)
+            if callable(close_wordlist):
+                try:
+                    close_wordlist()
+                except Exception:
+                    pass
+        _kb.stop()
+        return
+    print()
+    if _kb.poll():
+        log_warn("[QUIT] Early exit after wordlist loading — GPU initialization skipped")
+        for _wordlist in (base_words, target_words):
+            close_wordlist = getattr(_wordlist, "close", None)
+            if callable(close_wordlist):
+                try:
+                    close_wordlist()
+                except Exception:
+                    pass
+        _kb.stop()
+        return
+
     t_start = time.time()
     stage_profiler.begin_run()
     extractor = GPUExtractor(
@@ -252,13 +281,13 @@ def main():
     try:
         raw_counts = extractor.extract_rules(base_words, target_words, **depth_overrides)
     finally:
-        if isinstance(extractor.gpu_engine, MultiGPUEngine) and args.select_mode != 'greedy':
+        if isinstance(extractor.gpu_engine, MultiGPUEngine) and (args.select_mode != 'greedy' or _kb.quit_requested):
             extractor.gpu_engine.shutdown()
     # Keep keyboard listener alive through minimize + coverage + CELF +
     # local-search so [p]/[r]/[q] work on every stage, not only STAGE 0–3.
 
-    if args.select_mode != 'greedy':
-        # Frequency mode never touches either corpus after extraction/minimize
+    if args.select_mode != 'greedy' or _kb.quit_requested:
+        # Frequency mode / an early-quit greedy run no longer touches either corpus after extraction/minimize
         # input collection. Release engine caches/callbacks before closing the
         # shared segments, then free both wordlists before the expensive
         # minimization pass (important for 400MB+ TARGET files).
@@ -283,9 +312,14 @@ def main():
     raw_candidate_count = len(raw_counts)
     log_info(f"\n[GPU]  Raw bloom-filter candidates: {bold(cyan(str(raw_candidate_count)))}"); print()
 
-    with stage_profiler.track("Minimization (dedup)", unit="rule") as _mint:
-        final_counts = minimize_by_signature(raw_counts, BUILTIN_PROBES)
-        _mint.set_count(raw_candidate_count)
+    if _kb.quit_requested:
+        log_warn("[MIN] Skipped — early exit requested; preserving discovered candidates without deduplication")
+        final_counts = raw_counts
+        stage_profiler.note("Minimization (dedup)", extra="skipped: early exit")
+    else:
+        with stage_profiler.track("Minimization (dedup)", unit="rule") as _mint:
+            final_counts = minimize_by_signature(raw_counts, BUILTIN_PROBES)
+            _mint.set_count(raw_candidate_count)
     if ':' not in final_counts: final_counts[':'] = 0
 
     # The raw Counter can contain millions of Python dict entries.  It is no
@@ -294,8 +328,33 @@ def main():
     del raw_counts
     gc.collect()
 
+    if args.select_mode == 'greedy' and _kb.quit_requested:
+        # A quit can arrive during minimization, after the extraction cleanup
+        # branch above. CELF will be skipped, so release its retained inputs now.
+        gpu_engine = getattr(extractor, "gpu_engine", None)
+        if isinstance(gpu_engine, MultiGPUEngine):
+            gpu_engine.shutdown()
+        if gpu_engine is not None:
+            try:
+                release = getattr(gpu_engine, "release_run_references", None)
+                if callable(release):
+                    release()
+            except Exception as exc:
+                log_warn(f"[RAM] Could not release GPU references after early quit: {exc}")
+        for _wordlist_name, _wordlist in (("base_words", base_words), ("target_words", target_words)):
+            close_wordlist = getattr(_wordlist, "close", None)
+            if callable(close_wordlist):
+                try:
+                    close_wordlist()
+                except Exception as exc:
+                    log_warn(f"[RAM] Could not close {_wordlist_name} after early quit: {exc}")
+        target_words = None
+        gc.collect()
+
     depth_dist = defaultdict(int)
-    for r in final_counts:
+    for index, r in enumerate(final_counts):
+        if index % 16384 == 0 and _kb.poll():
+            break
         if r != ':': depth_dist[len(r.split())] += 1
     ds = '  '.join(f"d{d}:{depth_dist[d]:,}" for d in sorted(depth_dist))
     final_rules = len(final_counts) - (1 if ':' in final_counts else 0)
@@ -304,9 +363,20 @@ def main():
     # Greedy CELF consumes the rule pool directly; sorting millions of rules
     # by frequency here was unused work and an avoidable large temporary list.
     si = None
-    if args.select_mode != 'greedy':
-        si = sorted(final_counts.items(), key=lambda kv: (-kv[1], len(kv[0].split()), kv[0]))
+    if args.select_mode != 'greedy' or _kb.quit_requested:
+        si = (
+            list(final_counts.items())
+            if _kb.quit_requested else
+            sorted(final_counts.items(), key=lambda kv: (-kv[1], len(kv[0].split()), kv[0]))
+        )
+        if _kb.quit_requested and si:
+            # Sorting is a single C/Python sort operation, so it cannot be
+            # interrupted mid-flight. Switch back to discovery order as soon
+            # as it returns, then skip every later expensive selection phase.
+            si = None
+            si = list(final_counts.items())
     def _write_ruleset_file(path, ordered_rules, sort_desc, extra_header=None):
+        quit_at_write_start = _kb.quit_requested
         with open(path, 'w', encoding='utf-8') as f:
             f.write("# rulest — GPU-Compatible Hashcat Rules Engine (optimized)\n")
             f.write(f"# Generated      : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -329,11 +399,21 @@ def main():
             if extra_header:
                 for line in extra_header:
                     f.write(f"# {line}\n")
+            if _kb.quit_requested:
+                f.write("# EARLY EXIT: partial run; remaining work was skipped.\n")
             f.write(":\n")
-            for r in ordered_rules:
-                if r != ':': f.write(f"{r}\n")
+            written = 0
+            for index, r in enumerate(ordered_rules):
+                if not quit_at_write_start and index % 8192 == 0 and _kb.poll():
+                    break
+                if r != ':':
+                    f.write(f"{r}\n")
+                    written += 1
+            if written < len(ordered_rules) and _kb.quit_requested:
+                f.write(f"# EARLY EXIT: wrote {written:,} of {len(ordered_rules):,} requested rules.\n")
+            return written
 
-    if args.select_mode == 'greedy':
+    if args.select_mode == 'greedy' and not _kb.quit_requested:
         if isinstance(extractor.gpu_engine, MultiGPUEngine) and not extractor.gpu_engine.engines:
             log_error("[GPU]  No GPU device is available for selection -- every GPU "
                       "became unresponsive during extraction. Re-run with a single, "
@@ -360,33 +440,41 @@ def main():
             if isinstance(extractor.gpu_engine, MultiGPUEngine):
                 extractor.gpu_engine.shutdown()
 
-        ordered_rules = [rule for rule, _gain in selected]
-        top_selected = list(selected)
+        if _kb.quit_requested and not selected:
+            log_warn("[CELF] Early exit before the first winner — saving discovered candidates in discovery order")
+            ordered_rules = [rule for rule in final_counts if rule != ':']
+            top_selected = None
+            sort_desc = "discovery order (early quit before greedy winner)"
+        else:
+            ordered_rules = [rule for rule, _gain in selected]
+            top_selected = list(selected)
+            sort_desc = (
+                f"greedy marginal coverage (CELF upper-bound + GPU recompute, "
+                f"cost_alpha={args.select_cost_alpha})"
+            )
         n_covered = int(covered_mask.sum())
         recovery_pct = n_covered / max(1, n_target)
-        sort_desc = (
-            f"greedy marginal coverage (CELF upper-bound + GPU recompute, "
-            f"cost_alpha={args.select_cost_alpha})"
-        )
         extra_header = [
             f"SELECT mode     : greedy (budget="
             f"{'unbounded/saturation' if budget is None else budget})",
             f"Target recovery : {n_covered:,}/{n_target:,} "
             f"({recovery_pct:.2%}) (exact distinct target coverage)",
         ]
+        if _kb.quit_requested:
+            extra_header.append("EARLY EXIT       : partial greedy selection stopped at a safe batch boundary")
         if args.exact_recovery:
             extra_header.append(
                 f"Exact recovery  : {n_covered:,}/{n_target:,} "
                 f"({recovery_pct:.2%}) (GPU exact verification; no coverage matrix)"
             )
 
-        _write_ruleset_file(args.output, ordered_rules, sort_desc, extra_header)
+        output_rules_written = _write_ruleset_file(args.output, ordered_rules, sort_desc, extra_header)
         log_info(
             f"[OUT] Greedy ruleset written to: {bold(args.output)} "
-            f"({bold(str(len(ordered_rules)))} rules, recovery {bold(f'{recovery_pct:.2%}')})"
+            f"({bold(str(output_rules_written))} rules written, recovery {bold(f'{recovery_pct:.2%}')})"
         )
 
-        if args.select_budgets:
+        if args.select_budgets and not _kb.quit_requested:
             budgets = sorted({
                 int(value) for value in args.select_budgets.split(',')
                 if value.strip() and int(value) > 0
@@ -421,12 +509,18 @@ def main():
         del target_words
         gc.collect()
     else:
-        ordered_rules = [r for r, _ in si]
+        ordered_rules = [r for r, _ in si if r != ':']
         top_selected = None  # frequency mode: final summary uses GPU hit counts
-        _write_ruleset_file(args.output, ordered_rules, "GPU frequency (descending, UTF-8)")
-        log_info(f"[OUT]  Minimized rules written to: {bold(args.output)}")
+        if _kb.quit_requested:
+            sort_desc = "discovery order (frequency sort / greedy selection skipped by early quit)"
+            extra_header = ["EARLY EXIT       : remaining selection and sorting skipped; discovered candidates saved"]
+        else:
+            sort_desc = "GPU frequency (descending, UTF-8)"
+            extra_header = None
+        output_rules_written = _write_ruleset_file(args.output, ordered_rules, sort_desc, extra_header)
+        log_info(f"[OUT]  Rules written to: {bold(args.output)} ({output_rules_written:,} rules)")
 
-        if args.select_budgets:
+        if args.select_budgets and not _kb.quit_requested:
             # Cut the SAME frequency-descending ordering at the same sizes
             # used for the greedy budget sweep, so benchmark runs compare
             # like-for-like rule-COUNT (not "whatever frequency mode felt
@@ -485,10 +579,13 @@ def main():
                 f"{r:<42s}  gain={cyan(gain_s)}  {dim(f'freq={freq}')}"
             )
     else:
-        top = sorted(
-            [(r, c) for r, c in final_counts.items() if r != ':'],
-            key=lambda kv: (-kv[1], len(kv[0].split()), kv[0]),
-        )[:20]
+        if _kb.quit_requested:
+            top = [(r, c) for r, c in final_counts.items() if r != ':'][:20]
+        else:
+            top = sorted(
+                [(r, c) for r, c in final_counts.items() if r != ':'],
+                key=lambda kv: (-kv[1], len(kv[0].split()), kv[0]),
+            )[:20]
         if top:
             print(); log_info(f"  Top {len(top)} rules by GPU frequency:")
             for i, (r, c) in enumerate(top, 1):
@@ -502,6 +599,11 @@ def main():
     # wordlist mappings. Stage 2/3 and CELF can cache a zero-copy flattened
     # BASE view in GPUEngine._base_words_precomputed.
     gpu_engine = getattr(extractor, "gpu_engine", None)
+    if isinstance(gpu_engine, MultiGPUEngine):
+        try:
+            gpu_engine.shutdown()
+        except Exception as exc:
+            log_warn(f"[RAM] Could not shut down GPU workers: {exc}")
     if gpu_engine is not None:
         try:
             release_run_references = getattr(gpu_engine, "release_run_references", None)

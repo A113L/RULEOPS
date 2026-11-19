@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090d17">
+  <meta name="description" content="RULEOPS is an open-source, GPU-accelerated research workbench for generating, ranking and optimizing Hashcat rule sets.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="RULEOPS — Rule Generation, Ranking & Optimization">
+  <meta property="og:description" content="A unified toolchain for authorized password-security research: generate, rank, select and minimize Hashcat rule sets.">
+  <title>RULEOPS — Rule Generation, Ranking &amp; Optimization</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090d17;
+      --panel: #101827;
+      --panel-2: #121e30;
+      --line: rgba(166, 190, 224, .15);
+      --text: #eff5ff;
+      --muted: #9cabc2;
+      --soft: #c6d1e1;
+      --cyan: #71e2dc;
+      --blue: #7ba8ff;
+      --violet: #aa94ff;
+      --lime: #c7f36b;
+      --radius: 22px;
+      --max: 1160px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 88px; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(ellipse at 76% 8%, rgba(104, 119, 255, .13), transparent 34rem),
+        radial-gradient(ellipse at 8% 34%, rgba(48, 207, 190, .08), transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; }
+    .wrap { width: min(var(--max), calc(100% - 44px)); margin-inline: auto; }
+    .announcement {
+      border-bottom: 1px solid var(--line);
+      background: rgba(11, 17, 29, .82);
+      color: var(--muted);
+      text-align: center;
+      font-size: .78rem;
+      letter-spacing: .04em;
+      padding: 8px 16px;
+    }
+    .announcement strong { color: var(--lime); font-weight: 700; }
+    .header {
+      position: sticky; top: 0; z-index: 20;
+      backdrop-filter: blur(18px);
+      background: rgba(9, 13, 23, .82);
+      border-bottom: 1px solid var(--line);
+    }
+    .nav { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .brand { display: inline-flex; align-items: center; gap: 12px; font-weight: 850; letter-spacing: .105em; font-size: 1rem; }
+    .brand-mark { width: 36px; height: 36px; display: block; }
+    .brand small { color: var(--muted); font-weight: 600; letter-spacing: .04em; margin-left: 2px; }
+    .nav-links { display: flex; align-items: center; gap: 26px; color: var(--muted); font-size: .9rem; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-actions { display: flex; align-items: center; gap: 10px; }
+    .menu-button { display: none; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: var(--panel); padding: 8px 11px; }
+    .button {
+      display: inline-flex; justify-content: center; align-items: center; gap: 9px;
+      border: 1px solid transparent; border-radius: 12px; padding: 11px 17px;
+      font-size: .9rem; font-weight: 750; transition: transform .18s ease, border-color .18s ease, background .18s ease;
+      cursor: pointer;
+    }
+    .button:hover { transform: translateY(-2px); }
+    .button-primary { color: #081116; background: linear-gradient(110deg, var(--cyan), var(--lime)); box-shadow: 0 8px 30px rgba(113, 226, 220, .13); }
+    .button-ghost { border-color: var(--line); background: rgba(255,255,255,.025); color: var(--soft); }
+    .button-ghost:hover { border-color: rgba(113, 226, 220, .45); }
+    .hero { padding: 92px 0 74px; overflow: hidden; }
+    .hero-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 64px; align-items: center; }
+    .eyebrow { display: inline-flex; gap: 9px; align-items: center; color: var(--cyan); text-transform: uppercase; letter-spacing: .16em; font-size: .72rem; font-weight: 800; }
+    .eyebrow::before { content: ""; width: 22px; height: 1px; background: currentColor; }
+    h1 { margin: 20px 0 20px; max-width: 720px; font-size: clamp(3rem, 6vw, 5.45rem); line-height: .99; letter-spacing: -.065em; font-weight: 850; }
+    .gradient-text { background: linear-gradient(100deg, #f4f8ff 10%, var(--cyan) 55%, var(--violet) 100%); color: transparent; -webkit-background-clip: text; background-clip: text; }
+    .hero-copy { max-width: 610px; color: var(--muted); font-size: 1.12rem; line-height: 1.8; }
+    .hero-copy strong { color: var(--soft); font-weight: 650; }
+    .hero-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+    .hero-note { color: #74849c; font-size: .78rem; margin-top: 19px; }
+    .terminal-wrap { position: relative; }
+    .glow { position: absolute; inset: 10% 0; background: linear-gradient(120deg, rgba(113,226,220,.18), rgba(170,148,255,.2)); filter: blur(70px); z-index: -1; }
+    .terminal {
+      border: 1px solid rgba(164, 188, 224, .2); background: linear-gradient(145deg, rgba(20,31,49,.96), rgba(12,19,32,.98));
+      border-radius: 20px; overflow: hidden; box-shadow: 0 30px 90px rgba(0,0,0,.34); transform: perspective(1200px) rotateY(-4deg) rotateX(2deg);
+    }
+    .terminal-top { height: 48px; border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 17px; gap: 7px; color: #7e8ea7; font-size: .72rem; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #60718a; }
+    .terminal-label { margin-left: auto; letter-spacing: .08em; text-transform: uppercase; }
+    .terminal-body { padding: 24px 23px 26px; }
+    .terminal-line { display: flex; gap: 11px; font: 500 .84rem/1.8 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #b8c6db; }
+    .prompt { color: var(--lime); }
+    .code-muted { color: #71839d; }
+    .code-cyan { color: var(--cyan); }
+    .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 25px 0 20px; }
+    .flow-step { position: relative; min-height: 82px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.025); text-align: center; font-size: .72rem; color: var(--soft); }
+    .flow-step:not(:last-child)::after { content: "›"; position: absolute; right: -8px; top: 25px; color: var(--cyan); z-index: 2; font-size: 1.15rem; }
+    .flow-step b { font-size: .7rem; color: var(--cyan); letter-spacing: .08em; margin-bottom: 5px; }
+    .terminal-status { display: flex; justify-content: space-between; gap: 14px; align-items: center; border-top: 1px solid var(--line); padding-top: 17px; color: #8293ab; font-size: .72rem; }
+    .status-live { color: var(--lime); }
+    .trust-strip { border-block: 1px solid var(--line); background: rgba(255,255,255,.018); }
+    .trust-grid { display: grid; grid-template-columns: repeat(4, 1fr); }
+    .trust-item { padding: 22px 18px; text-align: center; border-right: 1px solid var(--line); }
+    .trust-item:last-child { border-right: 0; }
+    .trust-item b { display: block; color: var(--text); font-size: .92rem; }
+    .trust-item span { color: var(--muted); font-size: .76rem; }
+    section { padding: 94px 0; }
+    .section-head { max-width: 680px; margin-bottom: 38px; }
+    .kicker { color: var(--cyan); font-size: .72rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+    h2 { margin: 12px 0 14px; font-size: clamp(2rem, 4.3vw, 3.35rem); line-height: 1.08; letter-spacing: -.05em; }
+    .section-head p { margin: 0; color: var(--muted); font-size: 1.02rem; }
+    .tool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+    .tool-card { min-height: 220px; padding: 25px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(18,30,48,.85), rgba(13,21,35,.82)); transition: transform .2s ease, border-color .2s ease; }
+    .tool-card:hover { transform: translateY(-4px); border-color: rgba(113,226,220,.38); }
+    .tool-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .tool-icon { width: 39px; height: 39px; display: grid; place-items: center; border: 1px solid rgba(113,226,220,.2); border-radius: 12px; color: var(--cyan); background: rgba(113,226,220,.06); font-size: 1.1rem; font-weight: 800; }
+    .tool-tag { border: 1px solid var(--line); border-radius: 999px; color: #8798b1; font-size: .65rem; padding: 4px 9px; text-transform: uppercase; letter-spacing: .08em; }
+    .tool-card h3 { margin: 0 0 8px; font-size: 1.1rem; letter-spacing: -.02em; }
+    .tool-card p { margin: 0; color: var(--muted); font-size: .88rem; line-height: 1.7; }
+    .pipeline-section { background: linear-gradient(180deg, transparent, rgba(20,31,49,.42), transparent); }
+    .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .pipeline-card { position: relative; padding: 23px 22px; border: 1px solid var(--line); border-radius: 18px; background: rgba(14,23,38,.86); }
+    .pipeline-card .num { font: 800 .74rem ui-monospace, monospace; color: var(--violet); letter-spacing: .12em; }
+    .pipeline-card h3 { margin: 13px 0 6px; font-size: 1rem; }
+    .pipeline-card p { margin: 0; color: var(--muted); font-size: .83rem; }
+    .memory-layout { display: grid; grid-template-columns: .8fr 1.2fr; gap: 55px; align-items: start; }
+    .memory-intro { position: sticky; top: 110px; }
+    .memory-intro p { color: var(--muted); }
+    .memory-list { display: grid; gap: 12px; }
+    .memory-item { display: grid; grid-template-columns: 42px 1fr; gap: 16px; padding: 19px; border: 1px solid var(--line); border-radius: 16px; background: rgba(16,24,39,.72); }
+    .memory-num { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; color: var(--lime); background: rgba(199,243,107,.08); border: 1px solid rgba(199,243,107,.16); font: 750 .78rem ui-monospace, monospace; }
+    .memory-item h3 { margin: 1px 0 4px; font-size: .98rem; }
+    .memory-item p { margin: 0; color: var(--muted); font-size: .84rem; }
+    .performance-box { padding: 34px; border-radius: 26px; border: 1px solid rgba(170,148,255,.24); background: radial-gradient(ellipse at 88% 0%, rgba(170,148,255,.13), transparent 44%), linear-gradient(145deg, #121c30, #0e1727); }
+    .performance-top { display: flex; justify-content: space-between; gap: 20px; align-items: start; margin-bottom: 27px; }
+    .performance-top h2 { margin-top: 8px; font-size: clamp(1.8rem, 3.7vw, 2.7rem); }
+    .source-pill { color: var(--violet); border: 1px solid rgba(170,148,255,.28); background: rgba(170,148,255,.07); border-radius: 999px; white-space: nowrap; padding: 6px 10px; font-size: .7rem; }
+    .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .metric { padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: rgba(7,12,22,.35); }
+    .metric strong { display: block; font-size: clamp(1.5rem, 2.6vw, 2.15rem); line-height: 1.15; letter-spacing: -.05em; color: var(--text); }
+    .metric span { display: block; color: var(--muted); font-size: .76rem; margin-top: 8px; }
+    .caveat { color: #8291a7; font-size: .77rem; margin: 17px 2px 0; }
+    .install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .install-card { padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: rgba(15,24,39,.75); }
+    .install-card h3 { margin: 0 0 5px; font-size: 1.05rem; }
+    .install-card p { color: var(--muted); font-size: .84rem; margin: 0 0 14px; }
+    .codebox { position: relative; background: #080e18; border: 1px solid rgba(166,190,224,.13); border-radius: 12px; padding: 15px 46px 15px 15px; overflow-x: auto; }
+    .codebox code { color: #c8d6e9; font: .8rem/1.8 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
+    .copy { position: absolute; top: 9px; right: 9px; border: 1px solid var(--line); border-radius: 8px; background: #111c2c; color: var(--muted); font-size: .68rem; padding: 5px 8px; cursor: pointer; }
+    .copy:hover { color: var(--text); border-color: rgba(113,226,220,.4); }
+    .install-note { color: var(--muted); font-size: .82rem; margin-top: 18px; padding: 15px 17px; border-left: 2px solid var(--cyan); background: rgba(113,226,220,.045); border-radius: 0 10px 10px 0; }
+    .security-note { margin-top: 20px; padding: 18px 20px; border: 1px solid rgba(247,190,110,.19); background: rgba(247,190,110,.045); border-radius: 15px; color: #c4b49a; font-size: .84rem; }
+    .security-note strong { color: #f1cc91; }
+    .docs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .doc-link { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 17px 19px; border: 1px solid var(--line); background: rgba(15,24,39,.68); border-radius: 14px; color: var(--soft); font-size: .86rem; transition: border-color .18s ease; }
+    .doc-link:hover { border-color: rgba(113,226,220,.38); }
+    .doc-link span:last-child { color: var(--cyan); }
+    .cta { padding: 0 0 95px; }
+    .cta-panel { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: space-between; gap: 30px; padding: 38px 42px; border: 1px solid rgba(113,226,220,.25); border-radius: 25px; background: linear-gradient(105deg, rgba(37,89,99,.3), rgba(44,41,88,.32)); }
+    .cta-panel::after { content: ""; position: absolute; width: 280px; height: 280px; border: 1px solid rgba(113,226,220,.13); border-radius: 50%; right: 20%; top: -205px; box-shadow: 0 0 0 35px rgba(113,226,220,.025), 0 0 0 70px rgba(113,226,220,.02); pointer-events: none; }
+    .cta-panel h2 { margin: 5px 0 8px; font-size: clamp(1.6rem, 3vw, 2.35rem); }
+    .cta-panel p { margin: 0; color: var(--muted); font-size: .9rem; }
+    .cta-actions { display: flex; flex-wrap: wrap; gap: 10px; position: relative; z-index: 1; }
+    footer { border-top: 1px solid var(--line); padding: 25px 0; color: #7888a0; font-size: .78rem; }
+    .footer-inner { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+    .footer-links { display: flex; gap: 20px; flex-wrap: wrap; }
+    .footer-links a:hover { color: var(--text); }
+    @media (max-width: 900px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 44px; }
+      .terminal { transform: none; max-width: 650px; }
+      .tool-grid { grid-template-columns: repeat(2, 1fr); }
+      .memory-layout { grid-template-columns: 1fr; gap: 26px; }
+      .memory-intro { position: static; }
+      .metric-grid { grid-template-columns: repeat(2, 1fr); }
+      .docs-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 680px) {
+      .wrap { width: min(var(--max), calc(100% - 30px)); }
+      .nav { min-height: 66px; }
+      .nav-links { display: none; position: absolute; top: 66px; left: 0; right: 0; padding: 16px 22px 20px; background: rgba(9,13,23,.98); border-bottom: 1px solid var(--line); flex-direction: column; align-items: flex-start; gap: 14px; }
+      .nav-links.open { display: flex; }
+      .nav-actions .button { display: none; }
+      .menu-button { display: inline-flex; }
+      .hero { padding: 67px 0 55px; }
+      h1 { font-size: clamp(2.75rem, 14vw, 4.4rem); }
+      section { padding: 68px 0; }
+      .trust-grid { grid-template-columns: repeat(2, 1fr); }
+      .trust-item:nth-child(2) { border-right: 0; }
+      .trust-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .tool-grid, .pipeline, .install-grid, .docs-grid { grid-template-columns: 1fr; }
+      .tool-card { min-height: auto; }
+      .pipeline-card { min-height: 130px; }
+      .performance-box { padding: 23px 17px; }
+      .performance-top { flex-direction: column; }
+      .metric-grid { gap: 8px; }
+      .metric { padding: 14px 12px; }
+      .cta-panel { padding: 27px 22px; flex-direction: column; align-items: flex-start; }
+      .footer-inner { flex-direction: column; align-items: flex-start; }
+      .flow { grid-template-columns: repeat(2, 1fr); }
+      .flow-step:nth-child(2)::after { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="announcement"><strong>RULEOPS v2.6.4</strong> &nbsp;·&nbsp; Open-source toolkit for authorized password-security research</div>
+
+  <header class="header">
+    <div class="wrap nav">
+      <a class="brand" href="#top" aria-label="RULEOPS home">
+        <img class="brand-mark" src="favicon.svg" alt="" aria-hidden="true">
+        <span>RULEOPS <small>2.6.4</small></span>
+      </a>
+      <nav class="nav-links" id="navLinks" aria-label="Main navigation">
+        <a href="#tools">Tools</a>
+        <a href="#memory">Efficiency</a>
+        <a href="#performance">Performance</a>
+        <a href="#install">Install</a>
+        <a href="#docs">Docs</a>
+      </nav>
+      <div class="nav-actions">
+        <a class="button button-ghost" href="https://github.com/A113L/RULEOPS" target="_blank" rel="noopener">GitHub ↗</a>
+        <button class="menu-button" id="menuButton" aria-expanded="false" aria-controls="navLinks">Menu</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="eyebrow">A rule-engineering workbench</div>
+          <h1>Build better<br><span class="gradient-text">rule sets.</span></h1>
+          <p class="hero-copy">RULEOPS brings rule generation, GPU-assisted ranking, coverage optimization and minimization into one research toolchain. Explore large Hashcat rule collections with a workflow designed for <strong>authorized password-security research and auditing.</strong></p>
+          <div class="hero-buttons">
+            <a class="button button-primary" href="https://github.com/A113L/RULEOPS" target="_blank" rel="noopener">Explore the repository <span aria-hidden="true">↗</span></a>
+            <a class="button button-ghost" href="https://github.com/A113L/RULEOPS/archive/refs/heads/main.zip">Download source ZIP ↓</a>
+          </div>
+          <p class="hero-note">Python · OpenCL acceleration · Standalone CLIs · MIT License</p>
+        </div>
+
+        <div class="terminal-wrap" aria-label="Illustration of the RULEOPS processing pipeline">
+          <div class="glow"></div>
+          <div class="terminal">
+            <div class="terminal-top"><i class="dot"></i><i class="dot"></i><i class="dot"></i><span class="terminal-label">RULEOPS / pipeline</span></div>
+            <div class="terminal-body">
+              <div class="terminal-line"><span class="prompt">$</span><span>ruleops <span class="code-cyan">workflow</span> --optimize</span></div>
+              <div class="terminal-line"><span class="code-muted">&gt;</span><span>Loading BASE / TARGET wordlists…</span></div>
+              <div class="terminal-line"><span class="code-muted">&gt;</span><span>Preparing candidate transformations…</span></div>
+              <div class="flow">
+                <div class="flow-step"><b>01 / BUILD</b><span>Generate</span></div>
+                <div class="flow-step"><b>02 / SCORE</b><span>Rank</span></div>
+                <div class="flow-step"><b>03 / SELECT</b><span>Optimize</span></div>
+                <div class="flow-step"><b>04 / REFINE</b><span>Minimize</span></div>
+              </div>
+              <div class="terminal-line"><span class="prompt">✓</span><span>Coverage-aware workflow ready</span></div>
+              <div class="terminal-status"><span>OPENCL / CPU PATHS</span><span class="status-live">● READY</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="trust-strip">
+      <div class="wrap trust-grid">
+        <div class="trust-item"><b>GPU-accelerated</b><span>OpenCL compute paths</span></div>
+        <div class="trust-item"><b>One workbench</b><span>Unified local web UI</span></div>
+        <div class="trust-item"><b>Flexible workflow</b><span>Standalone command-line tools</span></div>
+        <div class="trust-item"><b>MIT licensed</b><span>Open-source project</span></div>
+      </div>
+    </div>
+
+    <section id="tools">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">The toolchain</div>
+          <h2>One workspace.<br><span class="gradient-text">Every stage.</span></h2>
+          <p>Use each engine on its own or connect the steps into a repeatable rule-analysis pipeline.</p>
+        </div>
+        <div class="tool-grid">
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">R</div><span class="tool-tag">Generation</span></div>
+            <h3>RULEST</h3>
+            <p>Generate candidate Hashcat rules from paired BASE and TARGET wordlists, with optional Stage 0 processing and genetic-algorithm refinement.</p>
+          </article>
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">↗</div><span class="tool-tag">Scoring</span></div>
+            <h3>Rule Ranker</h3>
+            <p>Score candidate rules against a wordlist and a permitted cracked-password sample, with adaptive and legacy ranking workflows.</p>
+          </article>
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">⌁</div><span class="tool-tag">Selection</span></div>
+            <h3>Ranker CELF Optimizer</h3>
+            <p>Apply greedy / CELF maximum-coverage selection to find a smaller rule subset under a chosen rule budget.</p>
+          </article>
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">▤</div><span class="tool-tag">Collections</span></div>
+            <h3>Concentrator</h3>
+            <p>Extract, generate and clean rule collections from existing material, with several collection-management workflows.</p>
+          </article>
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">⌕</div><span class="tool-tag">Extraction</span></div>
+            <h3>Rulestripper</h3>
+            <p>Derive transformation chains by decomposing TARGET words into BASE-word stems and candidate transformations across 14 extraction modes.</p>
+          </article>
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">≋</div><span class="tool-tag">Minimization</span></div>
+            <h3>Rule Minimizer</h3>
+            <p>Identify behaviorally equivalent rules over a probe-word set. Available inside RuleEST and as a standalone command-line tool.</p>
+          </article>
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">＠</div><span class="tool-tag">Browser utility</span></div>
+            <h3>Email Rule Extractor</h3>
+            <p>A browser-only utility for deriving candidate transformations from email-address-style naming patterns.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="pipeline-section" aria-labelledby="pipeline-title">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">Typical workflow</div>
+          <h2 id="pipeline-title">From raw inputs<br>to a compact ruleset.</h2>
+          <p>Each stage can be run independently. The sequence below is an example workflow documented in the project README.</p>
+        </div>
+        <div class="pipeline">
+          <article class="pipeline-card"><span class="num">STEP 01</span><h3>Generate candidates</h3><p>Use a BASE / TARGET pair to derive candidate transformations.</p></article>
+          <article class="pipeline-card"><span class="num">STEP 02</span><h3>Rank candidates</h3><p>Measure rule contribution against a wordlist and authorized sample.</p></article>
+          <article class="pipeline-card"><span class="num">STEP 03</span><h3>Select by coverage</h3><p>Use CELF selection to fit the ruleset to a target budget.</p></article>
+          <article class="pipeline-card"><span class="num">STEP 04</span><h3>Minimize duplicates</h3><p>Remove behaviorally equivalent rules using probe signatures.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="memory">
+      <div class="wrap memory-layout">
+        <div class="memory-intro">
+          <div class="kicker">Designed for large inputs</div>
+          <h2>Spend memory on data, not overhead.</h2>
+          <p>RULEOPS uses compact representations and bounded processing in several large-data paths. The goal is to reduce avoidable copies and Python-object overhead while keeping active datasets in RAM.</p>
+          <a class="button button-ghost" href="https://github.com/A113L/RULEOPS/blob/main/docs/MEMORY_OPTIMIZATION.md" target="_blank" rel="noopener">Read memory notes ↗</a>
+        </div>
+        <div class="memory-list">
+          <article class="memory-item"><div class="memory-num">01</div><div><h3>Shared wordlist memory</h3><p>Unique word bytes live in shared memory, with a compact 64-bit offset table for direct access. Worker processes attach to the same data instead of receiving copies of huge Python string sets.</p></div></article>
+          <article class="memory-item"><div class="memory-num">02</div><div><h3>Offset-based minimization</h3><p>RuleEST and standalone minimizer use fixed-width NumPy records with compact signatures and offsets into the original rule list. Later probe rounds focus on collisions rather than building large Python dictionaries for every rule.</p></div></article>
+          <article class="memory-item"><div class="memory-num">03</div><div><h3>Bounded genetic-search cache</h3><p>Large-target GA work uses bounded samples, compact coverage bitmaps and a capped cross-generation cache to limit retained hit-map memory.</p></div></article>
+          <article class="memory-item"><div class="memory-num">04</div><div><h3>Reuse packed GPU inputs</h3><p>GPU batches can reference prepared word bytes and reuse offsets and lengths, reducing repeated flattening and temporary data copies.</p></div></article>
+          <article class="memory-item"><div class="memory-num">05</div><div><h3>Shared worker inputs</h3><p>Stage 0 workers receive small word-index ranges and attach to shared data structures, avoiding serialization of multi-million-entry wordlists.</p></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="performance">
+      <div class="wrap">
+        <div class="performance-box">
+          <div class="performance-top">
+            <div>
+              <div class="kicker">Performance snapshot</div>
+              <h2>Real workload telemetry.<br><span class="gradient-text">No inflated claims.</span></h2>
+            </div>
+            <span class="source-pill">From project profiling notes</span>
+          </div>
+          <div class="metric-grid">
+            <div class="metric"><strong>999,999</strong><span>Candidate upper-bound count in one CELF run</span></div>
+            <div class="metric"><strong>250,000</strong><span>Selected-rule budget for that run</span></div>
+            <div class="metric"><strong>880.2</strong><span>Reported cumulative average rules per second</span></div>
+            <div class="metric"><strong>334.3 MiB</strong><span>GPU exact-dedup scratch for the recorded batch setup</span></div>
+          </div>
+          <p class="caveat">These figures describe one logged workload and its configuration. They are not a controlled before/after comparison or a hardware-independent speedup claim. Results depend on inputs, GPU, driver, OpenCL runtime and settings. See the CELF profiling notes for context.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="install">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">Get started</div>
+          <h2>Run RULEOPS locally.</h2>
+          <p>Python 3.9+ is required. GPU-accelerated stages need a working OpenCL runtime and a compatible GPU driver. CSV-only analysis can run on CPU.</p>
+        </div>
+        <div class="install-card" style="margin-bottom:16px">
+          <h3>1 — Clone and install</h3>
+          <p>Run these commands from a terminal.</p>
+          <div class="codebox"><code>git clone https://github.com/A113L/RULEOPS.git
+cd RULEOPS
+python -m pip install -r requirements.txt</code><button class="copy" type="button">Copy</button></div>
+        </div>
+        <div class="install-grid">
+          <article class="install-card">
+            <h3>2 — Start on Linux / macOS</h3>
+            <p>Launch the local Control Center.</p>
+            <div class="codebox"><code>chmod +x start_gui.sh
+./start_gui.sh</code><button class="copy" type="button">Copy</button></div>
+          </article>
+          <article class="install-card">
+            <h3>2 — Start on Windows</h3>
+            <p>Run the included launcher from the project folder.</p>
+            <div class="codebox"><code>start_gui.bat</code><button class="copy" type="button">Copy</button></div>
+          </article>
+        </div>
+        <div class="install-note"><strong>First launch:</strong> open the local URL printed in the terminal and set an application password of at least 12 characters. You can also run individual tools through their standalone CLI entry points.</div>
+        <div class="security-note"><strong>Use responsibly.</strong> RULEOPS is intended for authorized password-security research and auditing on data you are permitted to test. The built-in server uses plain HTTP and is not designed for direct public-internet exposure. For remote access, use a private VPN or a TLS reverse proxy and restrict firewall access.</div>
+      </div>
+    </section>
+
+    <section id="docs">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">Read the details</div>
+          <h2>Documentation &amp; project files.</h2>
+          <p>Technical notes, installation guidance and implementation details live alongside the source.</p>
+        </div>
+        <div class="docs-grid">
+          <a class="doc-link" href="https://github.com/A113L/RULEOPS/blob/main/README.md" target="_blank" rel="noopener"><span>Project README</span><span>↗</span></a>
+          <a class="doc-link" href="https://github.com/A113L/RULEOPS/blob/main/docs/MEMORY_OPTIMIZATION.md" target="_blank" rel="noopener"><span>Memory optimization</span><span>↗</span></a>
+          <a class="doc-link" href="https://github.com/A113L/RULEOPS/blob/main/docs/RANKER_README.md" target="_blank" rel="noopener"><span>Rule Ranker guide</span><span>↗</span></a>
+          <a class="doc-link" href="https://github.com/A113L/RULEOPS/blob/main/docs/SECURITY_HARDENING.md" target="_blank" rel="noopener"><span>Security hardening</span><span>↗</span></a>
+          <a class="doc-link" href="https://github.com/A113L/RULEOPS/blob/main/docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md" target="_blank" rel="noopener"><span>CELF profiling notes</span><span>↗</span></a>
+          <a class="doc-link" href="https://github.com/A113L/RULEOPS/blob/main/LICENSE" target="_blank" rel="noopener"><span>MIT License</span><span>↗</span></a>
+        </div>
+      </div>
+    </section>
+
+    <div class="cta">
+      <div class="wrap">
+        <div class="cta-panel">
+          <div><div class="kicker">Open source · MIT</div><h2>Explore the RULEOPS codebase.</h2><p>Read the source, review the documentation or download the current main-branch snapshot.</p></div>
+          <div class="cta-actions">
+            <a class="button button-primary" href="https://github.com/A113L/RULEOPS" target="_blank" rel="noopener">View on GitHub ↗</a>
+            <a class="button button-ghost" href="https://github.com/A113L/RULEOPS/archive/refs/heads/main.zip">Download ZIP ↓</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap footer-inner">
+      <div>© 2026 A1131 · RULEOPS 2.6.4 · Released under the MIT License.</div>
+      <div class="footer-links"><a href="https://github.com/A113L/RULEOPS" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/A113L/RULEOPS/issues" target="_blank" rel="noopener">Issues</a><a href="https://github.com/A113L/RULEOPS/blob/main/LICENSE" target="_blank" rel="noopener">License</a></div>
+    </div>
+  </footer>
+
+  <script>
+    const menuButton = document.getElementById('menuButton');
+    const navLinks = document.getElementById('navLinks');
+    menuButton?.addEventListener('click', () => {
+      const open = navLinks.classList.toggle('open');
+      menuButton.setAttribute('aria-expanded', String(open));
+    });
+    navLinks?.querySelectorAll('a').forEach(link => link.addEventListener('click', () => {
+      navLinks.classList.remove('open');
+      menuButton?.setAttribute('aria-expanded', 'false');
+    }));
+    document.querySelectorAll('.copy').forEach(button => button.addEventListener('click', async () => {
+      const code = button.parentElement.querySelector('code')?.textContent ?? '';
+      const original = button.textContent;
+      try {
+        await navigator.clipboard.writeText(code);
+        button.textContent = 'Copied';
+      } catch {
+        button.textContent = 'Select code';
+      }
+      window.setTimeout(() => { button.textContent = original; }, 1500);
+    }));
+  </script>
+</body>
+</html>

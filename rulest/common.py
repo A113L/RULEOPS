@@ -300,15 +300,8 @@ MAX_GPU_RULES = 255
 # than 9 chars can still be targeted at any position.
 POSITION_CHARS = string.digits + string.ascii_uppercase
 _UNSUPPORTED_SENTINEL = object()
-MINIMIZE_DISK_THRESHOLD = 1_000_000
-MINIMIZE_DISK_BATCH_SIZE = 10_000
-# Mirrors MINIMIZE_DISK_THRESHOLD's role for selection.py's coverage matrix:
-# below this many candidate rules, an in-memory dict is small enough that
-# disk-backed streaming would only add point-lookup overhead for no real
-# memory benefit, so evaluate_full_coverage() stays purely in-memory. Above
-# it, the candidate pool is large enough that holding the whole coverage
-# matrix in RAM stops being safe, so it streams to a disk-backed
-# CoverageStore instead (see coverage_store.py).
+# Above this candidate count, the coverage matrix is too large to retain
+# entirely in RAM, so selection.py streams it through CoverageStore.
 SELECTION_DISK_THRESHOLD = 1_000_000
 SPECIAL_CHARS_TOP = ['!','@','#','$','%','^','&','*','?','.','-','_','+','(',')']
 SPECIAL_CHARS_CORE = ['!','@','#','$','%','*','?']

@@ -18,7 +18,7 @@ from . import state
 from .common import (
     print_banner, _print_controls, log_info, log_warn, log_error,
     bold, cyan, green, yellow, red, dim, _kb, safe_worker_count, set_global_seed,
-    MAX_HASHCAT_CHAIN, MINIMIZE_DISK_THRESHOLD, BUILTIN_PROBES,
+    MAX_HASHCAT_CHAIN, BUILTIN_PROBES,
 )
 from .devices import list_devices
 from .extractor import GPUExtractor
@@ -320,8 +320,7 @@ def main():
                 f.write(f"# STAGE 3 GA     : pop={args.genetic_pop}  gen={args.genetic_generations}  elite={args.genetic_elite:.0%}\n")
             f.write("#\n")
             f.write(f"# GPU raw candidates      : {raw_candidate_count:,}\n")
-            mp2 = 'disk-backed SQLite' if raw_candidate_count > MINIMIZE_DISK_THRESHOLD else 'in-memory'
-            f.write(f"# Minimization            : {mp2}  (threshold {MINIMIZE_DISK_THRESHOLD:,})\n")
+            f.write("# Minimization            : in-memory offset index (compact records)\n")
             f.write(f"#   Probe words           : {len(BUILTIN_PROBES)}  (built-in)\n")
             f.write(f"#   Equiv. rules removed  : {removed:,}\n")
             f.write("#\n")

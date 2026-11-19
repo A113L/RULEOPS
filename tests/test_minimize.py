@@ -120,21 +120,20 @@ def test_progressive_minimization_refines_late_probe_collisions(monkeypatch):
     assert '@!' in result and '@#' in result
 
 
-def test_disk_backed_progressive_minimization_matches_full_reference(monkeypatch):
+def test_offset_progressive_minimization_matches_full_reference(monkeypatch):
     import rulest.minimize as minimize_module
 
     probes = ['abc', '!#', 'Hello', 'Password']
     counter = Counter({'@!': 5, '@#': 7, 'l': 6, 'l l': 8, 'u': 2, 'u u': 3})
-    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
     monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 1)
-    monkeypatch.setattr(minimize_module, 'MINIMIZE_SQLITE_BATCH_SIZE', 2)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_BATCH_SIZE', 2)
 
     result = minimize_module.minimize_by_signature(counter, probes)
 
     assert result == _reference_minimize(counter, probes)
 
 
-def test_disk_backed_worker_pool_streams_and_refines_rows(monkeypatch):
+def test_offset_worker_pool_refines_collision_records(monkeypatch):
     import rulest.minimize as minimize_module
 
     # 500 syntactically distinct rules split into two functional classes.
@@ -144,9 +143,8 @@ def test_disk_backed_worker_pool_streams_and_refines_rows(monkeypatch):
         counter[' '.join(['@!'] * depth)] = depth
         counter[' '.join(['@#'] * depth)] = depth
     probes = ['abc', '!#']
-    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
     monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 1)
-    monkeypatch.setattr(minimize_module, 'MINIMIZE_SQLITE_BATCH_SIZE', 64)
+    monkeypatch.setattr(minimize_module, 'MINIMIZE_BATCH_SIZE', 64)
 
     result = minimize_module.minimize_by_signature(counter, probes)
 
@@ -201,19 +199,17 @@ def test_progressive_minimizer_avoids_full_probe_pass_for_unique_rules(monkeypat
     assert calls[0] < full_scan_calls * 0.4
 
 
-def test_disk_backed_minimizer_returns_original_counter_when_first_pass_is_unique(monkeypatch):
+def test_offset_minimizer_returns_original_counter_when_first_pass_is_unique(monkeypatch):
     import rulest.minimize as minimize_module
 
-    # The first prioritized probe distinguishes every substitution.  The disk
-    # backend should therefore skip all later passes and avoid rebuilding a
-    # multi-million-entry Counter from SQLite.
+    # The first prioritized probe distinguishes every substitution, so the
+    # offset backend can return the original Counter without a rebuild.
     replacements = '!@#$%^&*()-_=+[]{}|;:,.<>?/~0123456789'
     counter = Counter()
     for original in 'abcdef':
         for replacement in replacements:
             counter['s' + original + replacement] = 1
 
-    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
     monkeypatch.setattr(minimize_module.mp, 'cpu_count', lambda: 1)
 
     result = minimize_module.minimize_by_signature(counter, minimize_module._PRIORITY_PROBES)
@@ -221,11 +217,10 @@ def test_disk_backed_minimizer_returns_original_counter_when_first_pass_is_uniqu
     assert result is counter
 
 
-def test_disk_backed_minimizer_returns_original_when_late_probes_split_collision(monkeypatch):
+def test_offset_minimizer_returns_original_when_late_probes_split_collision(monkeypatch):
     import rulest.minimize as minimize_module
 
     counter = Counter({'@!': 5, '@#': 7})
-    monkeypatch.setattr(minimize_module, 'MINIMIZE_DISK_THRESHOLD', 1)
     monkeypatch.setattr(minimize_module, 'MINIMIZE_PROBE_BATCH_SIZE', 1)
     monkeypatch.setattr(minimize_module.mp, 'cpu_count', lambda: 1)
 
@@ -235,66 +230,16 @@ def test_disk_backed_minimizer_returns_original_when_late_probes_split_collision
     assert result == Counter({'@!': 5, '@#': 7})
 
 
-def test_sqlite_progress_helpers_show_vm_operation_activity(monkeypatch):
-    import sqlite3
+
+
+def test_offset_record_uses_compact_fixed_width_layout():
     import rulest.minimize as minimize_module
 
-    created = []
-
-    class FakeProgress:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-            self.updated = 0
-            self.closed = False
-            created.append(self)
-
-        def update(self, amount):
-            self.updated += amount
-
-        def set_postfix(self, *args, **kwargs):
-            pass
-
-        def close(self):
-            self.closed = True
-
-    monkeypatch.setattr(minimize_module, "tqdm", FakeProgress)
-    conn = sqlite3.connect(":memory:")
-
-    try:
-        value = minimize_module._sqlite_scalar_progress(
-            conn,
-            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000) "
-            "SELECT SUM(x) FROM n",
-            "Test SQLite scan",
-            progress_ops=100,
-        )
-        assert value == 500500
-        assert created
-        assert created[0].updated > 0
-        assert created[0].closed
-        # Unknown SQLite VM-op totals must not render as a permanently empty bar.
-        assert "{bar}" not in created[0].kwargs["bar_format"]
-        assert "{n_fmt}" in created[0].kwargs["bar_format"]
-    finally:
-        conn.close()
+    assert minimize_module._record_dtype(100).itemsize == 21
+    assert minimize_module._record_dtype(0x1_0000_0000).itemsize == 25
 
 
-def test_sqlite_progress_helpers_skip_empty_bar_for_fast_query(monkeypatch):
-    import sqlite3
-    import rulest.minimize as minimize_module
-
-    created = []
-
-    def fake_tqdm(**kwargs):
-        created.append(kwargs)
-        raise AssertionError("Fast SQL query must not create an empty progress bar")
-
-    monkeypatch.setattr(minimize_module, "tqdm", fake_tqdm)
-    conn = sqlite3.connect(":memory:")
-    try:
-        assert minimize_module._sqlite_scalar_progress(
-            conn, "SELECT 42", "Fast query", progress_ops=100_000
-        ) == 42
-        assert not created
-    finally:
-        conn.close()
+def test_unsupported_rules_remain_distinct_in_offset_minimizer():
+    counter = Counter({'Q': 2, 'M': 3, 'u': 1})
+    result = minimize_by_signature(counter, PROBES)
+    assert set(result) == {'Q', 'M', 'u'}

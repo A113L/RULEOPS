@@ -13,12 +13,11 @@ def _full_signature_reference(rules, probes, multibyte=False):
     return kept, len(kept), len(rules) - len(kept)
 
 
-def test_progressive_in_memory_matches_full_signature_reference(monkeypatch):
+def test_offset_progressive_matches_full_signature_reference(monkeypatch):
     rules = ["@!", "@#", "l", "l l", "u", "Q", "M", "c", "c c", ":"]
     probes = ["abc", "!#", "Hello", "Password", "a`b", 'a"b', "a'b", "a\\b"]
-    monkeypatch.setattr(standalone, "MINIMIZER_DISK_THRESHOLD", 10_000)
     monkeypatch.setattr(standalone, "MINIMIZER_PROBE_BATCH_SIZE", 1)
-    monkeypatch.setattr(standalone, "MINIMIZER_SQLITE_BATCH_SIZE", 3)
+    monkeypatch.setattr(standalone, "MINIMIZER_BATCH_SIZE", 3)
 
     expected = _full_signature_reference(rules, probes)
     actual = standalone.minimizer(rules, probes)
@@ -28,23 +27,21 @@ def test_progressive_in_memory_matches_full_signature_reference(monkeypatch):
     assert "@!" in actual[0] and "@#" in actual[0]
 
 
-def test_progressive_sqlite_matches_full_signature_reference(monkeypatch):
+def test_offset_engine_matches_full_signature_reference(monkeypatch):
     rules = ["@!", "@#", "l", "l l", "u", "Q", "M", "c", "c c", ":"]
     probes = ["abc", "!#", "Hello", "Password"]
-    monkeypatch.setattr(standalone, "MINIMIZER_DISK_THRESHOLD", 1)
     monkeypatch.setattr(standalone, "MINIMIZER_PROBE_BATCH_SIZE", 1)
-    monkeypatch.setattr(standalone, "MINIMIZER_SQLITE_BATCH_SIZE", 2)
+    monkeypatch.setattr(standalone, "MINIMIZER_BATCH_SIZE", 2)
 
     expected = _full_signature_reference(rules, probes)
     actual = standalone.minimizer(rules, probes)
     assert actual == expected
 
 
-def test_first_probe_unique_rules_skip_remaining_sqlite_probes(monkeypatch):
+def test_first_probe_unique_rules_skip_remaining_probes(monkeypatch):
     rules = [f"s{source}{replacement}" for source in "abcdef"
              for replacement in "!@#$%^&*0123456789"]
     probes = ["abcdefghijklmnopqrstuvwxyz", "Password", "!@#$%^&*()"]
-    monkeypatch.setattr(standalone, "MINIMIZER_DISK_THRESHOLD", 1)
     monkeypatch.setattr(standalone, "MINIMIZER_PROBE_BATCH_SIZE", 1)
     expected = _full_signature_reference(rules, probes)
 
@@ -55,7 +52,6 @@ def test_first_probe_unique_rules_skip_remaining_sqlite_probes(monkeypatch):
 def test_multibyte_progressive_signatures_preserve_invalid_utf8_outputs(monkeypatch):
     rules = ["r", "r r", "d", "l", "Q", "M", ":"]
     probes = ["ą", "ß", "🙂", "Password", "漢字"]
-    monkeypatch.setattr(standalone, "MINIMIZER_DISK_THRESHOLD", 10_000)
     monkeypatch.setattr(standalone, "MINIMIZER_PROBE_BATCH_SIZE", 1)
 
     expected = _full_signature_reference(rules, probes, multibyte=True)
@@ -66,9 +62,8 @@ def test_multibyte_progressive_signatures_preserve_invalid_utf8_outputs(monkeypa
 def test_worker_pool_progressive_minimizer_matches_serial_reference(monkeypatch):
     rules = ["@!", "@#", "l", "l l", "u", "Q", "M", "c", "c c", ":"]
     probes = ["abc", "!#", "Hello", "Password"]
-    monkeypatch.setattr(standalone, "MINIMIZER_DISK_THRESHOLD", 1)
     monkeypatch.setattr(standalone, "MINIMIZER_PROBE_BATCH_SIZE", 1)
-    monkeypatch.setattr(standalone, "MINIMIZER_SQLITE_BATCH_SIZE", 2)
+    monkeypatch.setattr(standalone, "MINIMIZER_BATCH_SIZE", 2)
 
     expected = _full_signature_reference(rules, probes)
     actual = standalone.minimizer(rules, probes, workers=2)
@@ -79,7 +74,6 @@ def test_progressive_minimizer_skips_later_probes_for_early_unique_rules(monkeyp
     rules = [f"s{source}{replacement}" for source in "abcdef"
              for replacement in "!@#$%^&*0123456789"]
     probes = ["abcdefghijklmnopqrstuvwxyz", "Password", "!@#$%^&*()"]
-    monkeypatch.setattr(standalone, "MINIMIZER_DISK_THRESHOLD", 10_000)
     monkeypatch.setattr(standalone, "MINIMIZER_PROBE_BATCH_SIZE", 1)
 
     expected = _full_signature_reference(rules, probes)
@@ -95,3 +89,9 @@ def test_progressive_minimizer_skips_later_probes_for_early_unique_rules(monkeyp
 
     assert actual == expected
     assert calls[0] < len(rules) * len(probes) // 2
+
+
+def test_unsupported_duplicate_text_is_deduplicated_but_distinct_rules_survive():
+    rules = ["Q", "M", "Q", "u"]
+    actual = standalone.minimizer(rules, ["abc", "Password"])
+    assert actual == (["Q", "M", "u"], 3, 1)

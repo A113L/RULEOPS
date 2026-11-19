@@ -68,8 +68,8 @@ import hashlib
 import multiprocessing
 import os
 import random
-import sqlite3
 import sys
+import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 from typing import List, Optional, Tuple, Union
 
@@ -951,8 +951,7 @@ def read_rules(path: str) -> List[str]:
 # probes. The complete probe set is still evaluated for every unresolved
 # collision, so the equivalence relation is unchanged.
 MINIMIZER_PROBE_BATCH_SIZE = 8
-MINIMIZER_DISK_THRESHOLD = 1_000_000
-MINIMIZER_SQLITE_BATCH_SIZE = 25_000
+MINIMIZER_BATCH_SIZE = 25_000
 _MINIMIZER_UNSUPPORTED_PREFIX = "__UNSUPPORTED__::"
 _MINIMIZER_PRIORITY_PROBES = (
     "abcdefghijklmnopqrstuvwxyz",
@@ -968,6 +967,14 @@ _MINIMIZER_PRIORITY_PROBES = (
     "superman123",
     "test1234",
 )
+_MINIMIZER_UNSUPPORTED_KIND = 1
+_MINIMIZER_SUPPORTED_KIND = 0
+
+
+def _minimizer_record_dtype(rule_count: int):
+    index_dtype = "<u4" if rule_count <= 0xFFFFFFFF else "<u8"
+    return np.dtype([("kind", "u1"), ("sig", "V16"), ("idx", index_dtype)])
+
 
 _MINIMIZER_WORKER_PROBES: List[str] = []
 _MINIMIZER_WORKER_MULTIBYTE = False
@@ -1004,16 +1011,19 @@ def _minimizer_probe_ranges(probe_count: int):
     ]
 
 
-def _minimizer_probe_chunk_signature(
+def _minimizer_unsupported_signature(rule: str) -> bytes:
+    # The separate kind byte prevents unsupported rules from ever colliding
+    # with supported output signatures. Exact text is checked if hashes tie.
+    return hashlib.blake2b(
+        rule.encode("utf-8", errors="surrogatepass"), digest_size=16
+    ).digest()
+
+
+def _minimizer_probe_chunk_signature_raw(
     rule: str, probe_words: List[str], start: int, stop: int,
     multibyte: bool = False,
-) -> str:
-    """Hash a probe slice, tokenizing the rule only once per candidate.
-
-    A type marker preserves the distinction between normal strings and
-    ``InvalidUTF8Bytes`` results. Length-prefixing each output makes chunk
-    boundaries unambiguous while avoiding a temporary output list.
-    """
+):
+    """Return a compact (16-byte signature, kind) pair."""
     atoms = tokenize_rule(rule)
     digest = hashlib.blake2b(digest_size=16)
     for word in probe_words[start:stop]:
@@ -1021,8 +1031,7 @@ def _minimizer_probe_chunk_signature(
         for atom in atoms:
             current = _apply_single(atom, current, multibyte=multibyte)  # type: ignore[arg-type]
             if current is None:
-                # Preserve the historic rule-specific unsupported sentinel.
-                return _MINIMIZER_UNSUPPORTED_PREFIX + rule
+                return _minimizer_unsupported_signature(rule), _MINIMIZER_UNSUPPORTED_KIND
         if isinstance(current, InvalidUTF8Bytes):
             kind = b"\x01"
             encoded = current.raw
@@ -1032,11 +1041,35 @@ def _minimizer_probe_chunk_signature(
         digest.update(kind)
         digest.update(len(encoded).to_bytes(8, "little"))
         digest.update(encoded)
-    return digest.hexdigest()
+    return digest.digest(), _MINIMIZER_SUPPORTED_KIND
+
+
+def _minimizer_probe_chunk_signature(
+    rule: str, probe_words: List[str], start: int, stop: int,
+    multibyte: bool = False,
+) -> str:
+    """Backward-compatible textual representation for diagnostic callers."""
+    signature, kind = _minimizer_probe_chunk_signature_raw(
+        rule, probe_words, start, stop, multibyte=multibyte
+    )
+    if kind == _MINIMIZER_UNSUPPORTED_KIND:
+        return _MINIMIZER_UNSUPPORTED_PREFIX + rule
+    return signature.hex()
+
+
+def _extend_minimizer_signature_raw(previous, previous_kind, chunk_signature, chunk_kind):
+    if previous_kind == _MINIMIZER_UNSUPPORTED_KIND or chunk_kind == _MINIMIZER_UNSUPPORTED_KIND:
+        if chunk_kind == _MINIMIZER_UNSUPPORTED_KIND:
+            return chunk_signature, _MINIMIZER_UNSUPPORTED_KIND
+        return previous, previous_kind
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(previous)
+    digest.update(chunk_signature)
+    return digest.digest(), _MINIMIZER_SUPPORTED_KIND
 
 
 def _extend_minimizer_signature(previous: str, chunk_signature: str) -> str:
-    """Combine a prior partial signature with one later probe chunk."""
+    """Backward-compatible textual signature extension."""
     if previous.startswith(_MINIMIZER_UNSUPPORTED_PREFIX):
         return previous
     if chunk_signature.startswith(_MINIMIZER_UNSUPPORTED_PREFIX):
@@ -1049,20 +1082,23 @@ def _extend_minimizer_signature(previous: str, chunk_signature: str) -> str:
 
 def _minimizer_initial_worker(task):
     index, rule, start, stop = task
-    signature = _minimizer_probe_chunk_signature(
+    signature, kind = _minimizer_probe_chunk_signature_raw(
         rule, _MINIMIZER_WORKER_PROBES, start, stop,
         multibyte=_MINIMIZER_WORKER_MULTIBYTE,
     )
-    return int(index), signature
+    return int(index), signature, kind
 
 
 def _minimizer_refine_worker(task):
-    index, rule, previous, start, stop = task
-    chunk_signature = _minimizer_probe_chunk_signature(
+    slot, rule, previous, previous_kind, start, stop = task
+    chunk_signature, chunk_kind = _minimizer_probe_chunk_signature_raw(
         rule, _MINIMIZER_WORKER_PROBES, start, stop,
         multibyte=_MINIMIZER_WORKER_MULTIBYTE,
     )
-    return int(index), _extend_minimizer_signature(previous, chunk_signature)
+    signature, kind = _extend_minimizer_signature_raw(
+        previous, previous_kind, chunk_signature, chunk_kind
+    )
+    return int(slot), signature, kind
 
 
 def _minimizer_map(executor, function, tasks):
@@ -1082,264 +1118,151 @@ def _minimizer_progress(total: int, description: str):
     return None
 
 
-def _add_minimizer_bucket(singletons, collisions, signature, candidate):
-    """Keep unique signatures compact; allocate a candidate list only on collision."""
-    group = collisions.get(signature)
-    if group is not None:
-        group.append(candidate)
-        return
-    previous = singletons.pop(signature, None)
-    if previous is None:
-        singletons[signature] = candidate
+def _minimizer_classify_and_compact(records, active_count: int, keep_mask):
+    """Mark singleton source offsets and compact collision records in-place."""
+    if active_count <= 0:
+        return 0
+    active = records[:active_count]
+    active.sort(order=("kind", "sig", "idx"), kind="quicksort")
+    if active_count == 1:
+        keep_mask[int(active["idx"][0])] = True
+        return 0
+
+    same = (active["kind"][1:] == active["kind"][:-1]) & (
+        active["sig"][1:] == active["sig"][:-1]
+    )
+    if not np.any(same):
+        keep_mask[active["idx"]] = True
+        return 0
+
+    collision_mask = np.zeros(active_count, dtype=np.bool_)
+    collision_mask[:-1] |= same
+    collision_mask[1:] |= same
+    collision_count = int(np.count_nonzero(collision_mask))
+    if collision_count * 2 < active_count:
+        keep_mask[active["idx"]] = True
+        collision_offsets = active["idx"][collision_mask]
+        keep_mask[collision_offsets] = False
     else:
-        collisions[signature] = [previous, candidate]
+        single_offsets = active["idx"][~collision_mask]
+        keep_mask[single_offsets] = True
+    if collision_count:
+        np.compress(collision_mask, active, axis=0, out=active[:collision_count])
+    return collision_count
+
+
+def _minimizer_resolve_final(records, active_count: int, rules: List[str], keep_mask):
+    """Keep the earliest input rule from each final signature group."""
+    if active_count <= 0:
+        return
+    active = records[:active_count]
+    active.sort(order=("kind", "sig", "idx"), kind="quicksort")
+    pos = 0
+    while pos < active_count:
+        kind = int(active["kind"][pos])
+        signature = active["sig"][pos]
+        end = pos + 1
+        while end < active_count and int(active["kind"][end]) == kind and active["sig"][end] == signature:
+            end += 1
+        if kind == _MINIMIZER_UNSUPPORTED_KIND:
+            # Use the hash to locate possible duplicates, then compare exact
+            # text: distinct unsupported rules must always survive.
+            seen_rules = set()
+            for cursor in range(pos, end):
+                index = int(active["idx"][cursor])
+                rule = rules[index]
+                if rule not in seen_rules:
+                    seen_rules.add(rule)
+                    keep_mask[index] = True
+        else:
+            # idx is the final sort field, so the first item is earliest.
+            keep_mask[int(active["idx"][pos])] = True
+        pos = end
 
 
 def _minimizer_in_memory(
     rules: List[str], probe: List[str], multibyte: bool, executor=None,
 ) -> Tuple[List[str], int, int]:
-    """Progressively refine collision buckets while retaining singleton rules compactly."""
+    """Offset-indexed minimization with a fixed-size signature buffer."""
     if not rules:
         return [], 0, 0
 
     ranges = _minimizer_probe_ranges(len(probe))
-    batch_size = max(1, int(MINIMIZER_SQLITE_BATCH_SIZE))
+    batch_size = max(1, int(MINIMIZER_BATCH_SIZE))
+    total = len(rules)
+    records = np.empty(total, dtype=_minimizer_record_dtype(total))
+    records["idx"] = np.arange(total, dtype=records.dtype["idx"])
+    keep_mask = np.zeros(total, dtype=np.bool_)
+
     first_start, first_stop = ranges[0]
-    singletons = {}
-    collisions = {}
-    progress = _minimizer_progress(len(rules), f"  Compute probes {first_start + 1}-{first_stop}")
+    progress = _minimizer_progress(total, f"  Compute probes {first_start + 1}-{first_stop}")
     try:
-        for offset in range(0, len(rules), batch_size):
-            stop_at = min(len(rules), offset + batch_size)
+        for offset in range(0, total, batch_size):
+            stop_at = min(total, offset + batch_size)
             tasks = (
                 (index, rules[index], first_start, first_stop)
                 for index in range(offset, stop_at)
             )
-            for index, signature in _minimizer_map(executor, _minimizer_initial_worker, tasks):
-                _add_minimizer_bucket(
-                    singletons, collisions, signature, (index, rules[index])
-                )
+            for index, signature, kind in _minimizer_map(
+                    executor, _minimizer_initial_worker, tasks):
+                records["sig"][index] = signature
+                records["kind"][index] = kind
             if progress is not None:
                 progress.update(stop_at - offset)
     finally:
         if progress is not None:
             progress.close()
 
-    survivor_indices = [candidate[0] for candidate in singletons.values()]
-    singletons.clear()
-    pending_groups = collisions
+    active_count = _minimizer_classify_and_compact(records, total, keep_mask)
+    if active_count == 0:
+        return rules, len(rules), 0
 
     for pass_number, (start, stop) in enumerate(ranges[1:], start=2):
-        if not pending_groups:
+        if active_count == 0:
             break
-        pending = sum(len(group) for group in pending_groups.values())
-        next_singletons = {}
-        next_collisions = {}
-        progress = _minimizer_progress(pending, f"  Refine probes {start + 1}-{stop}")
+        progress = _minimizer_progress(
+            active_count, f"  Refine probes {start + 1}-{stop}"
+        )
         processed = 0
         try:
-            for previous_signature, group in pending_groups.items():
-                for offset in range(0, len(group), batch_size):
-                    batch = group[offset:offset + batch_size]
-                    tasks = (
-                        (index, rule, previous_signature, start, stop)
-                        for index, rule in batch
-                    )
-                    for index, refined_signature in _minimizer_map(
-                            executor, _minimizer_refine_worker, tasks):
-                        _add_minimizer_bucket(
-                            next_singletons, next_collisions,
-                            refined_signature, (index, rules[index]),
+            for offset in range(0, active_count, batch_size):
+                stop_at = min(active_count, offset + batch_size)
+
+                def tasks_for_batch():
+                    for slot in range(offset, stop_at):
+                        index = int(records["idx"][slot])
+                        yield (
+                            slot,
+                            rules[index],
+                            bytes(records["sig"][slot]),
+                            int(records["kind"][slot]),
+                            start,
+                            stop,
                         )
-                    processed += len(batch)
-                    if progress is not None:
-                        progress.update(len(batch))
-        finally:
-            if progress is not None:
-                progress.close()
 
-        survivor_indices.extend(candidate[0] for candidate in next_singletons.values())
-        next_singletons.clear()
-        pending_groups = next_collisions
-        remaining = sum(len(group) for group in pending_groups.values())
-        print(
-            f"  {dim('[MIN]')} Probe pass {pass_number}/{len(ranges)}: "
-            f"refined={processed:,}, unresolved={remaining:,}"
-        )
-
-    # If candidates remain colliding after the complete probe set, keep the
-    # earliest input occurrence, matching standalone Rule Minimizer priority.
-    for group in pending_groups.values():
-        survivor_indices.append(min(candidate[0] for candidate in group))
-
-    survivor_indices.sort()
-    survivor_set = set(survivor_indices)
-    for index, rule in enumerate(rules):
-        if index in survivor_set:
-            dbg(f"KEPT  [{len(survivor_set):>6,}]  {rule!r}", level="RULE")
-        else:
-            dbg(f"DROP  rule={rule!r}", level="DUP")
-    kept = [rules[index] for index in survivor_indices]
-    return kept, len(kept), len(rules) - len(kept)
-
-
-def _minimizer_sqlite(
-    rules: List[str], probe: List[str], multibyte: bool = False,
-    workers: int = 1, executor=None,
-) -> Tuple[List[str], int, int]:
-    """Disk-backed progressive minimization for very large rule collections."""
-    import tempfile
-
-    if not rules:
-        return [], 0, 0
-
-    fd, db_path = tempfile.mkstemp(prefix=f"minimizer_tmp_{os.getpid()}_", suffix=".db")
-    os.close(fd)
-    conn = sqlite3.connect(db_path)
-    ranges = _minimizer_probe_ranges(len(probe))
-    batch_size = max(1, int(MINIMIZER_SQLITE_BATCH_SIZE))
-    total = len(rules)
-
-    try:
-        conn.executescript("""
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = OFF;
-            PRAGMA temp_store = MEMORY;
-            PRAGMA cache_size = -65536;
-            CREATE TABLE candidates (
-                id INTEGER PRIMARY KEY,
-                rule TEXT NOT NULL,
-                signature TEXT NOT NULL
-            );
-            CREATE INDEX candidates_signature_idx ON candidates(signature);
-        """)
-        first_start, first_stop = ranges[0]
-        progress = _minimizer_progress(total, f"  Compute probes {first_start + 1}-{first_stop}")
-        try:
-            for offset in range(0, total, batch_size):
-                stop_at = min(total, offset + batch_size)
-                tasks = (
-                    (index, rules[index], first_start, first_stop)
-                    for index in range(offset, stop_at)
-                )
-                rows = [
-                    (index, rules[index], signature)
-                    for index, signature in _minimizer_map(
-                        executor, _minimizer_initial_worker, tasks
-                    )
-                ]
-                conn.executemany(
-                    "INSERT INTO candidates(id, rule, signature) VALUES (?, ?, ?)",
-                    rows,
-                )
-                conn.commit()
+                for slot, signature, kind in _minimizer_map(
+                        executor, _minimizer_refine_worker, tasks_for_batch()):
+                    records["sig"][slot] = signature
+                    records["kind"][slot] = kind
+                processed += stop_at - offset
                 if progress is not None:
                     progress.update(stop_at - offset)
         finally:
             if progress is not None:
                 progress.close()
 
-        first_collision_count = int(conn.execute("""
-            SELECT COUNT(*) FROM (
-                SELECT signature FROM candidates GROUP BY signature HAVING COUNT(*) > 1
-            )
-        """).fetchone()[0])
-        if first_collision_count == 0:
-            print(f"  {dim('[MIN] All signatures are unique; remaining probes skipped.')}")
-            return list(rules), len(rules), 0
+        active_count = _minimizer_classify_and_compact(records, active_count, keep_mask)
+        print(
+            f"  {dim('[MIN]')} Probe pass {pass_number}/{len(ranges)}: "
+            f"refined={processed:,}, unresolved={active_count:,}"
+        )
 
-        for pass_number, (start, stop) in enumerate(ranges[1:], start=2):
-            conn.execute("DROP TABLE IF EXISTS pending_signatures")
-            conn.execute("""
-                CREATE TEMP TABLE pending_signatures AS
-                SELECT c.id, c.rule, c.signature
-                FROM candidates AS c
-                INNER JOIN (
-                    SELECT signature
-                    FROM candidates
-                    GROUP BY signature
-                    HAVING COUNT(*) > 1
-                ) AS d ON d.signature = c.signature
-            """)
-            pending_total = int(conn.execute(
-                "SELECT COUNT(*) FROM pending_signatures"
-            ).fetchone()[0])
-            if pending_total == 0:
-                print(f"  {dim('[MIN] All signatures are unique; remaining probes skipped.')}")
-                conn.execute("DROP TABLE pending_signatures")
-                conn.commit()
-                break
-
-            progress = _minimizer_progress(
-                pending_total, f"  Refine probes {start + 1}-{stop}"
-            )
-            cursor = conn.execute(
-                "SELECT id, rule, signature FROM pending_signatures ORDER BY id"
-            )
-            processed = 0
-            try:
-                while True:
-                    source_rows = cursor.fetchmany(batch_size)
-                    if not source_rows:
-                        break
-                    tasks = (
-                        (int(index), rule, signature, start, stop)
-                        for index, rule, signature in source_rows
-                    )
-                    updates = [
-                        (refined_signature, index)
-                        for index, refined_signature in _minimizer_map(
-                            executor, _minimizer_refine_worker, tasks
-                        )
-                    ]
-                    conn.executemany(
-                        "UPDATE candidates SET signature = ? WHERE id = ?",
-                        updates,
-                    )
-                    processed += len(source_rows)
-                    if progress is not None:
-                        progress.update(len(source_rows))
-                    conn.commit()
-            finally:
-                if progress is not None:
-                    progress.close()
-            conn.execute("DROP TABLE pending_signatures")
-            conn.commit()
-            unresolved = int(conn.execute("""
-                SELECT COUNT(*) FROM candidates AS c
-                INNER JOIN (
-                    SELECT signature FROM candidates
-                    GROUP BY signature HAVING COUNT(*) > 1
-                ) AS d ON d.signature = c.signature
-            """).fetchone()[0])
-            print(
-                f"  {dim('[MIN]')} Probe pass {pass_number}/{len(ranges)}: "
-                f"refined={processed:,}, unresolved={unresolved:,}"
-            )
-            if unresolved == 0:
-                break
-
-        kept = [row[0] for row in conn.execute("""
-            SELECT c.rule
-            FROM candidates AS c
-            INNER JOIN (
-                SELECT MIN(id) AS id
-                FROM candidates
-                GROUP BY signature
-            ) AS first_seen ON first_seen.id = c.id
-            ORDER BY c.id
-        """)]
-        return kept, len(kept), total - len(kept)
-    finally:
-        conn.close()
-        for suffix in ("", "-wal", "-shm"):
-            path = db_path + suffix
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        print(f"  {dim('[DB]  Temporary database removed.')}")
+    _minimizer_resolve_final(records, active_count, rules, keep_mask)
+    kept_count = int(np.count_nonzero(keep_mask))
+    if kept_count == total:
+        return rules, kept_count, 0
+    kept = [rule for index, rule in enumerate(rules) if keep_mask[index]]
+    return kept, len(kept), total - len(kept)
 
 
 def minimizer(
@@ -1348,48 +1271,20 @@ def minimizer(
     multibyte: bool = False,
     workers: int = 1,
 ) -> Tuple[List[str], int, int]:
+    """Deduplicate rules with an in-RAM offset buffer (no temporary database).
+
+    Each candidate is represented by a compact signature record and an offset
+    into the caller's original rule list. Only collisions are refined, while
+    surviving rules retain their original input order.
     """
-    Deduplicate *rules* by functional signature over *probe*.
-
-    Uses progressive probe batches, refining only candidates whose partial
-    signatures still collide. Smaller inputs are bucketed in memory; large
-    inputs use a streaming SQLite work table to bound memory use.
-
-    When two rules share the same signature the one appearing *earlier*
-    in *rules* is kept (file order = priority).
-
-    Parameters
-    ----------
-    rules : list of str
-        Raw rule strings as read from the rule file.
-    probe : list of str
-        Words used to compute each rule's functional signature.
-    multibyte : bool
-        When ``True`` words are processed as UTF-8 bytes so that rules on
-        non-ASCII (Polish, German, CJK, …) passwords are handled correctly.
-    workers : int
-        Number of worker processes for parallel signature computation.
-        ``1`` disables multiprocessing entirely (default).
-
-    Returns
-    -------
-    kept : list of str
-        Surviving rules in their original file order.
-    n_kept : int
-        ``len(kept)``
-    n_removed : int
-        Number of rules eliminated.
-    """
+    if not rules:
+        return [], 0, 0
     ordered_probe = _ordered_minimizer_probes(probe)
     worker_count = max(1, int(workers))
     _minimizer_worker_init(ordered_probe, multibyte)
-    if len(rules) > max(1, int(MINIMIZER_DISK_THRESHOLD)):
-        strategy = "disk-backed SQLite"
-    else:
-        strategy = "in-memory progressive signatures"
     print(
-        f"  {cyan('[MIN]')}  Strategy: {strategy}; "
-        f"probe batch={max(1, int(MINIMIZER_PROBE_BATCH_SIZE))}; "
+        f"  {cyan('[MIN]')}  Strategy: in-memory offsets; "
+        f"compact fixed-width records; probe batch={max(1, int(MINIMIZER_PROBE_BATCH_SIZE))}; "
         f"workers={worker_count}"
     )
     if worker_count > 1:
@@ -1398,18 +1293,9 @@ def minimizer(
             initializer=_minimizer_worker_init,
             initargs=(ordered_probe, multibyte),
         ) as executor:
-            if strategy == "disk-backed SQLite":
-                return _minimizer_sqlite(
-                    rules, ordered_probe, multibyte=multibyte,
-                    workers=worker_count, executor=executor,
-                )
             return _minimizer_in_memory(
                 rules, ordered_probe, multibyte=multibyte, executor=executor,
             )
-    if strategy == "disk-backed SQLite":
-        return _minimizer_sqlite(
-            rules, ordered_probe, multibyte=multibyte, workers=1,
-        )
     return _minimizer_in_memory(
         rules, ordered_probe, multibyte=multibyte, executor=None,
     )

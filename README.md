@@ -121,6 +121,19 @@ To run on a specific host/port instead of the default launcher:
 python app.py --host 127.0.0.1 --port 8765
 ```
 
+### Resetting the admin password
+
+If you forget the application password, reset it from the command line
+(run from the project root, with the same Python environment used to run
+`app.py`):
+
+```bash
+python3 -c "import getpass, app; p=getpass.getpass('New admin password: '); assert len(p)>=12, 'Minimum 12 characters'; app.save_admin_password(p); print('Admin password updated successfully.')"
+```
+
+You'll be prompted to enter a new password (12+ characters, not echoed to
+the terminal) which replaces the existing one immediately.
+
 ## Typical pipeline
 
 ```bash

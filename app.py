@@ -37,8 +37,17 @@ DATA = ROOT / "runs"
 UPLOADS = DATA / "uploads"
 RUN_DATASET_MANIFEST = ".ruleops-run.json"
 AUTH_FILE = ROOT / "auth.json"
-DATA.mkdir(exist_ok=True)
-UPLOADS.mkdir(exist_ok=True)
+
+
+def ensure_runtime_directories() -> None:
+    """Create the persistent runtime storage tree inside the project directory."""
+    DATA.mkdir(parents=True, exist_ok=True)
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+
+
+# The runs/ tree is intentionally gitignored and therefore absent from clean
+# checkouts/archives. Recreate it whenever the application process starts.
+ensure_runtime_directories()
 
 # Passwords are never stored in clear text. Sessions live in memory, so a server
 # restart automatically signs out every browser.
@@ -4800,6 +4809,7 @@ def main():
     )
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    ensure_runtime_directories()
     cleanup_stale_uploaded_files()
     server = RulestHTTPServer((args.host, args.port), Handler)
     actual_port = server.server_address[1]

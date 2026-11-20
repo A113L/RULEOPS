@@ -10,9 +10,11 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from collections import Counter
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Iterable, List, Optional, Set, Tuple
 
@@ -214,6 +216,74 @@ def extract_affixes(passwords: Iterable[str]) -> Tuple[Counter, Counter, Counter
     return suffixes, prefixes, years
 
 
+# Below this many passwords, splitting into worker chunks and paying
+# process start-up/IPC cost is a net loss vs. just scanning in-process.
+MIN_PASSWORDS_FOR_PARALLEL_SCAN = 50_000
+
+
+def default_worker_count() -> int:
+    """All logical CPUs by default; falls back to 1 if undetectable."""
+    try:
+        n = os.cpu_count()
+    except Exception:
+        n = None
+    return n if n else 1
+
+
+def _extract_affixes_chunk(passwords_chunk: List[str]) -> Tuple[Counter, Counter, Counter]:
+    """Worker-process entry point: scan one chunk, return its partial counters.
+
+    Must stay a module-level function (not a closure/lambda) so it can be
+    pickled and sent to worker processes by multiprocessing.
+    """
+    return extract_affixes(passwords_chunk)
+
+
+def extract_affixes_parallel(
+    passwords: List[str], workers: Optional[int] = None
+) -> Tuple[Counter, Counter, Counter]:
+    """Same result as extract_affixes(), computed across multiple CPU cores.
+
+    Splits `passwords` into `workers` contiguous chunks, scans each chunk in
+    its own process, then merges the per-chunk Counters. Falls back to the
+    single-process path for small inputs or when only one worker is usable,
+    since process start-up cost would dominate a short scan.
+    """
+    n_pw = len(passwords)
+    if workers is None:
+        workers = default_worker_count()
+    workers = max(1, int(workers))
+
+    if workers <= 1 or n_pw < MIN_PASSWORDS_FOR_PARALLEL_SCAN:
+        return extract_affixes(passwords)
+
+    # Cap workers to the number of chunks that actually makes sense so we
+    # don't spin up processes with nothing to do on small-but-not-tiny inputs.
+    workers = min(workers, max(1, n_pw // (MIN_PASSWORDS_FOR_PARALLEL_SCAN // 5)))
+    if workers <= 1:
+        return extract_affixes(passwords)
+
+    chunk_size = max(1, -(-n_pw // workers))  # ceil division
+    chunks = [passwords[i:i + chunk_size] for i in range(0, n_pw, chunk_size)]
+
+    suffixes: Counter = Counter()
+    prefixes: Counter = Counter()
+    years: Counter = Counter()
+
+    # "fork" avoids re-pickling module globals on Linux/macOS and is faster
+    # to spawn; multiprocessing falls back sanely wherever fork isn't
+    # available (e.g. Windows uses "spawn" automatically via get_context).
+    ctx_name = "fork" if "fork" in __import__("multiprocessing").get_all_start_methods() else "spawn"
+    ctx = get_context(ctx_name)
+    with ctx.Pool(processes=workers) as pool:
+        for s_part, p_part, y_part in pool.map(_extract_affixes_chunk, chunks):
+            suffixes.update(s_part)
+            prefixes.update(p_part)
+            years.update(y_part)
+
+    return suffixes, prefixes, years
+
+
 def _split_long_short(items: list, max_len: int = MAX_AFFIX_LEN) -> Tuple[list, list]:
     """Split a count-sorted (affix, count) list into (long, short) by length,
     each still sorted by descending count within its own group."""
@@ -322,6 +392,7 @@ def generate_seeds(
     complementary: bool = False,
     show_progress: bool = True,
     adaptive: bool = True,
+    workers: Optional[int] = None,
 ) -> List[str]:
     max_seeds = max(0, int(max_seeds)) if max_seeds else 0
     # 0 / negative => unlimited (still practical soft stop via family budgets)
@@ -344,8 +415,23 @@ def generate_seeds(
             bar = ProgressBar(total=100, desc="TOP-N", unit="%", min_interval=0.25)
             bar.update(0)
 
-        # Affix pass with chunked progress updates
-        if bar is not None and n_pw > 5000:
+        # Affix pass. Defaults to using every CPU core: this scan is the one
+        # genuinely CPU-bound, embarrassingly-parallel part of seed
+        # generation (each password's affixes are independent of every
+        # other's), so for large inputs it's split across worker processes
+        # instead of running on a single core.
+        effective_workers = default_worker_count() if workers is None else max(1, int(workers))
+        use_parallel = effective_workers > 1 and n_pw >= MIN_PASSWORDS_FOR_PARALLEL_SCAN
+
+        if use_parallel:
+            # Multiprocessing can't report fine-grained progress from inside
+            # worker processes without extra IPC, so just show the pass as
+            # a single 0 -> 30 jump once every worker is done.
+            suffixes, prefixes, years = extract_affixes_parallel(passwords, workers=effective_workers)
+            if bar is not None:
+                bar.n = 30
+                bar.refresh()
+        elif bar is not None and n_pw > 5000:
             suffixes = __import__("collections").Counter()
             prefixes = __import__("collections").Counter()
             years = __import__("collections").Counter()
@@ -577,9 +663,13 @@ def run(
     encoding: str = "latin-1",
     complementary: bool = False,
     adaptive: bool = True,
+    workers: Optional[int] = None,
 ) -> dict:
     passwords = stream_top_n(target_path, top_n, encoding=encoding)
-    seeds = generate_seeds(passwords, max_seeds=max_seeds, complementary=complementary, adaptive=adaptive)
+    seeds = generate_seeds(
+        passwords, max_seeds=max_seeds, complementary=complementary, adaptive=adaptive,
+        workers=workers,
+    )
     write_seeds(seeds, output_path)
     return {
         "target": str(target_path),
@@ -589,6 +679,7 @@ def run(
         "output": str(output_path),
         "complementary": complementary,
         "adaptive": adaptive,
+        "workers": workers if workers is not None else default_worker_count(),
     }
 
 
@@ -603,6 +694,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--complementary", action="store_true")
     p.add_argument("--no-adaptive-budget", action="store_false", dest="adaptive", default=True,
                     help="Disable data-driven family-budget reallocation and use only the static priors.")
+    p.add_argument("-w", "--workers", type=int, default=default_worker_count(),
+                    help="CPU worker processes for the affix scan. Defaults to all detected "
+                         "logical cores (%(default)s on this machine). Use 1 to force single-core.")
     args = p.parse_args(argv)
     if not args.target.is_file():
         print(f"error: target not found: {args.target}", file=sys.stderr)
@@ -611,9 +705,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.target, args.output,
         top_n=args.top_n, max_seeds=args.max_seeds,
         encoding=args.encoding, complementary=args.complementary, adaptive=args.adaptive,
+        workers=args.workers,
     )
     mode = "complementary" if stats["complementary"] else "standard"
-    print(f"[topn-seedgen] mode={mode} loaded {stats['passwords_loaded']:,} → {stats['seeds_generated']:,} seeds → {stats['output']}")
+    print(f"[topn-seedgen] mode={mode} loaded {stats['passwords_loaded']:,} → {stats['seeds_generated']:,} seeds → {stats['output']} (workers={stats['workers']})")
     return 0
 
 

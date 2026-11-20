@@ -81,7 +81,11 @@ FAMILY_BUDGET_COMPLEMENTARY = {
 
 
 def _is_digit_str(s: str) -> bool:
-    return bool(s) and s.isdigit()
+    # s.isdigit() alone is True for Unicode "digit" characters (e.g. the
+    # superscript '\u00b2') that int() cannot parse, which used to crash
+    # _looks_like_year() below with ValueError on real-world wordlists.
+    # Hashcat rule families only care about plain ASCII 0-9 anyway.
+    return bool(s) and s.isascii() and s.isdigit()
 
 
 def _is_special_str(s: str) -> bool:
@@ -89,6 +93,8 @@ def _is_special_str(s: str) -> bool:
 
 
 def _looks_like_year(s: str) -> bool:
+    if not s.isascii():
+        return False
     if len(s) == 2 and s.isdigit():
         v = int(s)
         return 0 <= v <= 40 or 60 <= v <= 99
@@ -195,216 +201,225 @@ def generate_seeds(
     budgets = {k: max(40, int(budget_base * v)) for k, v in budgets_src.items()}
 
     # Unified progress: 0-30% affix scan, 30-100% family generation
-    n_pw = max(1, len(passwords))
-    bar = None
-    if show_progress and ProgressBar is not None:
-        bar = ProgressBar(total=100, desc="TOP-N", unit="%", min_interval=0.25)
-        bar.update(0)
+    try:
+        n_pw = max(1, len(passwords))
+        bar = None
+        if show_progress and ProgressBar is not None:
+            bar = ProgressBar(total=100, desc="TOP-N", unit="%", min_interval=0.25)
+            bar.update(0)
 
-    # Affix pass with chunked progress updates
-    if bar is not None and n_pw > 5000:
-        suffixes = __import__("collections").Counter()
-        prefixes = __import__("collections").Counter()
-        years = __import__("collections").Counter()
-        step = max(1, n_pw // 20)
-        for i, pw in enumerate(passwords):
-            n = len(pw)
-            if n >= 3:
-                for L in range(1, min(MAX_AFFIX_LEN, n - 1) + 1):
-                    suf = pw[-L:]
-                    pre = pw[:L]
-                    if _is_digit_str(suf) or _is_special_str(suf) or _looks_like_year(suf):
-                        suffixes[suf] += 1
-                    if _is_digit_str(pre) or _is_special_str(pre):
-                        prefixes[pre] += 1
-                    if _looks_like_year(suf):
-                        years[suf] += 1
-            if i % step == 0:
-                bar.n = int(30 * (i + 1) / n_pw)
-                bar.refresh()
-        bar.n = 30
-        bar.refresh()
-    else:
-        suffixes, prefixes, years = extract_affixes(passwords)
-        if bar is not None:
+        # Affix pass with chunked progress updates
+        if bar is not None and n_pw > 5000:
+            suffixes = __import__("collections").Counter()
+            prefixes = __import__("collections").Counter()
+            years = __import__("collections").Counter()
+            step = max(1, n_pw // 20)
+            for i, pw in enumerate(passwords):
+                n = len(pw)
+                if n >= 3:
+                    for L in range(1, min(MAX_AFFIX_LEN, n - 1) + 1):
+                        suf = pw[-L:]
+                        pre = pw[:L]
+                        if _is_digit_str(suf) or _is_special_str(suf) or _looks_like_year(suf):
+                            suffixes[suf] += 1
+                        if _is_digit_str(pre) or _is_special_str(pre):
+                            prefixes[pre] += 1
+                        if _looks_like_year(suf):
+                            years[suf] += 1
+                if i % step == 0:
+                    bar.n = int(30 * (i + 1) / n_pw)
+                    bar.refresh()
             bar.n = 30
             bar.refresh()
-
-    dig_suf = sorted(
-        [(s, c) for s, c in suffixes.items() if _is_digit_str(s) and c >= MIN_SUFFIX_COUNT],
-        key=lambda x: (-x[1], x[0]),
-    )
-    sp_suf = sorted(
-        [(s, c) for s, c in suffixes.items() if _is_special_str(s) and c >= MIN_SUFFIX_COUNT],
-        key=lambda x: (-x[1], x[0]),
-    )
-    dig_pre = sorted(
-        [(s, c) for s, c in prefixes.items() if _is_digit_str(s) and c >= MIN_SUFFIX_COUNT],
-        key=lambda x: (-x[1], x[0]),
-    )
-    sp_pre = sorted(
-        [(s, c) for s, c in prefixes.items() if _is_special_str(s) and c >= MIN_SUFFIX_COUNT],
-        key=lambda x: (-x[1], x[0]),
-    )
-    year_items = sorted(
-        [(s, c) for s, c in years.items() if c >= MIN_YEAR_COUNT],
-        key=lambda x: (-x[1], x[0]),
-    )
-
-    if len(dig_suf) < 50:
-        have = {x[0] for x in dig_suf}
-        dig_suf = dig_suf + [(str(i), 1) for i in range(10) if str(i) not in have]
-    if len(year_items) < 30:
-        have = {x[0] for x in year_items}
-        for y in [str(y) for y in range(2015, 2027)] + [f"{y:02d}" for y in list(range(0, 30)) + list(range(90, 100))]:
-            if y not in have:
-                year_items.append((y, 1))
-
-    seeds: List[str] = []
-    seen: Set[str] = set()
-    _add_count = [0]
-    _target_for_bar = max(1, min(max_seeds, budget_base) if not unlimited else budget_base)
-
-    def add(rule: str) -> bool:
-        if rule and rule not in seen and _valid(rule):
-            seen.add(rule)
-            seeds.append(rule)
-            _add_count[0] += 1
-            if bar is not None and _add_count[0] % 64 == 0:
-                # map generated count into 30..99
-                frac = min(1.0, len(seeds) / _target_for_bar)
-                bar.n = 30 + int(69 * frac)
+        else:
+            suffixes, prefixes, years = extract_affixes(passwords)
+            if bar is not None:
+                bar.n = 30
                 bar.refresh()
-            return True
-        return False
 
-    for s, _ in dig_suf[: budgets["suffix_digit"]]:
-        add(_rule_append(s))
-    for s, _ in dig_pre[: budgets["prefix_digit"]]:
-        add(_rule_prepend(s))
-    for s, _ in sp_suf[: budgets["suffix_special"]]:
-        add(_rule_append(s))
-    for ch in SPECIAL_CHARS_CORE:
-        add(f"${ch}")
-    for s, _ in sp_pre[: budgets["prefix_special"]]:
-        add(_rule_prepend(s))
-    for ch in SPECIAL_CHARS_CORE:
-        add(f"^{ch}")
-    for s, _ in year_items[: budgets["year"]]:
-        add(_rule_append(s))
-        add(_rule_prepend(s))
+        dig_suf = sorted(
+            [(s, c) for s, c in suffixes.items() if _is_digit_str(s) and c >= MIN_SUFFIX_COUNT],
+            key=lambda x: (-x[1], x[0]),
+        )
+        sp_suf = sorted(
+            [(s, c) for s, c in suffixes.items() if _is_special_str(s) and c >= MIN_SUFFIX_COUNT],
+            key=lambda x: (-x[1], x[0]),
+        )
+        dig_pre = sorted(
+            [(s, c) for s, c in prefixes.items() if _is_digit_str(s) and c >= MIN_SUFFIX_COUNT],
+            key=lambda x: (-x[1], x[0]),
+        )
+        sp_pre = sorted(
+            [(s, c) for s, c in prefixes.items() if _is_special_str(s) and c >= MIN_SUFFIX_COUNT],
+            key=lambda x: (-x[1], x[0]),
+        )
+        year_items = sorted(
+            [(s, c) for s, c in years.items() if c >= MIN_YEAR_COUNT],
+            key=lambda x: (-x[1], x[0]),
+        )
 
-    for op in LEET_OPS:
-        add(op)
-        for d in "1234567890":
-            add(f"{op} ${d}")
-            if len(seeds) > max_seeds * 0.55:
-                break
+        if len(dig_suf) < 50:
+            have = {x[0] for x in dig_suf}
+            dig_suf = dig_suf + [(str(i), 1) for i in range(10) if str(i) not in have]
+        if len(year_items) < 30:
+            have = {x[0] for x in year_items}
+            for y in [str(y) for y in range(2015, 2027)] + [f"{y:02d}" for y in list(range(0, 30)) + list(range(90, 100))]:
+                if y not in have:
+                    year_items.append((y, 1))
 
-    n = 0
-    for s, _ in dig_suf[:1200]:
-        if len(s) > 3:
-            continue
+        seeds: List[str] = []
+        seen: Set[str] = set()
+        _add_count = [0]
+        _target_for_bar = max(1, min(max_seeds, budget_base) if not unlimited else budget_base)
+
+        def add(rule: str) -> bool:
+            if rule and rule not in seen and _valid(rule):
+                seen.add(rule)
+                seeds.append(rule)
+                _add_count[0] += 1
+                if bar is not None and _add_count[0] % 64 == 0:
+                    # map generated count into 30..99
+                    frac = min(1.0, len(seeds) / _target_for_bar)
+                    bar.n = 30 + int(69 * frac)
+                    bar.refresh()
+                return True
+            return False
+
+        for s, _ in dig_suf[: budgets["suffix_digit"]]:
+            add(_rule_append(s))
+        for s, _ in dig_pre[: budgets["prefix_digit"]]:
+            add(_rule_prepend(s))
+        for s, _ in sp_suf[: budgets["suffix_special"]]:
+            add(_rule_append(s))
         for ch in SPECIAL_CHARS_CORE:
-            add(f"{_rule_append(s)} ${ch}")
-            add(f"${ch} {_rule_append(s)}")
-            n += 2
+            add(f"${ch}")
+        for s, _ in sp_pre[: budgets["prefix_special"]]:
+            add(_rule_prepend(s))
+        for ch in SPECIAL_CHARS_CORE:
+            add(f"^{ch}")
+        for s, _ in year_items[: budgets["year"]]:
+            add(_rule_append(s))
+            add(_rule_prepend(s))
+
+        for op in LEET_OPS:
+            add(op)
+            for d in "1234567890":
+                add(f"{op} ${d}")
+                if len(seeds) > max_seeds * 0.55:
+                    break
+
+        n = 0
+        for s, _ in dig_suf[:1200]:
+            if len(s) > 3:
+                continue
+            for ch in SPECIAL_CHARS_CORE:
+                add(f"{_rule_append(s)} ${ch}")
+                add(f"${ch} {_rule_append(s)}")
+                n += 2
+                if n >= budgets["depth2_digit_special"]:
+                    break
             if n >= budgets["depth2_digit_special"]:
                 break
-        if n >= budgets["depth2_digit_special"]:
-            break
 
-    transforms = ["c", "u", "l", "C", "t", "r"]
-    n = 0
-    popular = [s for s, _ in dig_suf[:300] if len(s) <= 3] + [s for s, _ in year_items[:120]]
-    for t in transforms:
-        for s in popular:
-            add(f"{t} {_rule_append(s)}")
-            n += 1
+        transforms = ["c", "u", "l", "C", "t", "r"]
+        n = 0
+        popular = [s for s, _ in dig_suf[:300] if len(s) <= 3] + [s for s, _ in year_items[:120]]
+        for t in transforms:
+            for s in popular:
+                add(f"{t} {_rule_append(s)}")
+                n += 1
+                if n >= budgets["depth2_transform"]:
+                    break
             if n >= budgets["depth2_transform"]:
                 break
-        if n >= budgets["depth2_transform"]:
-            break
 
-    n = 0
-    for op in LEET_OPS:
-        for s, _ in year_items[:80]:
-            add(f"{op} {_rule_append(s)}")
-            add(f"{_rule_append(s)} {op}")
-            n += 2
+        n = 0
+        for op in LEET_OPS:
+            for s, _ in year_items[:80]:
+                add(f"{op} {_rule_append(s)}")
+                add(f"{_rule_append(s)} {op}")
+                n += 2
+                if n >= budgets["leet_year"]:
+                    break
             if n >= budgets["leet_year"]:
                 break
-        if n >= budgets["leet_year"]:
-            break
 
-    n = 0
-    for t in ("c", "u", "l", "C", "r"):
-        for s, _ in year_items[:60]:
-            for ch in SPECIAL_CHARS_CORE[:5]:
-                add(f"{t} {_rule_append(s)} ${ch}")
-                add(f"{t} ${ch} {_rule_append(s)}")
-                n += 2
+        n = 0
+        for t in ("c", "u", "l", "C", "r"):
+            for s, _ in year_items[:60]:
+                for ch in SPECIAL_CHARS_CORE[:5]:
+                    add(f"{t} {_rule_append(s)} ${ch}")
+                    add(f"{t} ${ch} {_rule_append(s)}")
+                    n += 2
+                    if n >= budgets["transform_year_special"]:
+                        break
                 if n >= budgets["transform_year_special"]:
                     break
             if n >= budgets["transform_year_special"]:
                 break
-        if n >= budgets["transform_year_special"]:
-            break
 
-    n = 0
-    for s, _ in dig_suf[:400]:
-        if len(s) > 3:
-            continue
-        add(f"r {_rule_append(s)}")
-        add(f"{_rule_append(s)} r")
-        n += 2
-        if n >= budgets["reverse_digit"]:
-            break
-    for s, _ in year_items[:40]:
-        add(f"r {_rule_append(s)}")
-        n += 1
-        if n >= budgets["reverse_digit"]:
-            break
+        n = 0
+        for s, _ in dig_suf[:400]:
+            if len(s) > 3:
+                continue
+            add(f"r {_rule_append(s)}")
+            add(f"{_rule_append(s)} r")
+            n += 2
+            if n >= budgets["reverse_digit"]:
+                break
+        for s, _ in year_items[:40]:
+            add(f"r {_rule_append(s)}")
+            n += 1
+            if n >= budgets["reverse_digit"]:
+                break
 
-    n = 0
-    for t in ("c", "C", "u"):
-        for ch in SPECIAL_CHARS_CORE:
-            for d in "1234567890":
-                add(f"{t} ${ch} ${d}")
-                add(f"{t} ${d} ${ch}")
-                n += 2
+        n = 0
+        for t in ("c", "C", "u"):
+            for ch in SPECIAL_CHARS_CORE:
+                for d in "1234567890":
+                    add(f"{t} ${ch} ${d}")
+                    add(f"{t} ${d} ${ch}")
+                    n += 2
+                    if n >= budgets["cap_special_digit"]:
+                        break
                 if n >= budgets["cap_special_digit"]:
                     break
             if n >= budgets["cap_special_digit"]:
                 break
-        if n >= budgets["cap_special_digit"]:
-            break
 
-    if len(seeds) < max_seeds:
-        for s, _ in year_items:
-            for t in transforms:
-                for ch in SPECIAL_CHARS_CORE:
-                    add(f"{t} {_rule_append(s)} ${ch}")
+        if len(seeds) < max_seeds:
+            for s, _ in year_items:
+                for t in transforms:
+                    for ch in SPECIAL_CHARS_CORE:
+                        add(f"{t} {_rule_append(s)} ${ch}")
+                        if len(seeds) >= max_seeds:
+                            break
                     if len(seeds) >= max_seeds:
                         break
                 if len(seeds) >= max_seeds:
                     break
-            if len(seeds) >= max_seeds:
-                break
 
-    if len(seeds) < max_seeds:
-        for s, _ in dig_suf:
-            if len(s) > 4:
-                continue
-            for t in transforms:
-                add(f"{t} {_rule_append(s)}")
+        if len(seeds) < max_seeds:
+            for s, _ in dig_suf:
+                if len(s) > 4:
+                    continue
+                for t in transforms:
+                    add(f"{t} {_rule_append(s)}")
+                    if len(seeds) >= max_seeds:
+                        break
                 if len(seeds) >= max_seeds:
                     break
-            if len(seeds) >= max_seeds:
-                break
 
-    if not unlimited and len(seeds) > max_seeds:
-        seeds = seeds[:max_seeds]
+        if not unlimited and len(seeds) > max_seeds:
+            seeds = seeds[:max_seeds]
+    except Exception:
+        # Always stop the background heartbeat thread on failure too --
+        # otherwise it keeps writing stray 'TOP-N: NN%' lines into the
+        # log forever (it's a daemon thread with its own refresh loop),
+        # long after the failure itself was already logged.
+        if bar is not None:
+            bar.close()
+        raise
     if bar is not None:
         bar.n = 100
         bar.refresh()

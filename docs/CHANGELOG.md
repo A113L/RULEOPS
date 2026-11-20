@@ -2,9 +2,46 @@
 
 ## 2026-11-20
 
+HEAD
 - Follow-up: removed dictionary deduplication from `load_wordlist()` as well. Every valid input entry is now retained in its original order, including duplicates. The optional Stage 0 membership hash index remains a separate lookup accelerator and does not alter the loaded wordlist.
 
 - Removed the redundant target-wordlist deduplication pass from the initial CELF phase. The standard `load_wordlist()` path already normalizes and deduplicates dictionary entries during loading, so sorting and compacting the same targets again added startup time without providing value for the normal pipeline.
+
+### Profile-informed Top-N / PCFG-Lite budget priors
+
+- Added `load_pcfg_profile()` and `summarize_pcfg_profile()` to `rulest.topn_seedgen` to read `ruleops.pcfg-profile.v1` reports and extract aggregate character-class shares for budget calibration. The attached profile is used only as aggregate metadata; it is not treated as a wordlist and contributes no raw passwords, affixes, or candidate values.
+- Added `profile_informed_priors()` for both standard and complementary modes. It adjusts the existing priors for rule families associated with digits, special characters, and case transformations, applies bounded multipliers, and renormalizes the weights so their total remains unchanged. Families without a corresponding profile signal keep their configured prior.
+- Profile-based priors are applied before the existing per-run adaptive pass. When adaptive budgeting is enabled, the five directly observable prefix, suffix, and year families are then rebalanced using frequency evidence from the current Top-N sample. `--no-adaptive-budget` disables this second pass; combo families without direct scan evidence continue to use their configured, profile-informed priors.
+- Added `--pcfg-profile PATH` to the CLI and an optional `pcfg_profile` JSON field to `/api/tools/topn-seeds`. The Top-N panel reads and parses the selected JSON in the browser, then sends the aggregate object to the endpoint without requiring a separate server-side upload. CLI and API results report the digit, symbol, and uppercase shares used for calibration.
+- The saved plain profile for `hashmob.medium.found` contains about 12.9 million entries, with digit presence at 77.2%, symbol presence at 2.6%, and uppercase presence at 14.6%. These corpus measurements move the relevant priors away from generic defaults while preserving the overall budget total.
+- Scope limitation: this change recalibrates existing rule-family priors; it does not expand the structures represented by PCFG-Lite. For example, the same Medium profile classifies about 14.1% of entries as digits-only, a structure not represented by the current prefix/suffix-oriented families and therefore outside this calibration step.
+
+### PCFG frequency-weight diagnostics and safe large-count handling
+
+- Added streamed weight diagnostics: minimum/maximum/mean, approximate median/p95/p99 ranges, logarithmic weight buckets, and top-1/top-10/top-100 concentration.
+- Added explicit detection of totals and individual weights that exceed signed `int64` and JavaScript safe-integer limits. Aggregation and ratio calculations use Python arbitrary-precision integers and decimal division to avoid fixed-width overflow.
+- Added `--input-format auto|plain|count-value` so numeric prefixes are not silently interpreted as frequency counts when the input is a plain wordlist; strict frequency mode accounts for malformed rows.
+- Extended consistency checks, CLI warnings, documentation, and regression tests. Existing CHANGELOG history is retained.
+
+
+### PCFG profile quality and comparison metrics
+
+- Added weighted and unweighted length and character-class distributions so frequency-weighted observations can be distinguished from source-entry counts.
+- Added input acceptance coverage, class-combination diversity metrics, weighted-versus-unweighted deltas, and automatic profile consistency checks.
+- Added `--compare` to compare a new aggregate profile with a previously saved profile, including distribution changes in percentage points and diversity deltas.
+- Expanded the PCFG profile documentation and tests. Existing changelog entries are retained.
+
+### Aggregate PCFG corpus profiling
+
+- Added a standalone PCFG corpus profiler that reports weighted length and broad character-class distributions, plus simple length-policy indicators.
+- Supports plain and frequency-formatted wordlists; repeated plain lines remain separate observations and frequency rows use their leading count as weight.
+- The report contains aggregate metrics only and does not emit raw values, affixes, password candidates, or Hashcat rules.
+- Added CLI entry point `run_pcfg_profile.py`, report documentation, and focused tests.
+
+- Follow-up: removed dictionary deduplication from `load_wordlist()` as well. Every valid input entry is now retained in its original order, including duplicates. The optional Stage 0 membership hash index remains a separate lookup accelerator and does not alter the loaded wordlist.
+
+- Removed the redundant target-wordlist deduplication pass from the initial CELF phase. Most source dictionaries are already deduplicated upstream, so sorting and compacting them again added startup time without providing value. A later loader change also stopped filtering repeated entries, preserving the source wordlist exactly.
+
 
 ### Top-N / PCFG-Lite seed generation
 

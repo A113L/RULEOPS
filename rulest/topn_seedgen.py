@@ -10,13 +10,14 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
 from collections import Counter
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 try:
     from .common import (
@@ -106,6 +107,149 @@ FAMILY_BUDGET_COMPLEMENTARY = {
     "reverse_digit": 0.12,
     "cap_special_digit": 0.11,
 }
+
+
+# ---------------------------------------------------------------------------
+# PCFG aggregate-profile-informed priors
+#
+# rulest/pcfg_profile.py (ruleops.pcfg-profile.v1) reports only aggregate,
+# privacy-preserving composition stats for a corpus (length buckets,
+# character-class presence/combinations, diversity) -- no passwords,
+# affixes, or candidate values. The per-run adaptive budgeting in
+# _adaptive_primary_budgets() already reallocates the 5 directly-measurable
+# families using evidence from the Top-N sample itself, but the FAMILY_BUDGET_*
+# tables below it -- including all 7 families that have no direct per-family
+# evidence and are otherwise always static -- are still hand-tuned guesses.
+# When an aggregate profile is supplied, these functions nudge those same
+# tables toward the corpus's *actually observed* digit/symbol/uppercase
+# prevalence before the per-run adaptive pass runs on top, so even the
+# purely-static combo families benefit from real, representative data
+# instead of a one-size-fits-all guess.
+# ---------------------------------------------------------------------------
+
+# "Typical" shares implicitly assumed by the hand-tuned FAMILY_BUDGET_*
+# tables, in the absence of any corpus profile. These are deliberately in
+# the middle of the plausible range for general-purpose leaked-password
+# corpora; a supplied profile's measured shares are compared against them,
+# not treated as ground truth on their own.
+_PROFILE_BASELINE_SHARE = {"digits": 0.55, "symbols": 0.20, "uppercase": 0.30}
+# Multipliers are clamped so one profile can't zero out or blow up a family
+# budget outright -- it nudges the static priors, it doesn't replace them.
+_PROFILE_MULT_MIN = 0.5
+_PROFILE_MULT_MAX = 2.0
+# suffix_special/prefix_special are the direct special-char-affix families;
+# the rest below also assume a literal "$x" symbol token somewhere in the rule.
+_SYMBOL_SENSITIVE_FAMILIES = (
+    "suffix_special", "prefix_special", "depth2_digit_special",
+    "cap_special_digit", "transform_year_special",
+)
+_DIGIT_SENSITIVE_FAMILIES = ("suffix_digit", "prefix_digit")
+# depth2_transform is the one family whose entire point is a case transform
+# (c/u/l/C/t/r); its value scales with how often the corpus actually mixes case.
+_UPPER_SENSITIVE_FAMILIES = ("depth2_transform",)
+
+
+def load_pcfg_profile(source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
+    """Load a `ruleops.pcfg-profile.v1` report from a dict, a file path, or
+    raw JSON text, and return the parsed dict as-is (schema is not enforced
+    here beyond being valid JSON -- summarize_pcfg_profile() below tolerates
+    missing sections).
+    """
+    if isinstance(source, dict):
+        return source
+    if isinstance(source, Path):
+        with source.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    if isinstance(source, str):
+        # A raw JSON blob (e.g. "{...}") is not a valid OS path and can even
+        # exceed the filesystem's max path length, which raises OSError
+        # rather than returning False -- so treat "is this a path" as best-
+        # effort and fall back to parsing the string as JSON either way.
+        try:
+            is_path = Path(source).is_file()
+        except OSError:
+            is_path = False
+        if is_path:
+            with Path(source).open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        return json.loads(source)
+    raise TypeError(f"Unsupported PCFG profile source type: {type(source)!r}")
+
+
+def summarize_pcfg_profile(profile: Dict[str, Any]) -> Dict[str, float]:
+    """Reduce a full pcfg-profile.v1 report to the handful of composition
+    shares used to inform family-budget priors (see module docstring above).
+    Missing or malformed sections default to the baseline (share == 1.0
+    multiplier, i.e. no nudge), so a partial or older-schema report degrades
+    gracefully instead of raising.
+    """
+    comp = profile.get("composition") or {}
+    presence = comp.get("weighted_class_presence") or comp.get("unweighted_class_presence") or {}
+    length = profile.get("length") or {}
+    length_hist = length.get("weighted_histogram") or length.get("unweighted_histogram") or {}
+
+    total = (
+        profile.get("input", {}).get("weighted_observations")
+        or profile.get("input_coverage", {}).get("profiled_entries")
+        or sum(presence.values())
+        or 1
+    )
+    total = max(1, int(total))
+
+    len_total = max(1, sum(length_hist.values())) if length_hist else 1
+
+    return {
+        "digit_share": presence.get("digits", 0) / total,
+        "symbol_share": presence.get("symbols", 0) / total,
+        "uppercase_share": presence.get("uppercase", 0) / total,
+        "lowercase_share": presence.get("lowercase", 0) / total,
+        "short_length_share": length_hist.get("2-7", 0) / len_total,
+        "mid_length_share": length_hist.get("8-11", 0) / len_total,
+        "long_length_share": sum(
+            v for k, v in length_hist.items() if k not in ("2-7", "8-11")
+        ) / len_total,
+        "profiled_entries": total,
+    }
+
+
+def _profile_share_multiplier(observed_share: float, baseline_share: float) -> float:
+    if baseline_share <= 0:
+        return 1.0
+    return min(_PROFILE_MULT_MAX, max(_PROFILE_MULT_MIN, observed_share / baseline_share))
+
+
+def profile_informed_priors(budgets_src: Dict[str, float], profile_summary: Dict[str, float]) -> Dict[str, float]:
+    """Return a copy of `budgets_src` with digit/symbol/uppercase-sensitive
+    family shares nudged by how over- or under-represented those character
+    classes are in `profile_summary` relative to the generic baseline, then
+    renormalized back to sum to 1.0 so total budget semantics are unchanged.
+    """
+    digit_mult = _profile_share_multiplier(
+        profile_summary.get("digit_share", _PROFILE_BASELINE_SHARE["digits"]),
+        _PROFILE_BASELINE_SHARE["digits"],
+    )
+    symbol_mult = _profile_share_multiplier(
+        profile_summary.get("symbol_share", _PROFILE_BASELINE_SHARE["symbols"]),
+        _PROFILE_BASELINE_SHARE["symbols"],
+    )
+    upper_mult = _profile_share_multiplier(
+        profile_summary.get("uppercase_share", _PROFILE_BASELINE_SHARE["uppercase"]),
+        _PROFILE_BASELINE_SHARE["uppercase"],
+    )
+
+    adjusted = dict(budgets_src)
+    for k in _DIGIT_SENSITIVE_FAMILIES:
+        if k in adjusted:
+            adjusted[k] = adjusted[k] * digit_mult
+    for k in _SYMBOL_SENSITIVE_FAMILIES:
+        if k in adjusted:
+            adjusted[k] = adjusted[k] * symbol_mult
+    for k in _UPPER_SENSITIVE_FAMILIES:
+        if k in adjusted:
+            adjusted[k] = adjusted[k] * upper_mult
+
+    total = sum(adjusted.values()) or 1.0
+    return {k: v / total for k, v in adjusted.items()}
 
 
 def _is_digit_str(s: str) -> bool:
@@ -393,6 +537,7 @@ def generate_seeds(
     show_progress: bool = True,
     adaptive: bool = True,
     workers: Optional[int] = None,
+    pcfg_profile: Optional[Union[str, Path, Dict[str, Any]]] = None,
 ) -> List[str]:
     max_seeds = max(0, int(max_seeds)) if max_seeds else 0
     # 0 / negative => unlimited (still practical soft stop via family budgets)
@@ -400,6 +545,9 @@ def generate_seeds(
     if unlimited:
         max_seeds = 10**9  # practical unbounded
     budgets_src = FAMILY_BUDGET_COMPLEMENTARY if complementary else FAMILY_BUDGET_STANDARD
+    if pcfg_profile is not None:
+        profile_summary = summarize_pcfg_profile(load_pcfg_profile(pcfg_profile))
+        budgets_src = profile_informed_priors(budgets_src, profile_summary)
     # Scale family budgets; when unlimited, use a large nominal target so families expand
     budget_base = 25_000 if unlimited else max_seeds
     # A static baseline is always available immediately (used as-is for the
@@ -664,11 +812,16 @@ def run(
     complementary: bool = False,
     adaptive: bool = True,
     workers: Optional[int] = None,
+    pcfg_profile: Optional[Union[str, Path, Dict[str, Any]]] = None,
 ) -> dict:
+    profile_summary = None
+    if pcfg_profile is not None:
+        profile_summary = summarize_pcfg_profile(load_pcfg_profile(pcfg_profile))
+
     passwords = stream_top_n(target_path, top_n, encoding=encoding)
     seeds = generate_seeds(
         passwords, max_seeds=max_seeds, complementary=complementary, adaptive=adaptive,
-        workers=workers,
+        workers=workers, pcfg_profile=pcfg_profile,
     )
     write_seeds(seeds, output_path)
     return {
@@ -680,6 +833,8 @@ def run(
         "complementary": complementary,
         "adaptive": adaptive,
         "workers": workers if workers is not None else default_worker_count(),
+        "pcfg_profile_applied": profile_summary is not None,
+        "pcfg_profile_summary": profile_summary,
     }
 
 
@@ -697,18 +852,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("-w", "--workers", type=int, default=default_worker_count(),
                     help="CPU worker processes for the affix scan. Defaults to all detected "
                          "logical cores (%(default)s on this machine). Use 1 to force single-core.")
+    p.add_argument("--pcfg-profile", type=Path, default=None,
+                    help="Optional ruleops.pcfg-profile.v1 JSON report (see run_pcfg_profile.py). "
+                         "Nudges the family-budget priors toward this corpus's measured digit/"
+                         "symbol/uppercase prevalence before per-run adaptive budgeting runs.")
     args = p.parse_args(argv)
     if not args.target.is_file():
         print(f"error: target not found: {args.target}", file=sys.stderr)
+        return 1
+    if args.pcfg_profile is not None and not args.pcfg_profile.is_file():
+        print(f"error: --pcfg-profile not found: {args.pcfg_profile}", file=sys.stderr)
         return 1
     stats = run(
         args.target, args.output,
         top_n=args.top_n, max_seeds=args.max_seeds,
         encoding=args.encoding, complementary=args.complementary, adaptive=args.adaptive,
-        workers=args.workers,
+        workers=args.workers, pcfg_profile=args.pcfg_profile,
     )
     mode = "complementary" if stats["complementary"] else "standard"
     print(f"[topn-seedgen] mode={mode} loaded {stats['passwords_loaded']:,} → {stats['seeds_generated']:,} seeds → {stats['output']} (workers={stats['workers']})")
+    if stats.get("pcfg_profile_applied"):
+        ps = stats["pcfg_profile_summary"]
+        print(
+            "[topn-seedgen] pcfg-profile applied: "
+            f"digits={ps['digit_share']*100:.1f}% symbols={ps['symbol_share']*100:.1f}% "
+            f"uppercase={ps['uppercase_share']*100:.1f}% (from {ps['profiled_entries']:,} profiled entries)"
+        )
     return 0
 
 

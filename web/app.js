@@ -2197,6 +2197,38 @@ async function boot() {
 document.addEventListener('DOMContentLoaded', boot);
 
 /* ---- Top-N Seed Generator (lightweight Stage S helper) -------------------- */
+
+// Parsed `ruleops.pcfg-profile.v1` report, if the user attached one. Read
+// and JSON.parse'd entirely client-side -- the raw file never has to touch
+// the server as an upload; only the parsed aggregate-stats object is sent
+// alongside the normal /api/tools/topn-seeds request body.
+let topnPcfgProfile = null;
+
+function wireTopNPcfgProfileUpload() {
+  const input = document.getElementById('topn-pcfg-profile-file');
+  const stateEl = document.getElementById('topn-pcfg-profile-state');
+  if (!input || !stateEl) return;
+
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    if (!file) { topnPcfgProfile = null; stateEl.textContent = 'No PCFG profile attached'; return; }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.schema && String(parsed.schema).indexOf('pcfg-profile') === -1) {
+        toast('That JSON does not look like a run_pcfg_profile.py report', true);
+      }
+      topnPcfgProfile = parsed;
+      stateEl.textContent = `✓ ${file.name} attached`;
+    } catch (error) {
+      topnPcfgProfile = null;
+      input.value = '';
+      stateEl.textContent = 'No PCFG profile attached';
+      toast('Could not parse that file as JSON', true);
+    }
+  });
+}
+
 function wireTopNSeedGenerator() {
   const btn = document.getElementById('topn-generate-btn');
   const stateEl = document.getElementById('topn-seed-state');
@@ -2220,13 +2252,21 @@ function wireTopNSeedGenerator() {
     btn.disabled = true;
     stateEl.textContent = 'Generating Top-N seeds…';
     try {
-      const data = await apiPost('/api/tools/topn-seeds', {
+      const body = {
         top_n: topN,
         max_seeds: maxSeeds,
         complementary: complementary,
         adaptive: adaptive,
-      });
-      stateEl.textContent = `✓ ${data.seeds_generated.toLocaleString()} seeds · ${data.output_name || 'topn_seeds.rule'}`;
+      };
+      if (topnPcfgProfile) body.pcfg_profile = topnPcfgProfile;
+
+      const data = await apiPost('/api/tools/topn-seeds', body);
+      let summaryNote = '';
+      if (data.pcfg_profile_applied && data.pcfg_profile_summary) {
+        const ps = data.pcfg_profile_summary;
+        summaryNote = ` · profile: digits ${(ps.digit_share * 100).toFixed(1)}% · symbols ${(ps.symbol_share * 100).toFixed(1)}% · uppercase ${(ps.uppercase_share * 100).toFixed(1)}%`;
+      }
+      stateEl.textContent = `✓ ${data.seeds_generated.toLocaleString()} seeds · ${data.output_name || 'topn_seeds.rule'}${summaryNote}`;
       if (data.registered_as_seed) {
         const seedState = document.getElementById('seed-state');
         if (seedState) seedState.textContent = `✓ ${data.output_name} · auto-loaded from Top-N generator`;
@@ -2241,6 +2281,7 @@ function wireTopNSeedGenerator() {
   });
 }
 
+document.addEventListener('DOMContentLoaded', wireTopNPcfgProfileUpload);
 document.addEventListener('DOMContentLoaded', wireTopNSeedGenerator);
 
 /* About page: retain the administrator-only regular-user password control. */

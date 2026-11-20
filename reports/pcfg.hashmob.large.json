@@ -1,0 +1,284 @@
+{
+  "schema": "ruleops.pcfg-profile.v1",
+  "profile_type": "aggregate_password_composition",
+  "input": {
+    "file_name": "hashmob.large.found",
+    "lines_seen": 51763409,
+    "profiled_entries": 51763099,
+    "weighted_observations": 51763099,
+    "empty_lines": 25,
+    "out_of_range_entries": 285,
+    "zero_weight_entries": 0,
+    "malformed_frequency_entries": 0,
+    "plain_records": 51763384,
+    "frequency_records": 0,
+    "input_format": "plain"
+  },
+  "length": {
+    "minimum": 2,
+    "maximum": 64,
+    "weighted_mean": 8.611,
+    "unweighted_mean": 8.611,
+    "weighted_histogram": {
+      "2-7": 13938910,
+      "8-11": 34192204,
+      "12-15": 3390916,
+      "16-20": 220974,
+      "21-32": 18143,
+      "33-64": 1952
+    },
+    "unweighted_histogram": {
+      "2-7": 13938910,
+      "8-11": 34192204,
+      "12-15": 3390916,
+      "16-20": 220974,
+      "21-32": 18143,
+      "33-64": 1952
+    }
+  },
+  "composition": {
+    "weighted_class_presence": {
+      "lowercase": 44308755,
+      "uppercase": 7527858,
+      "digits": 41896096,
+      "symbols": 1960972,
+      "non_ascii": 11275
+    },
+    "unweighted_class_presence": {
+      "lowercase": 44308755,
+      "uppercase": 7527858,
+      "digits": 41896096,
+      "symbols": 1960972,
+      "non_ascii": 11275
+    },
+    "weighted_class_combinations": {
+      "digits": 6673580,
+      "digits+symbols": 94331,
+      "digits+symbols+non_ascii": 12,
+      "lowercase": 8676089,
+      "lowercase+digits": 27656998,
+      "lowercase+digits+symbols": 770671,
+      "lowercase+digits+symbols+non_ascii": 30,
+      "lowercase+non_ascii": 2,
+      "lowercase+symbols": 360269,
+      "lowercase+symbols+non_ascii": 103,
+      "lowercase+uppercase": 537748,
+      "lowercase+uppercase+digits": 5601679,
+      "lowercase+uppercase+digits+non_ascii": 128,
+      "lowercase+uppercase+digits+symbols": 649792,
+      "lowercase+uppercase+digits+symbols+non_ascii": 2165,
+      "lowercase+uppercase+non_ascii": 335,
+      "lowercase+uppercase+symbols": 48614,
+      "lowercase+uppercase+symbols+non_ascii": 4132,
+      "symbols": 3154,
+      "symbols+non_ascii": 2,
+      "uppercase": 228214,
+      "uppercase+digits": 427215,
+      "uppercase+digits+non_ascii": 109,
+      "uppercase+digits+symbols": 16821,
+      "uppercase+digits+symbols+non_ascii": 2565,
+      "uppercase+non_ascii": 30,
+      "uppercase+symbols": 6649,
+      "uppercase+symbols+non_ascii": 1662
+    },
+    "unweighted_class_combinations": {
+      "digits": 6673580,
+      "digits+symbols": 94331,
+      "digits+symbols+non_ascii": 12,
+      "lowercase": 8676089,
+      "lowercase+digits": 27656998,
+      "lowercase+digits+symbols": 770671,
+      "lowercase+digits+symbols+non_ascii": 30,
+      "lowercase+non_ascii": 2,
+      "lowercase+symbols": 360269,
+      "lowercase+symbols+non_ascii": 103,
+      "lowercase+uppercase": 537748,
+      "lowercase+uppercase+digits": 5601679,
+      "lowercase+uppercase+digits+non_ascii": 128,
+      "lowercase+uppercase+digits+symbols": 649792,
+      "lowercase+uppercase+digits+symbols+non_ascii": 2165,
+      "lowercase+uppercase+non_ascii": 335,
+      "lowercase+uppercase+symbols": 48614,
+      "lowercase+uppercase+symbols+non_ascii": 4132,
+      "symbols": 3154,
+      "symbols+non_ascii": 2,
+      "uppercase": 228214,
+      "uppercase+digits": 427215,
+      "uppercase+digits+non_ascii": 109,
+      "uppercase+digits+symbols": 16821,
+      "uppercase+digits+symbols+non_ascii": 2565,
+      "uppercase+non_ascii": 30,
+      "uppercase+symbols": 6649,
+      "uppercase+symbols+non_ascii": 1662
+    },
+    "weighted_single_class_only": 15581037,
+    "weighted_multi_class": 36182062,
+    "unweighted_single_class_only": 15581037,
+    "unweighted_multi_class": 36182062
+  },
+  "input_coverage": {
+    "nonempty_lines": 51763384,
+    "profiled_entries": 51763099,
+    "excluded_nonempty_entries": 285,
+    "entry_acceptance_rate": 99.999449
+  },
+  "diversity": {
+    "weighted_class_combinations": {
+      "shannon_entropy_bits": 2.058301,
+      "normalized_entropy": 0.428157,
+      "effective_categories": 4.164956,
+      "observed_categories": 28
+    },
+    "unweighted_class_combinations": {
+      "shannon_entropy_bits": 2.058301,
+      "normalized_entropy": 0.428157,
+      "effective_categories": 4.164956,
+      "observed_categories": 28
+    }
+  },
+  "weighted_vs_unweighted": {
+    "length_distribution_delta_percentage_points": {
+      "2-7": 0.0,
+      "8-11": 0.0,
+      "12-15": 0.0,
+      "16-20": 0.0,
+      "21-32": 0.0,
+      "33-64": 0.0
+    },
+    "class_combination_distribution_delta_percentage_points": {
+      "digits": 0.0,
+      "digits+symbols": 0.0,
+      "digits+symbols+non_ascii": 0.0,
+      "lowercase": 0.0,
+      "lowercase+digits": 0.0,
+      "lowercase+digits+symbols": 0.0,
+      "lowercase+digits+symbols+non_ascii": 0.0,
+      "lowercase+non_ascii": 0.0,
+      "lowercase+symbols": 0.0,
+      "lowercase+symbols+non_ascii": 0.0,
+      "lowercase+uppercase": 0.0,
+      "lowercase+uppercase+digits": 0.0,
+      "lowercase+uppercase+digits+non_ascii": 0.0,
+      "lowercase+uppercase+digits+symbols": 0.0,
+      "lowercase+uppercase+digits+symbols+non_ascii": 0.0,
+      "lowercase+uppercase+non_ascii": 0.0,
+      "lowercase+uppercase+symbols": 0.0,
+      "lowercase+uppercase+symbols+non_ascii": 0.0,
+      "symbols": 0.0,
+      "symbols+non_ascii": 0.0,
+      "uppercase": 0.0,
+      "uppercase+digits": 0.0,
+      "uppercase+digits+non_ascii": 0.0,
+      "uppercase+digits+symbols": 0.0,
+      "uppercase+digits+symbols+non_ascii": 0.0,
+      "uppercase+non_ascii": 0.0,
+      "uppercase+symbols": 0.0,
+      "uppercase+symbols+non_ascii": 0.0
+    },
+    "class_presence_delta_percentage_points": {
+      "lowercase": 0.0,
+      "uppercase": 0.0,
+      "digits": 0.0,
+      "symbols": 0.0,
+      "non_ascii": 0.0
+    },
+    "mean_length_delta": 0.0
+  },
+  "policy_indicators": {
+    "weighted_under_8_characters": 13938910,
+    "weighted_under_12_characters": 48131114,
+    "weighted_at_least_12_characters": 3631985,
+    "unweighted_under_8_characters": 13938910,
+    "unweighted_under_12_characters": 48131114,
+    "unweighted_at_least_12_characters": 3631985
+  },
+  "weight_diagnostics": {
+    "profiled_weight_entries": 51763099,
+    "unit_weight_entries": 51763099,
+    "entries_with_weight_above_one": 0,
+    "weight_min": 1,
+    "weight_median_approx": {
+      "lower_bound": 1,
+      "upper_bound": 1,
+      "bucket": "1",
+      "method": "power_of_two_bucket_approximation"
+    },
+    "weight_p95_approx": {
+      "lower_bound": 1,
+      "upper_bound": 1,
+      "bucket": "1",
+      "method": "power_of_two_bucket_approximation"
+    },
+    "weight_p99_approx": {
+      "lower_bound": 1,
+      "upper_bound": 1,
+      "bucket": "1",
+      "method": "power_of_two_bucket_approximation"
+    },
+    "weight_max": 1,
+    "mean_weight_per_entry": 1.0,
+    "weight_magnitude_histogram": {
+      "1": 51763099
+    },
+    "top_weight_concentration": {
+      "top_1": {
+        "entries": 1,
+        "weight_sum": 1,
+        "share_of_total_percent": 1.932e-06
+      },
+      "top_10": {
+        "entries": 10,
+        "weight_sum": 10,
+        "share_of_total_percent": 1.9319e-05
+      },
+      "top_100": {
+        "entries": 100,
+        "weight_sum": 100,
+        "share_of_total_percent": 0.000193188
+      }
+    },
+    "integer_safety": {
+      "signed_int64_limit": 9223372036854775807,
+      "safe_json_integer_limit": 9007199254740991,
+      "weighted_total_exceeds_signed_int64": false,
+      "max_single_weight_exceeds_signed_int64": false,
+      "entries_exceeding_signed_int64": 0,
+      "entries_exceeding_safe_json_integer": 0,
+      "weighted_total_exceeds_safe_json_integer": false,
+      "max_single_weight_exceeds_safe_json_integer": false,
+      "accumulator": "Python arbitrary-precision integers",
+      "warning": "Keep weighted counts in arbitrary-precision integers. Do not store or sum them in signed int64 or JavaScript Number when the corresponding limit is exceeded."
+    }
+  },
+  "privacy": {
+    "raw_values_retained": false,
+    "raw_values_emitted": false,
+    "duplicate_lines_deduplicated": false,
+    "frequency_lines_weighted_by_leading_count": false,
+    "note": "Aggregate composition metrics only. No passwords, substrings, affixes, candidate values, or rule suggestions are included."
+  },
+  "profile_consistency": {
+    "valid": true,
+    "checks": {
+      "input_lines_accounted_for": true,
+      "weighted_length_histogram_matches_total": true,
+      "unweighted_length_histogram_matches_entries": true,
+      "weighted_class_combinations_match_total": true,
+      "unweighted_class_combinations_match_entries": true,
+      "weighted_single_and_multi_class_match_total": true,
+      "unweighted_single_and_multi_class_match_entries": true,
+      "input_coverage_matches_entries": true,
+      "weighted_class_presence_counts_within_total": true,
+      "unweighted_class_presence_counts_within_entries": true,
+      "weighted_policy_indicators_match_total": true,
+      "unweighted_policy_indicators_match_entries": true,
+      "length_range_is_valid": true,
+      "weight_records_match_profiled_entries": true,
+      "weight_min_max_are_valid": true,
+      "weight_histogram_matches_entries": true,
+      "int64_overflow_flags_are_consistent": true,
+      "top_weight_sums_are_bounded": true,
+      "weight_type_counts_match_entries": true
+    }
+  }
+}

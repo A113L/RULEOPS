@@ -1,0 +1,275 @@
+{
+  "schema": "ruleops.pcfg-profile.v1",
+  "profile_type": "aggregate_password_composition",
+  "input": {
+    "file_name": "hashmob.medium.found",
+    "lines_seen": 12914206,
+    "profiled_entries": 12914035,
+    "weighted_observations": 12914035,
+    "empty_lines": 19,
+    "out_of_range_entries": 152,
+    "zero_weight_entries": 0,
+    "malformed_frequency_entries": 0,
+    "plain_records": 12914187,
+    "frequency_records": 0,
+    "input_format": "plain"
+  },
+  "length": {
+    "minimum": 2,
+    "maximum": 63,
+    "weighted_mean": 8.284,
+    "unweighted_mean": 8.284,
+    "weighted_histogram": {
+      "2-7": 4244165,
+      "8-11": 8031145,
+      "12-15": 607090,
+      "16-20": 28190,
+      "21-32": 3066,
+      "33-64": 379
+    },
+    "unweighted_histogram": {
+      "2-7": 4244165,
+      "8-11": 8031145,
+      "12-15": 607090,
+      "16-20": 28190,
+      "21-32": 3066,
+      "33-64": 379
+    }
+  },
+  "composition": {
+    "weighted_class_presence": {
+      "lowercase": 10931682,
+      "uppercase": 1879427,
+      "digits": 9966446,
+      "symbols": 337687,
+      "non_ascii": 1468
+    },
+    "unweighted_class_presence": {
+      "lowercase": 10931682,
+      "uppercase": 1879427,
+      "digits": 9966446,
+      "symbols": 337687,
+      "non_ascii": 1468
+    },
+    "weighted_class_combinations": {
+      "digits": 1824598,
+      "digits+symbols": 16877,
+      "lowercase": 2658822,
+      "lowercase+digits": 6357792,
+      "lowercase+digits+symbols": 109763,
+      "lowercase+digits+symbols+non_ascii": 4,
+      "lowercase+symbols": 65570,
+      "lowercase+symbols+non_ascii": 44,
+      "lowercase+uppercase": 148499,
+      "lowercase+uppercase+digits": 1451516,
+      "lowercase+uppercase+digits+non_ascii": 15,
+      "lowercase+uppercase+digits+symbols": 131027,
+      "lowercase+uppercase+digits+symbols+non_ascii": 169,
+      "lowercase+uppercase+non_ascii": 70,
+      "lowercase+uppercase+symbols": 7702,
+      "lowercase+uppercase+symbols+non_ascii": 689,
+      "symbols": 1138,
+      "uppercase": 63756,
+      "uppercase+digits": 71260,
+      "uppercase+digits+non_ascii": 15,
+      "uppercase+digits+symbols": 3265,
+      "uppercase+digits+symbols+non_ascii": 145,
+      "uppercase+non_ascii": 5,
+      "uppercase+symbols": 982,
+      "uppercase+symbols+non_ascii": 312
+    },
+    "unweighted_class_combinations": {
+      "digits": 1824598,
+      "digits+symbols": 16877,
+      "lowercase": 2658822,
+      "lowercase+digits": 6357792,
+      "lowercase+digits+symbols": 109763,
+      "lowercase+digits+symbols+non_ascii": 4,
+      "lowercase+symbols": 65570,
+      "lowercase+symbols+non_ascii": 44,
+      "lowercase+uppercase": 148499,
+      "lowercase+uppercase+digits": 1451516,
+      "lowercase+uppercase+digits+non_ascii": 15,
+      "lowercase+uppercase+digits+symbols": 131027,
+      "lowercase+uppercase+digits+symbols+non_ascii": 169,
+      "lowercase+uppercase+non_ascii": 70,
+      "lowercase+uppercase+symbols": 7702,
+      "lowercase+uppercase+symbols+non_ascii": 689,
+      "symbols": 1138,
+      "uppercase": 63756,
+      "uppercase+digits": 71260,
+      "uppercase+digits+non_ascii": 15,
+      "uppercase+digits+symbols": 3265,
+      "uppercase+digits+symbols+non_ascii": 145,
+      "uppercase+non_ascii": 5,
+      "uppercase+symbols": 982,
+      "uppercase+symbols+non_ascii": 312
+    },
+    "weighted_single_class_only": 4548314,
+    "weighted_multi_class": 8365721,
+    "unweighted_single_class_only": 4548314,
+    "unweighted_multi_class": 8365721
+  },
+  "input_coverage": {
+    "nonempty_lines": 12914187,
+    "profiled_entries": 12914035,
+    "excluded_nonempty_entries": 152,
+    "entry_acceptance_rate": 99.998823
+  },
+  "diversity": {
+    "weighted_class_combinations": {
+      "shannon_entropy_bits": 2.069636,
+      "normalized_entropy": 0.445672,
+      "effective_categories": 4.197808,
+      "observed_categories": 25
+    },
+    "unweighted_class_combinations": {
+      "shannon_entropy_bits": 2.069636,
+      "normalized_entropy": 0.445672,
+      "effective_categories": 4.197808,
+      "observed_categories": 25
+    }
+  },
+  "weighted_vs_unweighted": {
+    "length_distribution_delta_percentage_points": {
+      "2-7": 0.0,
+      "8-11": 0.0,
+      "12-15": 0.0,
+      "16-20": 0.0,
+      "21-32": 0.0,
+      "33-64": 0.0
+    },
+    "class_combination_distribution_delta_percentage_points": {
+      "digits": 0.0,
+      "digits+symbols": 0.0,
+      "lowercase": 0.0,
+      "lowercase+digits": 0.0,
+      "lowercase+digits+symbols": 0.0,
+      "lowercase+digits+symbols+non_ascii": 0.0,
+      "lowercase+symbols": 0.0,
+      "lowercase+symbols+non_ascii": 0.0,
+      "lowercase+uppercase": 0.0,
+      "lowercase+uppercase+digits": 0.0,
+      "lowercase+uppercase+digits+non_ascii": 0.0,
+      "lowercase+uppercase+digits+symbols": 0.0,
+      "lowercase+uppercase+digits+symbols+non_ascii": 0.0,
+      "lowercase+uppercase+non_ascii": 0.0,
+      "lowercase+uppercase+symbols": 0.0,
+      "lowercase+uppercase+symbols+non_ascii": 0.0,
+      "symbols": 0.0,
+      "uppercase": 0.0,
+      "uppercase+digits": 0.0,
+      "uppercase+digits+non_ascii": 0.0,
+      "uppercase+digits+symbols": 0.0,
+      "uppercase+digits+symbols+non_ascii": 0.0,
+      "uppercase+non_ascii": 0.0,
+      "uppercase+symbols": 0.0,
+      "uppercase+symbols+non_ascii": 0.0
+    },
+    "class_presence_delta_percentage_points": {
+      "lowercase": 0.0,
+      "uppercase": 0.0,
+      "digits": 0.0,
+      "symbols": 0.0,
+      "non_ascii": 0.0
+    },
+    "mean_length_delta": 0.0
+  },
+  "policy_indicators": {
+    "weighted_under_8_characters": 4244165,
+    "weighted_under_12_characters": 12275310,
+    "weighted_at_least_12_characters": 638725,
+    "unweighted_under_8_characters": 4244165,
+    "unweighted_under_12_characters": 12275310,
+    "unweighted_at_least_12_characters": 638725
+  },
+  "weight_diagnostics": {
+    "profiled_weight_entries": 12914035,
+    "unit_weight_entries": 12914035,
+    "entries_with_weight_above_one": 0,
+    "weight_min": 1,
+    "weight_median_approx": {
+      "lower_bound": 1,
+      "upper_bound": 1,
+      "bucket": "1",
+      "method": "power_of_two_bucket_approximation"
+    },
+    "weight_p95_approx": {
+      "lower_bound": 1,
+      "upper_bound": 1,
+      "bucket": "1",
+      "method": "power_of_two_bucket_approximation"
+    },
+    "weight_p99_approx": {
+      "lower_bound": 1,
+      "upper_bound": 1,
+      "bucket": "1",
+      "method": "power_of_two_bucket_approximation"
+    },
+    "weight_max": 1,
+    "mean_weight_per_entry": 1.0,
+    "weight_magnitude_histogram": {
+      "1": 12914035
+    },
+    "top_weight_concentration": {
+      "top_1": {
+        "entries": 1,
+        "weight_sum": 1,
+        "share_of_total_percent": 7.744e-06
+      },
+      "top_10": {
+        "entries": 10,
+        "weight_sum": 10,
+        "share_of_total_percent": 7.7435e-05
+      },
+      "top_100": {
+        "entries": 100,
+        "weight_sum": 100,
+        "share_of_total_percent": 0.000774351
+      }
+    },
+    "integer_safety": {
+      "signed_int64_limit": 9223372036854775807,
+      "safe_json_integer_limit": 9007199254740991,
+      "weighted_total_exceeds_signed_int64": false,
+      "max_single_weight_exceeds_signed_int64": false,
+      "entries_exceeding_signed_int64": 0,
+      "entries_exceeding_safe_json_integer": 0,
+      "weighted_total_exceeds_safe_json_integer": false,
+      "max_single_weight_exceeds_safe_json_integer": false,
+      "accumulator": "Python arbitrary-precision integers",
+      "warning": "Keep weighted counts in arbitrary-precision integers. Do not store or sum them in signed int64 or JavaScript Number when the corresponding limit is exceeded."
+    }
+  },
+  "privacy": {
+    "raw_values_retained": false,
+    "raw_values_emitted": false,
+    "duplicate_lines_deduplicated": false,
+    "frequency_lines_weighted_by_leading_count": false,
+    "note": "Aggregate composition metrics only. No passwords, substrings, affixes, candidate values, or rule suggestions are included."
+  },
+  "profile_consistency": {
+    "valid": true,
+    "checks": {
+      "input_lines_accounted_for": true,
+      "weighted_length_histogram_matches_total": true,
+      "unweighted_length_histogram_matches_entries": true,
+      "weighted_class_combinations_match_total": true,
+      "unweighted_class_combinations_match_entries": true,
+      "weighted_single_and_multi_class_match_total": true,
+      "unweighted_single_and_multi_class_match_entries": true,
+      "input_coverage_matches_entries": true,
+      "weighted_class_presence_counts_within_total": true,
+      "unweighted_class_presence_counts_within_entries": true,
+      "weighted_policy_indicators_match_total": true,
+      "unweighted_policy_indicators_match_entries": true,
+      "length_range_is_valid": true,
+      "weight_records_match_profiled_entries": true,
+      "weight_min_max_are_valid": true,
+      "weight_histogram_matches_entries": true,
+      "int64_overflow_flags_are_consistent": true,
+      "top_weight_sums_are_bounded": true,
+      "weight_type_counts_match_entries": true
+    }
+  }
+}

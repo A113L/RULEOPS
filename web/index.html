@@ -151,6 +151,14 @@
                   <small>0 = unlimited. Default 15 000.</small>
                 </label>
               </div>
+              <div class="optional-copy" style="margin-top:0.8rem">
+                <div>
+                  <b>PCFG corpus profile <span>OPTIONAL</span></b>
+                  <small>Attach a report from <code>run_pcfg_profile.py</code> (aggregate-only: length/character-class stats, no passwords) to nudge digit/symbol/uppercase family budgets toward this corpus's measured composition instead of fixed priors.</small>
+                </div>
+                <label class="secondary-upload" for="topn-pcfg-profile-file">＋ Add profile JSON<input id="topn-pcfg-profile-file" type="file" accept=".json,application/json"></label>
+              </div>
+              <div class="seed-file-state" id="topn-pcfg-profile-state">No PCFG profile attached</div>
             </div>
           </section>
 

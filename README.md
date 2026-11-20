@@ -27,6 +27,7 @@ hand-tuned rule lists.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Typical pipeline](#typical-pipeline)
+- [PCFG Corpus Profiling](#pcfg-corpus-profiling)
 - [Project structure](#project-structure)
 - [Documentation](#documentation)
 - [Testing](#testing)
@@ -60,6 +61,7 @@ questions:
 | **Ranker CELF optimizer** | Runs greedy/CELF max-coverage selection over ranked candidates (GPU coverage pass + CPU or GPU CELF) to produce a compact, high-coverage rule file. |
 | **Concentrator** | Extracts, generates, and cleans rule collections from existing material. |
 | **Rulestripper** | Empirically derives rule chains by decomposing TARGET words into BASE-word stems and transformations (14 extraction modes). |
+| **PCFG Corpus Profiler** | Produces aggregate-only length and character-class statistics for password-security auditing; it does not emit candidate values or rules. |
 | **Rule Minimizer** | Removes functionally/behaviorally equivalent rules by comparing their output over a probe word set. |
 | **Email Rule Extractor** | Browser-only utility that derives candidate rules from email-address-style naming patterns. |
 
@@ -157,6 +159,27 @@ python minimizer.py celf_selected.rule --output final.rule --workers 4
 
 Each step is also available from the Control Center UI.
 
+## PCFG Corpus Profiling
+
+Create an aggregate-only profile of a target wordlist with weighted and
+unweighted length and character-class statistics, input acceptance coverage,
+class-combination diversity, and consistency checks. The profiler does not emit
+password values, substrings, affixes, candidates, or rule suggestions.
+
+```bash
+python run_pcfg_profile.py TARGET.txt --output reports/target-profile.json
+```
+
+Compare a new input against a previously generated profile:
+
+```bash
+python run_pcfg_profile.py MEDIUM.txt --compare reports/small-profile.json \
+  --output reports/medium-profile.json
+```
+
+See [`docs/PCFG_PROFILE.md`](docs/PCFG_PROFILE.md) for the report schema,
+comparison behavior, and frequency-list handling details.
+
 ## Project structure
 
 ```
@@ -164,6 +187,7 @@ RULEOPS/
 ├── app.py                  # Control Center web server
 ├── run_rulest.py           # RULEST CLI entry point
 ├── run_ranker.py           # Rule Ranker dispatcher CLI
+├── run_pcfg_profile.py     # Aggregate-only PCFG corpus profiler
 ├── run_rulestripper.py     # Rulestripper CLI entry point
 ├── minimizer.py            # Standalone rule minimizer
 ├── concentrator.py         # Rule collection extraction/cleaning
@@ -184,6 +208,7 @@ Deeper design notes live under [`docs/`](docs/), including:
 - [`docs/SYSTEMD_SERVICE.md`](docs/SYSTEMD_SERVICE.md) — running as a Linux service
 - [`docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md`](docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md) — CELF selection algorithm, correctness constraints, and benchmarks
 - [`docs/INPUT_LIBRARY.md`](docs/INPUT_LIBRARY.md), [`docs/MEMORY_OPTIMIZATION.md`](docs/MEMORY_OPTIMIZATION.md) — supporting subsystems
+- [`docs/PCFG_PROFILE.md`](docs/PCFG_PROFILE.md) — aggregate-only PCFG corpus profile CLI and report schema
 
 ## Testing
 

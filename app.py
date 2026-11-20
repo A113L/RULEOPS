@@ -4685,6 +4685,18 @@ class Handler(BaseHTTPRequestHandler):
         _adaptive_raw = payload.get("adaptive")
         adaptive = bool(_adaptive_raw) if _adaptive_raw is not None else True
 
+        # Optional aggregate PCFG corpus profile (see run_pcfg_profile.py /
+        # docs/PCFG_PROFILE.md): the browser reads the user's previously
+        # generated report JSON client-side and sends the parsed object
+        # here, so no server-side upload slot is needed for it. It only
+        # nudges the existing family-budget priors toward this corpus's
+        # measured digit/symbol/uppercase prevalence -- it is never treated
+        # as password/affix data itself.
+        pcfg_profile = payload.get("pcfg_profile")
+        if pcfg_profile is not None and not isinstance(pcfg_profile, dict):
+            self.send_json({"error": "pcfg_profile must be a parsed JSON object."}, 400)
+            return
+
         try:
             from rulest.topn_seedgen import run as topn_run
             stats = topn_run(
@@ -4694,6 +4706,7 @@ class Handler(BaseHTTPRequestHandler):
                 max_seeds=max_seeds,
                 complementary=complementary,
                 adaptive=adaptive,
+                pcfg_profile=pcfg_profile,
             )
         except Exception as exc:
             add_log(f"[TOPN] Generation failed: {exc}")
@@ -4706,9 +4719,16 @@ class Handler(BaseHTTPRequestHandler):
             "name": out_name,
             "size": out_path.stat().st_size if out_path.is_file() else 0,
         }
+        profile_note = ""
+        if stats.get("pcfg_profile_applied"):
+            ps = stats["pcfg_profile_summary"]
+            profile_note = (
+                f" (pcfg-profile applied: digits={ps['digit_share']*100:.1f}% "
+                f"symbols={ps['symbol_share']*100:.1f}% uppercase={ps['uppercase_share']*100:.1f}%)"
+            )
         add_log(
             f"[TOPN] Generated {stats['seeds_generated']:,} seeds "
-            f"from {stats['passwords_loaded']:,} top passwords → {out_name}"
+            f"from {stats['passwords_loaded']:,} top passwords → {out_name}{profile_note}"
         )
         self.send_json({
             "ok": True,
@@ -4719,6 +4739,8 @@ class Handler(BaseHTTPRequestHandler):
             "registered_as_seed": True,
             "complementary": complementary,
             "adaptive": adaptive,
+            "pcfg_profile_applied": stats.get("pcfg_profile_applied", False),
+            "pcfg_profile_summary": stats.get("pcfg_profile_summary"),
         })
 
     def handle_concentrator_cancel(self):

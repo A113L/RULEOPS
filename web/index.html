@@ -159,7 +159,7 @@
               <div class="optional-copy" style="margin-top:0.8rem">
                 <div>
                   <b>PCFG corpus profile <span>OPTIONAL</span></b>
-                  <small>Aggregate report from <code>run_pcfg_profile.py</code> (length / class stats only — no passwords). Gently nudges Top-N family budgets. On digit-heavy corpora the gain is small at low rule budgets and clearer at larger ones (e.g. ~150k rules). Saved profiles: <code>reports/</code> or upload JSON.</small>
+                  <small>Aggregate report from <code>run_pcfg_profile.py</code> (length / class stats only — no passwords). Gently nudges Top-N family budgets. On digit-heavy corpora the gain is small at low rule budgets and clearer at larger ones (e.g. ~150k rules). Full PCFG + longer target-hours runs suit <b>max coverage</b>, not minimum ruleset size — use budget-sweep cuts when you need a smaller pack. Saved profiles: <code>reports/</code> or upload JSON.</small>
                 </div>
                 <label class="secondary-upload" for="topn-pcfg-profile-file">＋ Add profile JSON<input id="topn-pcfg-profile-file" type="file" accept=".json,application/json"></label>
               </div>

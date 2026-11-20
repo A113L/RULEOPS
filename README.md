@@ -1,5 +1,9 @@
 # RULEOPS — A GPU-Accelerated Toolchain for Hashcat Rule Generation, Ranking, and Optimization
 
+<center><a target=_blank href="https://a113l.github.io/RULEOPS/">
+    <img src="web/favicon.svg" alt="RULEOPS" width="120">
+</a></center>
+
 RULEOPS is a cybersecurity research workbench for building, scoring, and compressing
 password-cracking rulesets used with [Hashcat](https://hashcat.net/hashcat/).
 It brings together six complementary tools behind one authenticated local

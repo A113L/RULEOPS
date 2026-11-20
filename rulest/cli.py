@@ -475,6 +475,14 @@ def main():
                 f"greedy marginal coverage (CELF upper-bound + GPU recompute, "
                 f"cost_alpha={args.select_cost_alpha})"
             )
+        # candidate_rules was only needed to build the CELF input above;
+        # both branches have now resolved ordered_rules from it (or from
+        # final_counts directly, on an early quit). final_counts itself is
+        # still read by the end-of-run summary below, but this duplicate
+        # multi-million-entry list is pure dead weight for the rest of the
+        # run (output writing + any --select-budgets sweep below).
+        del candidate_rules
+        gc.collect()
         n_covered = int(covered_mask.sum())
         recovery_pct = n_covered / max(1, n_target)
         extra_header = [
@@ -533,6 +541,11 @@ def main():
         gc.collect()
     else:
         ordered_rules = [r for r, _ in si if r != ':']
+        # si is fully superseded by ordered_rules now (final_counts is
+        # still needed below for the end-of-run frequency summary) --
+        # drop this duplicate multi-million-entry (rule, count) list.
+        del si
+        gc.collect()
         top_selected = None  # frequency mode: final summary uses GPU hit counts
         if _kb.quit_requested:
             sort_desc = "discovery order (frequency sort / greedy selection skipped by early quit)"

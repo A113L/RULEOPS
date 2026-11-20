@@ -7,6 +7,7 @@ exact distinct target IDs. CELF only selects a candidate after exact scoring.
 """
 from __future__ import annotations
 
+import gc
 import heapq
 import math
 import os
@@ -1342,6 +1343,15 @@ def select_rules_by_marginal_coverage(
     if not rules:
         _restore_depth(selection_engine, restore_depth)
         return [], empty_mask
+
+    # deduped_rules/seen_rules were only scratch structures for the dedup +
+    # chain-limit filtering above; `rules` is the only one still needed.
+    # The greedy CELF loop below is the single longest stage in the whole
+    # pipeline (can run for hours on millions of candidates), so these two
+    # full-size copies -- up to 2x the candidate pool, just sitting idle --
+    # must not ride along for the entire run.
+    del deduped_rules, seen_rules
+    gc.collect()
 
     scorer = None
     try:

@@ -33,7 +33,7 @@ class GPUExtractor:
                  token_strip_max_suffix=4, token_strip_min_leet_amb=3,
                  token_strip_workers=0, token_strip_chunk_size=0,
                  token_strip_bloom_mb=0, rng_seed=None,
-                 topn_seeds=False, topn_n=400000, topn_max_seeds=15000, topn_complementary=False,
+                 topn_seeds=False, topn_n=400000, topn_max_seeds=150000, topn_complementary=False,
                  topn_adaptive=True, topn_profile=None, topn_inject_cap=100000):
         self.base_count = base_count
         self.target_count = target_count
@@ -62,7 +62,7 @@ class GPUExtractor:
         # and generate_seeds() itself) -- so this must check for None, not
         # falsiness, or a real 0 silently gets replaced by the default below.
         self.topn_n = int(topn_n) if topn_n is not None else 400000
-        self.topn_max_seeds = int(topn_max_seeds) if topn_max_seeds is not None else 15000
+        self.topn_max_seeds = int(topn_max_seeds) if topn_max_seeds is not None else 150000
         self.topn_complementary = bool(topn_complementary)
         self.topn_adaptive = bool(topn_adaptive)
         self.topn_profile = topn_profile

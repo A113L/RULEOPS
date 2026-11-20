@@ -63,8 +63,8 @@ def main():
                            'them into Stage S / Stage 1 (no intermediate .rule file).')
     topn.add_argument('--topn-n', type=int, default=400000, metavar='N',
                       help='How many top target passwords to analyse (default 400000).')
-    topn.add_argument('--topn-max-seeds', type=int, default=15000, metavar='N',
-                      help='Max seeds to generate. 0 = unlimited (default 15000).')
+    topn.add_argument('--topn-max-seeds', type=int, default=150000, metavar='N',
+                      help='Max seeds to generate. 0 = unlimited (default 150000).')
     topn.add_argument('--topn-complementary', action='store_true',
                       help='Bias Top-N toward patterns Stage 0 rarely emits '
                            '(leet+year, reverse+digit, transform+year+special, …).')
@@ -191,7 +191,7 @@ def main():
         cap = getattr(args, "topn_inject_cap", 100000)
         cap_note = f", inject_cap={cap:,}" if cap and cap > 0 else ", inject_cap=none"
         log_info(f"  topn      : {green('enabled')} [{mode}] — in-memory injection "
-                 f"(top_n={getattr(args,'topn_n',400000):,}, max_seeds={getattr(args,'topn_max_seeds',15000):,}{cap_note}){prof_note}")
+                 f"(top_n={getattr(args,'topn_n',400000):,}, max_seeds={getattr(args,'topn_max_seeds',150000):,}{cap_note}){prof_note}")
     if args.seed is not None:
         log_info(f"  rng seed  : {bold(str(args.seed))}  {dim('(deterministic — reruns on the same data will match)')}")
     print()

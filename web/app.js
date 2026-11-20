@@ -50,7 +50,7 @@ try { completionSoundEnabled = localStorage.getItem('ruleops-completion-sound') 
 const defaults = {
   max_depth: 2, target_hours: 0.5, max_chains: 0, rng_seed: '', bloom_mb: 0, device: '', output_name: 'rulest_output.txt',
   bloom_no_shard: false, allow_reject_rules: false, no_builtin_seeds: false,
-  topn_seeds: false, topn_complementary: false, topn_adaptive: true, topn_n: 400000, topn_max_seeds: 15000, topn_inject_cap: 100000,
+  topn_seeds: false, topn_complementary: true, topn_adaptive: true, topn_n: 400000, topn_max_seeds: 150000, topn_inject_cap: 100000,
   token_strip: false, token_strip_min_stem: 4, token_strip_max_prefix: 4,
   token_strip_max_suffix: 4, token_strip_min_leet_amb: 3, token_strip_workers: 0, token_strip_chunk_size: 0,
   token_strip_bloom_mb: 0,
@@ -317,6 +317,28 @@ function setUploadCard(field, file) {
   const dot = document.createElement('span'); dot.className = 'file-state-dot';
   const text = document.createElement('span'); text.textContent = `${file.name} · ${humanSize(file.size)}`;
   stateEl.append(dot, text);
+  if (field === 'target') updateTopNFromTargetSize(file && file.size);
+}
+
+/** Approximate TARGET line count from byte size (avg ~11 bytes/line for password lists).
+ *  Updates Top-N passwords field + hint only — does not touch CELF / GPU memory paths. */
+function updateTopNFromTargetSize(sizeBytes) {
+  const input = document.getElementById('topn_n');
+  const hint = document.getElementById('topn_n_hint');
+  if (!input) return;
+  const size = Number(sizeBytes) || 0;
+  if (size <= 0) {
+    if (hint) {
+      hint.textContent = 'How many top target passwords to analyse. 0 = unlimited (scan the whole file). After TARGET is selected, shows an approximate line count from the wordlist size.';
+    }
+    return;
+  }
+  // Conservative average: password + newline. Prefer slight overestimate vs underestimate.
+  const approxLines = Math.max(1, Math.round(size / 11));
+  input.value = String(approxLines);
+  if (hint) {
+    hint.textContent = `≈ ${approxLines.toLocaleString()} lines estimated from TARGET size (${humanSize(size)}). 0 = unlimited (scan the whole file). Adjust if needed.`;
+  }
 }
 function setUploadError(field, message) {
   const el = field === 'seed' ? $('seed-state') : $(`${field}-state`);
@@ -372,6 +394,7 @@ function uploadFile(field, file) {
       if (field === 'seed') {
         stateEl.classList.remove('error'); stateEl.textContent = `✓ ${result.name} · ${humanSize(result.size)}`;
       } else setUploadCard(field, file);
+      if (field === 'target') updateTopNFromTargetSize(result.size);
       if (progress) progress.style.width = '100%';
       const uploadLabels = { base: 'BASE', target: 'TARGET', seed: 'Seed rules', ranker_wordlist: 'Base wordlist', ranker_cracked: 'Cracked-password list', ranker_rules: 'Candidate rules', ranker_source_csv: 'Ranking CSV', ranker_source_rules: 'Optimization ruleset', ranker_analysis_csv: 'Analysis CSV', rulestripper_base: 'Rulestripper BASE', rulestripper_target: 'Rulestripper TARGET', minimizer_rules: 'Minimizer rules', minimizer_probe: 'Minimizer probe wordlist' };
       toast(`${uploadLabels[field] || field} uploaded successfully.`);
@@ -2311,7 +2334,7 @@ function wireTopNSeedGenerator() {
 
   btn.addEventListener('click', async () => {
     const topN = parseInt((document.getElementById('topn_n') || {}).value || '400000', 10);
-    const maxSeeds = parseInt((document.getElementById('topn_max_seeds') || {}).value || '15000', 10);
+    const maxSeeds = parseInt((document.getElementById('topn_max_seeds') || {}).value || '150000', 10);
     const complementary = !!(document.getElementById('topn_complementary') || {}).checked;
     const adaptive = (document.getElementById('topn_adaptive') || {}).checked !== false;
 

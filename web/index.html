@@ -132,8 +132,8 @@
                 <label class="switch"><input type="checkbox" id="topn_seeds"><span></span></label>
               </div>
               <div class="toggle-row compact-toggle">
-                <div><b>Complementary mode</b><small>Prefer patterns Stage 0 rarely finds (leet+year, r+digit, c+year+special).</small></div>
-                <label class="switch"><input type="checkbox" id="topn_complementary"><span></span></label>
+                <div><b>Complementary mode</b><small>Prefer patterns Stage 0 rarely finds (leet+year, r+digit, c+year+special). On by default.</small></div>
+                <label class="switch"><input type="checkbox" id="topn_complementary" checked><span></span></label>
               </div>
               <div class="toggle-row compact-toggle">
                 <div><b>Adaptive family budgets</b><small>Reallocate the digit/special/year affix budget by how often each actually occurs in this Target sample, instead of fixed percentages. On by default.</small></div>
@@ -142,13 +142,13 @@
               <div class="form-grid two-col" style="margin-top:0.6rem">
                 <label class="field">
                   <span>Top-N passwords</span>
-                  <div class="input-suffix"><input type="number" min="0" max="2000000" step="10000" value="400000" id="topn_n"><b>lines</b></div>
-                  <small>How many top target passwords to analyse. 0 = unlimited (scan the whole file).</small>
+                  <div class="input-suffix"><input type="number" min="0" max="20000000" step="10000" value="400000" id="topn_n"><b>lines</b></div>
+                  <small id="topn_n_hint">How many top target passwords to analyse. 0 = unlimited (scan the whole file). After TARGET is selected, shows an approximate line count from the wordlist size.</small>
                 </label>
                 <label class="field">
                   <span>Max seeds</span>
-                  <div class="input-suffix"><input type="number" min="0" step="1000" value="15000" id="topn_max_seeds"><b>rules</b></div>
-                  <small>0 = unlimited. Default 15 000.</small>
+                  <div class="input-suffix"><input type="number" min="0" step="1000" value="150000" id="topn_max_seeds"><b>rules</b></div>
+                  <small>0 = unlimited. Default 150 000.</small>
                 </label>
                 <label class="field">
                   <span>Inject cap (chains)</span>

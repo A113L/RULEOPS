@@ -1,7 +1,7 @@
 """In-RAM, shared-memory wordlist loading.
 
-Wordlists are normalized and deduplicated once while loading.  The unique
-Latin-1 bytes and uint64 byte offsets then live in OS shared memory.  The
+Every valid input entry is retained in its original order, including repeated
+entries. Latin-1 bytes and uint64 byte offsets live in OS shared memory. The
 parent and spawned workers attach to the same segments; no temporary wordlist
 files, per-worker copies of millions of strings, or disk-backed random reads
 are involved after initial loading.
@@ -52,7 +52,7 @@ class WordListView(Sequence):
 
 
 class SharedWordList(Sequence):
-    """Unique words stored as Latin-1 bytes + uint64 offsets in Shared Memory.
+    """Wordlist entries stored as Latin-1 bytes + uint64 offsets in Shared Memory.
 
     Pickling transfers only shared-memory names and dimensions.  This is safe
     for Windows ``spawn``: child processes attach to the same physical data.
@@ -61,7 +61,7 @@ class SharedWordList(Sequence):
     """
     __slots__ = (
         "_data_shm", "_offsets_shm", "_offsets", "_count", "_data_size",
-        "_owner", "_closed", "membership_index", "_rulest_unique_words",
+        "_owner", "_closed", "membership_index",
     )
 
     def __init__(self, data_shm, offsets_shm, count, data_size,
@@ -74,7 +74,6 @@ class SharedWordList(Sequence):
         self._owner = bool(owner)
         self._closed = False
         self.membership_index = membership_index
-        self._rulest_unique_words = True
         if len(self._offsets) < self._count + 1:
             self.close()
             raise ValueError("Shared word offsets are shorter than the word count")
@@ -205,7 +204,6 @@ class SharedWordList(Sequence):
         self._owner = False
         self._closed = False
         self.membership_index = None
-        self._rulest_unique_words = True
 
     def __repr__(self):
         return f"SharedWordList({self._count:,} words, {self._data_size:,} bytes in RAM)"
@@ -279,15 +277,16 @@ def _count_valid_lines(filename):
 
 
 def load_wordlist(filename, *, retain_membership_index=False):
-    """Load a newline-delimited wordlist into shared RAM.
+    """Load every valid newline-delimited wordlist entry into shared RAM.
 
-    The input is scanned once to size allocations, then once to normalize,
-    deduplicate, and copy the unique bytes into Shared Memory.  All subsequent
-    indexing (including Stage 0 and GPU preparation) reads RAM only.
+    The input is scanned once to size allocations, then once to normalize and
+    copy every valid entry into Shared Memory. Original order and repeated
+    entries are preserved. All subsequent indexing (including Stage 0 and GPU
+    preparation) reads RAM only.
 
-    If ``retain_membership_index`` is true, the compact shared 63-bit hash set
-    is kept for Stage 0.  This avoids building a Python ``set[str]`` or sending
-    that set to each Windows worker.
+    If ``retain_membership_index`` is true, a separate compact shared 63-bit
+    hash index is kept for Stage 0 membership lookups. It does not modify or
+    deduplicate the loaded wordlist.
     """
     filename = os.fspath(filename)
     if _kb.poll():
@@ -309,12 +308,13 @@ def load_wordlist(filename, *, retain_membership_index=False):
         )
         offsets_view = offsets_shm.buf.cast("Q")
         offsets_view[0] = 0
-        membership = FlatHashSet64(
-            (), expected_count=candidate_count, shared=True
+        membership = (
+            FlatHashSet64((), expected_count=candidate_count, shared=True)
+            if retain_membership_index else None
         )
 
         data_size = 0
-        unique_count = 0
+        word_count = 0
         if _kb.poll():
             raise EarlyExitRequested("Early quit requested before wordlist population")
         with open(filename, "rb") as stream:
@@ -322,25 +322,24 @@ def load_wordlist(filename, *, retain_membership_index=False):
                 if line_number % 16384 == 0 and _kb.poll():
                     raise EarlyExitRequested("Early quit requested while loading a wordlist")
                 word = _normalize_line(line)
-                if word is None or not membership.add(word):
+                if word is None:
                     continue
+                if membership is not None:
+                    membership.add(word)
                 raw = word.encode("latin-1")
                 next_size = data_size + len(raw)
                 data_shm.buf[data_size:next_size] = raw
                 data_size = next_size
-                unique_count += 1
-                offsets_view[unique_count] = data_size
+                word_count += 1
+                offsets_view[word_count] = data_size
 
         offsets_view.release()
         offsets_view = None
-        if not retain_membership_index:
-            membership.close(unlink=True)
-            membership = None
 
         result = SharedWordList(
             data_shm,
             offsets_shm,
-            unique_count,
+            word_count,
             data_size,
             membership_index=membership,
             owner=True,
@@ -355,7 +354,7 @@ def load_wordlist(filename, *, retain_membership_index=False):
         total_reserved = data_reserved + offsets_reserved + membership_reserved
         log_info(
             f"[LOAD] {bold(os.path.basename(filename))}: "
-            f"{bold(cyan(f'{len(result):,}'))} unique words "
+            f"{bold(cyan(f'{len(result):,}'))} words "
             f"| shared RAM reserved: data={data_reserved / 1048576:.1f} MiB, "
             f"offsets={offsets_reserved / 1048576:.1f} MiB, "
             f"membership={membership_reserved / 1048576:.1f} MiB, "

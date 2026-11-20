@@ -443,7 +443,7 @@ def main():
                       "healthy --device.")
             sys.exit(1)
         candidate_rules = [r for r in final_counts if r != ':']
-        # load_wordlist already deduplicates words while loading.
+        # load_wordlist preserves every valid wordlist entry, including repeats.
         n_target = len(target_words)
         budget = args.select_budget if args.select_budget > 0 else None
 

@@ -1239,15 +1239,15 @@ def select_rules_by_marginal_coverage(
     if _kb.poll():
         log_warn("[CELF] Early exit before target preparation — skipping GPU selection")
         return [], np.zeros(0, dtype=bool)
-    # load_wordlist() normalizes and deduplicates targets before CELF starts.
-    # Repeating that work here only adds an O(n log n) sort to the hot path.
-    unique_targets = target_words
-    target_count = len(unique_targets)
+    # Keep every target entry supplied by the wordlist, including repeats.
+    # Dictionary deduplication is intentionally not part of CELF preparation.
+    selection_targets = target_words
+    target_count = len(selection_targets)
     empty_mask = np.zeros(target_count, dtype=bool)
     if _kb.poll():
         log_warn("[CELF] Early exit during target preparation — skipping GPU selection")
         return [], empty_mask
-    if not rules or not unique_targets or not base_words:
+    if not rules or not selection_targets or not base_words:
         return [], empty_mask
 
     deduped_rules = []
@@ -1299,7 +1299,7 @@ def select_rules_by_marginal_coverage(
     scorer = None
     try:
         scorer = _GpuExactScorer(
-            selection_engine, base_words, unique_targets, pair_batch_size, rules
+            selection_engine, base_words, selection_targets, pair_batch_size, rules
         )
         if _kb.poll():
             log_warn("[CELF] Early exit after GPU scorer setup — skipping scoring")

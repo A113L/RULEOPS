@@ -23,10 +23,14 @@ def _spawn_read_shared_wordlist(words):
 
 class TestLoadWordlist:
 
-    def test_loads_unique_words(self, tmp_path):
+    def test_preserves_duplicate_words_and_input_order(self, tmp_path):
         path = _write(tmp_path, 'words.txt', b"alpha\nbeta\nalpha\ngamma\n")
         words = load_wordlist(path)
-        assert sorted(words) == ['alpha', 'beta', 'gamma']
+        try:
+            assert list(words) == ['alpha', 'beta', 'alpha', 'gamma']
+            assert len(words) == 4
+        finally:
+            words.close()
 
     def test_strips_whitespace_and_crlf(self, tmp_path):
         path = _write(tmp_path, 'words.txt', b"alpha \r\n beta\r\n")
@@ -109,6 +113,8 @@ class TestLoadWordlist:
         path = _write(tmp_path, 'words.txt', b"alpha\nbeta\nalpha\n")
         words = load_wordlist(path, retain_membership_index=True)
         try:
+            assert list(words) == ["alpha", "beta", "alpha"]
+            assert len(words) == 3
             assert isinstance(words.membership_index, FlatHashSet64)
             assert "alpha" in words.membership_index
             assert "beta" in words.membership_index

@@ -2,6 +2,8 @@
 
 ## 2026-11-20
 
+- Follow-up: removed dictionary deduplication from `load_wordlist()` as well. Every valid input entry is now retained in its original order, including duplicates. The optional Stage 0 membership hash index remains a separate lookup accelerator and does not alter the loaded wordlist.
+
 - Removed the redundant target-wordlist deduplication pass from the initial CELF phase. The standard `load_wordlist()` path already normalizes and deduplicates dictionary entries during loading, so sorting and compacting the same targets again added startup time without providing value for the normal pipeline.
 
 ### Top-N / PCFG-Lite seed generation

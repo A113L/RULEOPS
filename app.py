@@ -4648,8 +4648,11 @@ class Handler(BaseHTTPRequestHandler):
 
         top_n = int(payload.get("top_n") or 400_000)
         max_seeds = int(payload.get("max_seeds") or 15_000)
-        if top_n < 10_000:
-            self.send_json({"error": "top_n must be >= 10000"}, 400)
+        if top_n < 0:
+            self.send_json({"error": "top_n must be >= 0 (0 = unlimited)"}, 400)
+            return
+        if 0 < top_n < 10_000:
+            self.send_json({"error": "top_n must be 0 (unlimited) or >= 10000"}, 400)
             return
         if max_seeds < 0:
             self.send_json({"error": "max_seeds must be >= 0 (0 = unlimited)"}, 400)

@@ -387,6 +387,36 @@ class GPUExtractor:
                     dupe_str = f"  ({n_dupes:,} already in builtin families)" if n_dupes else ""
                     if n_injected:
                         log_info(f"[SEED]    STAGE 0 injected {bold(cyan(str(n_injected)))} chain(s) into STAGE S sbd{dupe_str}")
+
+                # Custom/file-based seed chains — e.g. a Top-N seed file generated
+                # ahead of time via the Web UI/API and registered as --seed-rules —
+                # are not covered by the ts_sbd merge above (that only carries live
+                # Stage 0 / in-run Top-N chains). Fold them into sbd too so Stage S
+                # scores them and they reach seed_hits, which is what the genetic
+                # algorithm's initial_population() uses to bias its starting
+                # population toward already-promising chains. Without this, a
+                # pre-generated seed file still reaches STAGE 2's chain search
+                # (via seed_chains) but never influences STAGE 3's seeding.
+                if seed_chains and not _kb.poll():
+                    n_file_injected = 0
+                    n_file_total = 0
+                    for chain in seed_chains:
+                        if chain in topn_injected_set:
+                            continue  # already merged in via ts_sbd above
+                        depth = len(chain.split())
+                        if depth > seed_pass_depth:
+                            continue
+                        n_file_total += 1
+                        bucket = sbd.setdefault(depth, set())
+                        before = len(bucket)
+                        bucket.add(chain)
+                        if len(bucket) > before:
+                            n_file_injected += 1
+                    if n_file_injected:
+                        n_file_dupes = n_file_total - n_file_injected
+                        dupe_str2 = f"  ({n_file_dupes:,} already present)" if n_file_dupes else ""
+                        log_info(f"[SEED]    Custom/seed-file injected {bold(cyan(str(n_file_injected)))} chain(s) into STAGE S sbd{dupe_str2}")
+
                 if not _kb.quit_requested:
                     seed_hits = self.gpu_engine.run_seed_extraction_pass(base_words, sbd, bloom_filter, rules_phase1)
                     all_counts.update(seed_hits)

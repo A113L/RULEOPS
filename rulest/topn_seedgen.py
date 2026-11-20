@@ -99,6 +99,9 @@ def _looks_like_year(s: str) -> bool:
 
 
 def stream_top_n(path: Path, top_n: int, encoding: str = "latin-1") -> List[str]:
+    # top_n <= 0 means "unlimited": no early-break cap, no slicing of the result.
+    unlimited = top_n is None or top_n <= 0
+
     freq: Counter = Counter()
     plain: List[str] = []
     has_counts = False
@@ -118,12 +121,15 @@ def stream_top_n(path: Path, top_n: int, encoding: str = "latin-1") -> List[str]
             else:
                 if 2 <= len(line) <= 64:
                     plain.append(line)
-            if not has_counts and len(plain) >= top_n * 2:
-                break
-            if has_counts and i > top_n * 8:
-                break
+            if not unlimited:
+                if not has_counts and len(plain) >= top_n * 2:
+                    break
+                if has_counts and i > top_n * 8:
+                    break
 
     if has_counts and freq:
+        if unlimited:
+            return [pw for pw, _ in freq.most_common()]
         return [pw for pw, _ in freq.most_common(top_n)]
 
     seen = set()
@@ -132,7 +138,7 @@ def stream_top_n(path: Path, top_n: int, encoding: str = "latin-1") -> List[str]
         if w not in seen:
             seen.add(w)
             out.append(w)
-            if len(out) >= top_n:
+            if not unlimited and len(out) >= top_n:
                 break
     return out
 
@@ -440,7 +446,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="topn-seedgen")
     p.add_argument("target", type=Path)
     p.add_argument("-o", "--output", type=Path, default=Path("topn_seeds.rule"))
-    p.add_argument("-n", "--top-n", type=int, default=DEFAULT_TOP_N)
+    p.add_argument("-n", "--top-n", type=int, default=DEFAULT_TOP_N,
+                    help="How many top TARGET entries to analyze. 0 (or negative) = unlimited (scan the whole file).")
     p.add_argument("-m", "--max-seeds", type=int, default=DEFAULT_MAX_SEEDS)
     p.add_argument("--encoding", default="latin-1")
     p.add_argument("--complementary", action="store_true")

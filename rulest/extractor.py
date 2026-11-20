@@ -56,8 +56,12 @@ class GPUExtractor:
         self.token_strip_chunk_size = token_strip_chunk_size
         self.token_strip_bloom_mb = token_strip_bloom_mb
         self.topn_seeds = bool(topn_seeds)
-        self.topn_n = int(topn_n) if topn_n else 400000
-        self.topn_max_seeds = int(topn_max_seeds) if topn_max_seeds else 15000
+        # NOTE: 0 (or a negative number) is the documented "unlimited" value
+        # for both of these (Web UI fields, CLI --topn-n/--topn-max-seeds,
+        # and generate_seeds() itself) -- so this must check for None, not
+        # falsiness, or a real 0 silently gets replaced by the default below.
+        self.topn_n = int(topn_n) if topn_n is not None else 400000
+        self.topn_max_seeds = int(topn_max_seeds) if topn_max_seeds is not None else 15000
         self.topn_complementary = bool(topn_complementary)
         self.params = calculate_dynamic_parameters(base_count, target_count, None, target_hours,
                                                    bloom_mb_override=bloom_mb, bloom_no_shard=bloom_no_shard)
@@ -243,7 +247,9 @@ class GPUExtractor:
         if self.topn_seeds and not _kb.poll():
             try:
                 from .topn_seedgen import generate_seeds
-                sample = target_words[: max(0, self.topn_n)]
+                # self.topn_n <= 0 means "unlimited": analyze every target word,
+                # not a zero-length slice (max(0, 0) == 0 used to do exactly that).
+                sample = target_words if self.topn_n <= 0 else target_words[: self.topn_n]
                 mode = "complementary" if self.topn_complementary else "standard"
                 log_section(f"TOP-N — In-memory seed generation (deduped, {mode})")
                 log_info(

@@ -4646,8 +4646,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": f"Invalid JSON body: {exc}"}, 400)
             return
 
-        top_n = int(payload.get("top_n") or 400_000)
-        max_seeds = int(payload.get("max_seeds") or 15_000)
+        # NOTE: 0 is the documented "unlimited" value for both fields -- must
+        # check for None/missing explicitly, not falsiness, or a sent 0 gets
+        # silently replaced by the default before the validation below ever
+        # sees it (which is exactly what happened before this fix).
+        _top_n_raw = payload.get("top_n")
+        _max_seeds_raw = payload.get("max_seeds")
+        top_n = int(_top_n_raw) if _top_n_raw is not None else 400_000
+        max_seeds = int(_max_seeds_raw) if _max_seeds_raw is not None else 15_000
         if top_n < 0:
             self.send_json({"error": "top_n must be >= 0 (0 = unlimited)"}, 400)
             return

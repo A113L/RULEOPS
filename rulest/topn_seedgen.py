@@ -639,7 +639,14 @@ def generate_seeds(
     # affix yield: each family still respects its own budget, and the final
     # list is truncated to max_seeds after generation (insertion order keeps
     # early high-value families).
-    budget_base = 25_000 if unlimited else max(max_seeds, int(max_seeds * 1.20))
+    #
+    # Unlimited MUST NOT use the old 25_000 hard cap — on 10M+ corpora that
+    # produced only ~50–70k seeds. Start large; after the affix scan we raise
+    # further from observed inventory (see below).
+    if unlimited:
+        budget_base = 500_000
+    else:
+        budget_base = max(max_seeds, int(max_seeds * 1.20))
     # A static baseline is always available immediately (used as-is for the
     # synthetic combo families, and as the pre-adaptive fallback for the
     # five primary ones until the affix scan below has real evidence).
@@ -688,6 +695,20 @@ def generate_seeds(
             if bar is not None:
                 bar.n = 30
                 bar.refresh()
+
+        # Unlimited: grow attempt budget from observed affix inventory so a
+        # multi-million target is not stuck at the provisional 500k base when
+        # the scan found far more distinct digit/special/year affixes.
+        if unlimited:
+            n_inventory = len(suffixes) + len(prefixes) + len(years)
+            # ~3 attempt slots per distinct affix, clamped to a sane ceiling.
+            data_base = max(budget_base, min(2_000_000, max(100_000, n_inventory * 3)))
+            if data_base > budget_base:
+                budget_base = data_base
+                budgets = {
+                    k: max(40, int(budget_base * (v / share_total)))
+                    for k, v in budgets_src.items()
+                }
 
         # Data-driven reallocation of the five directly-observable families'
         # combined budget share, now that the scan above has real evidence
@@ -816,8 +837,13 @@ def generate_seeds(
                 if len(seeds) > max_seeds * 0.55:
                     break
 
+        # Slice pools scale with family budgets (old hard-caps of 40–1200
+        # starved unlimited runs on large corpora).
+        def _pool(n_budget: int, floor: int = 80, ceil: int = 50_000) -> int:
+            return max(floor, min(ceil, int(n_budget)))
+
         n = 0
-        for s, _ in dig_suf[:1200]:
+        for s, _ in dig_suf[: _pool(budgets["depth2_digit_special"], 200, 20_000)]:
             if len(s) > 3:
                 continue
             for ch in SPECIAL_CHARS_CORE:
@@ -831,7 +857,10 @@ def generate_seeds(
 
         transforms = ["c", "u", "l", "C", "t", "r"]
         n = 0
-        popular = [s for s, _ in dig_suf[:300] if len(s) <= 3] + [s for s, _ in year_items[:120]]
+        popular = (
+            [s for s, _ in dig_suf[: _pool(budgets["depth2_transform"], 100, 10_000)] if len(s) <= 3]
+            + [s for s, _ in year_items[: _pool(budgets["depth2_transform"] // 2, 50, 5_000)]]
+        )
         for t in transforms:
             for s in popular:
                 add(f"{t} {_rule_append(s)}")
@@ -843,7 +872,7 @@ def generate_seeds(
 
         n = 0
         for op in LEET_OPS:
-            for s, _ in year_items[:80]:
+            for s, _ in year_items[: _pool(budgets["leet_year"], 50, 5_000)]:
                 add(f"{op} {_rule_append(s)}")
                 add(f"{_rule_append(s)} {op}")
                 n += 2
@@ -854,7 +883,7 @@ def generate_seeds(
 
         n = 0
         for t in ("c", "u", "l", "C", "r"):
-            for s, _ in year_items[:60]:
+            for s, _ in year_items[: _pool(budgets["transform_year_special"], 40, 4_000)]:
                 for ch in SPECIAL_CHARS_CORE[:5]:
                     add(f"{t} {_rule_append(s)} ${ch}")
                     add(f"{t} ${ch} {_rule_append(s)}")
@@ -867,7 +896,7 @@ def generate_seeds(
                 break
 
         n = 0
-        for s, _ in dig_suf[:400]:
+        for s, _ in dig_suf[: _pool(budgets["reverse_digit"], 100, 10_000)]:
             if len(s) > 3:
                 continue
             add(f"r {_rule_append(s)}")
@@ -875,7 +904,7 @@ def generate_seeds(
             n += 2
             if n >= budgets["reverse_digit"]:
                 break
-        for s, _ in year_items[:40]:
+        for s, _ in year_items[: _pool(budgets["reverse_digit"] // 2, 40, 4_000)]:
             add(f"r {_rule_append(s)}")
             n += 1
             if n >= budgets["reverse_digit"]:

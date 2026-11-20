@@ -180,6 +180,7 @@ RULEOPS/
 Deeper design notes live under [`docs/`](docs/), including:
 
 - [`docs/RANKER_README.md`](docs/RANKER_README.md) — Rule Ranker package/CLI reference
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — recent project changes
 - [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) — web-server limits and hardening
 - [`docs/SYSTEMD_SERVICE.md`](docs/SYSTEMD_SERVICE.md) — running as a Linux service
 - [`docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md`](docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md) — CELF selection algorithm, correctness constraints, and benchmarks

@@ -142,6 +142,8 @@ BOOL_OPTIONS = {
     "bloom_no_shard": "--bloom-no-shard",
     "allow_reject_rules": "--allow-reject-rules",
     "no_builtin_seeds": "--no-builtin-seeds",
+    "topn_seeds": "--topn-seeds",
+    "topn_complementary": "--topn-complementary",
     "token_strip": "--token-strip",
     "genetic": "--genetic",
     "exact_recovery": "--exact-recovery",
@@ -151,6 +153,7 @@ BOOL_OPTIONS = {
 VALUE_OPTIONS = {
     "device": "--device", "max_depth": "--max-depth", "target_hours": "--target-hours",
     "max_chains": "--max-chains", "bloom_mb": "--bloom-mb",
+    "topn_n": "--topn-n", "topn_max_seeds": "--topn-max-seeds",
     "token_strip_min_stem": "--token-strip-min-stem",
     "token_strip_max_prefix": "--token-strip-max-prefix",
     "token_strip_max_suffix": "--token-strip-max-suffix",
@@ -3816,6 +3819,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_tools_run()
         elif parsed.path == "/api/tools/cancel":
             self.handle_tools_cancel()
+        elif parsed.path == "/api/tools/topn-seeds":
+            self.handle_topn_seeds()
         elif parsed.path == "/api/control":
             self.handle_control()
         elif parsed.path == "/api/logs/clear":
@@ -4632,6 +4637,64 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
         self.send_json({"ok": True, "action": "cancel"})
+
+    def handle_topn_seeds(self):
+        """Lightweight Top-N seed generator for Stage S (--seed-rules)."""
+        try:
+            payload = self.read_json_body()
+        except Exception as exc:
+            self.send_json({"error": f"Invalid JSON body: {exc}"}, 400)
+            return
+
+        top_n = int(payload.get("top_n") or 400_000)
+        max_seeds = int(payload.get("max_seeds") or 15_000)
+        if top_n < 10_000:
+            self.send_json({"error": "top_n must be >= 10000"}, 400)
+            return
+        if max_seeds < 0:
+            self.send_json({"error": "max_seeds must be >= 0 (0 = unlimited)"}, 400)
+            return
+
+        target_meta = UPLOADS_META.get("target")
+        if not target_meta or not Path(target_meta["path"]).is_file():
+            self.send_json({"error": "Upload a Target wordlist first."}, 400)
+            return
+
+        target_path = Path(target_meta["path"])
+        out_name = "topn_seeds.rule"
+        out_path = UPLOADS / out_name
+
+        try:
+            from rulest.topn_seedgen import run as topn_run
+            stats = topn_run(
+                target_path=target_path,
+                output_path=out_path,
+                top_n=top_n,
+                max_seeds=max_seeds,
+            )
+        except Exception as exc:
+            add_log(f"[TOPN] Generation failed: {exc}")
+            self.send_json({"error": f"Top-N seed generation failed: {exc}"}, 500)
+            return
+
+        # Register as the active custom seed file so the next rulest run picks it up.
+        UPLOADS_META["seed"] = {
+            "path": str(out_path),
+            "name": out_name,
+            "size": out_path.stat().st_size if out_path.is_file() else 0,
+        }
+        add_log(
+            f"[TOPN] Generated {stats['seeds_generated']:,} seeds "
+            f"from {stats['passwords_loaded']:,} top passwords → {out_name}"
+        )
+        self.send_json({
+            "ok": True,
+            "seeds_generated": stats["seeds_generated"],
+            "passwords_loaded": stats["passwords_loaded"],
+            "top_n": top_n,
+            "output_name": out_name,
+            "registered_as_seed": True,
+        })
 
     def handle_concentrator_cancel(self):
         with LOCK:

@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b">
+  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b&topn-pcfg-ui=20261120a">
 </head>
 <body>
   <div class="app-shell">
@@ -112,10 +112,49 @@
             </div>
             <div class="seed-file-state" id="seed-state">No custom seed rules uploaded</div>
             <div class="library-pick seed-library-pick"><label for="library-seed">Or reuse saved rules</label><select id="library-seed" data-library-field="seed"><option value="">Choose saved rule file…</option></select></div>
+
+            <div class="topn-seed-panel" id="topn-seed-panel">
+              <div class="optional-copy" style="margin-top:1rem">
+                <span class="optional-icon topn-brand-icon" aria-hidden="true">
+                  <svg viewBox="0 0 44 44" focusable="false">
+                    <path d="M17 10 13.5 34 M29 10 25.5 34 M9.5 18.5H35 M8 27H33.5" fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round" />
+                    <circle cx="34.5" cy="31.5" r="3" fill="currentColor" />
+                  </svg>
+                </span>
+                <div>
+                  <b>Top-N Seed Injection <span>IN-MEMORY</span></b>
+                  <small>Uses lightweight PCFG-style pattern profiling on the first N Target entries: recurring affix and year-like patterns are counted, then combined with a bounded set of simple transforms in memory.</small>
+                  <div class="topn-pcfg-note"><span>PCFG-STYLE</span><span>PCFG = Probabilistic Context-Free Grammar. This is a lightweight frequency-based approximation, not full grammar training.</span></div>
+                </div>
+              </div>
+              <div class="toggle-row compact-toggle" style="margin-top:0.5rem">
+                <div><b>Enable Top-N seeds</b><small>Inject balanced Top-N seeds automatically during the run.</small></div>
+                <label class="switch"><input type="checkbox" id="topn_seeds"><span></span></label>
+              </div>
+              <div class="toggle-row compact-toggle">
+                <div><b>Complementary mode</b><small>Prefer patterns Stage 0 rarely finds (leet+year, r+digit, c+year+special).</small></div>
+                <label class="switch"><input type="checkbox" id="topn_complementary"><span></span></label>
+              </div>
+              <div class="form-grid two-col" style="margin-top:0.6rem">
+                <label class="field">
+                  <span>Top-N passwords</span>
+                  <div class="input-suffix"><input type="number" min="10000" max="2000000" step="10000" value="400000" id="topn_n"><b>lines</b></div>
+                  <small>How many top target passwords to analyse.</small>
+                </label>
+                <label class="field">
+                  <span>Max seeds</span>
+                  <div class="input-suffix"><input type="number" min="0" step="1000" value="15000" id="topn_max_seeds"><b>rules</b></div>
+                  <small>0 = unlimited. Default 15 000.</small>
+                </label>
+              </div>
+            </div>
           </section>
 
           <section class="panel" id="tuning">
-            <div class="panel-heading"><div><span class="section-index">02</span><h2>Engine configuration</h2><p>Fine-tune search depth, runtime and GPU memory behaviour.</p></div><button class="text-button" id="reset-defaults" type="button">↺ Reset defaults</button></div>
+            <div class="panel-heading reset-defaults-heading"><div><span class="section-index">02</span><h2>Engine configuration</h2><p>Fine-tune search depth, runtime and GPU memory behaviour.</p></div><button class="reset-defaults-button" id="reset-defaults" type="button">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.1 5.2A5.6 5.6 0 1 0 13.4 9"/><path d="M13.1 1.9v3.6H9.5"/></svg>
+              <span>Reset defaults</span>
+            </button></div>
             <div class="form-grid three-col">
               <label class="field"><span>Maximum depth <i>?</i></span><div class="input-suffix"><input type="number" min="1" max="31" value="2" id="max_depth"><b>levels</b></div><small>Maximum rule chain depth (1–31).</small></label>
               <label class="field"><span>Target runtime</span><div class="input-suffix"><input type="number" min="0.01" step="0.05" value="0.5" id="target_hours"><b>hours</b></div><small>Time budget for the search.</small></label>
@@ -139,7 +178,7 @@
             </section>
             <div class="toggle-row compact-toggle"><div><b>Disable Bloom sharding</b><small>Force one Bloom filter shard, even for large filters.</small></div><label class="switch"><input type="checkbox" id="bloom_no_shard"><span></span></label></div>
             <div class="toggle-row compact-toggle"><div><b>Allow reject rules</b><small>Allow rules which intentionally reject candidate words.</small></div><label class="switch"><input type="checkbox" id="allow_reject_rules"><span></span></label></div>
-            <div class="toggle-row compact-toggle"><div><b>Disable built-in seeds</b><small>Skip the built-in numeric and pattern seed families (A–M).</small></div><label class="switch"><input type="checkbox" id="no_builtin_seeds"><span></span></label></div>
+            <div class="toggle-row compact-toggle"><div><b>Disable built-in seeds</b><small>Skip the built-in numeric and pattern seed families (A–Q).</small></div><label class="switch"><input type="checkbox" id="no_builtin_seeds"><span></span></label></div>
             <div class="subsection depth-overrides"><div class="subsection-title"><div><h3>Per-depth chain limits</h3><p>Override automatically calculated chain counts for individual depths.</p></div><span class="subtle-tag">OPTIONAL OVERRIDES</span></div><div class="depth-grid" id="depth-grid"></div></div>
           </section>
 

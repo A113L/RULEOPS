@@ -1260,10 +1260,24 @@ class GPUEngine:
         for position, rule in enumerate(valid):
             if position % 4096 == 0 and _kb.poll(): return []
             chains.add(rule)
+        # High-probability seed chains (Top-N / custom / Stage 0):
+        # 1) inject whole chains into the Stage 2 candidate pool
+        # 2) promote their atomic ops into the "hot" set so deeper random
+        #    generation is biased toward those building blocks
+        valid_set = set(valid)
         if seed_chains:
+            seed_atoms_added = 0
             for position, sc in enumerate(seed_chains):
                 if position % 4096 == 0 and _kb.poll(): return []
-                if sc.count(' ') >= 1: chains.add(sc)
+                parts = sc.split()
+                if len(parts) >= 2:
+                    chains.add(sc)
+                    for part in parts:
+                        if part in valid_set and part not in found_s:
+                            # keep hot compact; avoid unbounded growth
+                            if part not in hot and seed_atoms_added < 4096:
+                                hot.append(part)
+                                seed_atoms_added += 1
         for depth in range(2, max_depth+1):
             if _kb.poll():
                 break

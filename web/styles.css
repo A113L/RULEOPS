@@ -2128,3 +2128,79 @@ body{
   background:#0d141d;
   box-shadow:0 0 0 2px #b8f36b13;
 }
+
+
+/* RULEST controls: match the project accent and branded geometry. */
+.reset-defaults-button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  flex:none;
+  min-height:31px;
+  padding:6px 10px;
+  border:1px solid #394739;
+  border-radius:7px;
+  background:linear-gradient(145deg,#1a241d,#131b19);
+  color:#b8d69b;
+  font:650 9px/1.2 var(--sans);
+  letter-spacing:.015em;
+  box-shadow:inset 0 1px 0 #ffffff08,0 2px 7px #0003;
+  transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease,box-shadow .16s ease;
+}
+.reset-defaults-button svg {
+  width:13px;
+  height:13px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.5;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.reset-defaults-button:hover {
+  border-color:#789b55;
+  background:linear-gradient(145deg,#263625,#19251e);
+  color:#d5f3b5;
+  transform:translateY(-1px);
+  box-shadow:0 4px 12px #0004,0 0 0 1px #b8f36b12;
+}
+.reset-defaults-button:focus-visible {
+  outline:2px solid #b8f36b;
+  outline-offset:3px;
+}
+.topn-brand-icon {
+  background:#263321;
+  color:#b8f36b;
+  border:1px solid #435b36;
+  box-shadow:inset 0 1px 0 #ffffff0c,0 2px 8px #0003;
+}
+.topn-brand-icon svg {
+  width:17px;
+  height:17px;
+  display:block;
+}
+.topn-pcfg-note {
+  display:flex;
+  align-items:flex-start;
+  gap:7px;
+  margin-top:7px;
+  color:#879580;
+  font-size:8px;
+  line-height:1.4;
+}
+.topn-pcfg-note > span:first-child {
+  flex:none;
+  padding:2px 5px;
+  border:1px solid #465b38;
+  border-radius:4px;
+  background:#1c281c;
+  color:#b8d994;
+  font:8px/1.25 var(--mono);
+  letter-spacing:.05em;
+}
+.topn-pcfg-note > span:last-child { min-width:0; }
+@media(max-width:650px) {
+  .reset-defaults-button { min-height:30px; padding:6px 8px; }
+  .reset-defaults-heading { align-items:center; }
+  .topn-pcfg-note { font-size:8px; }
+}

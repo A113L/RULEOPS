@@ -32,7 +32,8 @@ class GPUExtractor:
                  token_strip=False, token_strip_min_stem=4, token_strip_max_prefix=4,
                  token_strip_max_suffix=4, token_strip_min_leet_amb=3,
                  token_strip_workers=0, token_strip_chunk_size=0,
-                 token_strip_bloom_mb=0, rng_seed=None):
+                 token_strip_bloom_mb=0, rng_seed=None,
+                 topn_seeds=False, topn_n=400000, topn_max_seeds=15000, topn_complementary=False):
         self.base_count = base_count
         self.target_count = target_count
         self.user_max_depth = max_depth
@@ -54,6 +55,10 @@ class GPUExtractor:
         self.token_strip_workers = token_strip_workers
         self.token_strip_chunk_size = token_strip_chunk_size
         self.token_strip_bloom_mb = token_strip_bloom_mb
+        self.topn_seeds = bool(topn_seeds)
+        self.topn_n = int(topn_n) if topn_n else 400000
+        self.topn_max_seeds = int(topn_max_seeds) if topn_max_seeds else 15000
+        self.topn_complementary = bool(topn_complementary)
         self.params = calculate_dynamic_parameters(base_count, target_count, None, target_hours,
                                                    bloom_mb_override=bloom_mb, bloom_no_shard=bloom_no_shard)
         self.params['MAX_CHAIN_DEPTH'] = self.user_max_depth
@@ -124,6 +129,7 @@ class GPUExtractor:
         ts_sbd = defaultdict(set)
         builtin_set = set(rules)
         all_seeds = self.load_seed_rules()
+        self._custom_seeds_snapshot = set(all_seeds)
         if _kb.poll():
             log_warn("[QUIT] Stopped while loading seed rules — skipping extraction")
             return _validated_counts()
@@ -231,10 +237,99 @@ class GPUExtractor:
         self.params['MAX_CHAIN_DEPTH'] = seed_pass_depth
         self.gpu_engine.params = self.params
 
+        topn_injected_set = set()
+
+        # --- Top-N in-memory seeds (after Stage 0 so we can dedupe) ----------
+        if self.topn_seeds and not _kb.poll():
+            try:
+                from .topn_seedgen import generate_seeds
+                sample = target_words[: max(0, self.topn_n)]
+                mode = "complementary" if self.topn_complementary else "standard"
+                log_section(f"TOP-N — In-memory seed generation (deduped, {mode})")
+                log_info(
+                    f"[TOPN]   Analysing {len(sample):,} target passwords → up to {self.topn_max_seeds:,} seeds"
+                )
+                topn_raw = generate_seeds(
+                    sample,
+                    max_seeds=self.topn_max_seeds,
+                    complementary=self.topn_complementary,
+                )
+
+                known = set(all_seeds)
+                known.update(ts_singles)
+                known.update(ts_chains)
+                for _d, _chains in ts_sbd.items():
+                    known.update(_chains)
+                known.update(builtin_set)
+                known.update(ts_extra_singles)
+
+                topn_new = []
+                n_dup_s0 = 0
+                n_dup_other = 0
+                s0_known = set(ts_singles) | set(ts_chains)
+                for _d, _chains in ts_sbd.items():
+                    s0_known.update(_chains)
+                for rule in topn_raw:
+                    if rule in s0_known:
+                        n_dup_s0 += 1
+                        continue
+                    if rule in known:
+                        n_dup_other += 1
+                        continue
+                    topn_new.append(rule)
+                    known.add(rule)
+
+                n_single = 0
+                n_chain = 0
+                for rule in topn_new:
+                    depth = len(rule.split())
+                    if depth <= 1:
+                        all_seeds.append(rule)
+                        topn_injected_set.add(rule)
+                        n_single += 1
+                    else:
+                        if depth <= self.user_max_depth or depth <= 9:
+                            ts_sbd[depth].add(rule)
+                            all_seeds.append(rule)
+                            topn_injected_set.add(rule)
+                            n_chain += 1
+
+                log_info(
+                    f"[TOPN]   Kept {bold(cyan(str(len(topn_new))))} new seeds "
+                    f"({n_single} atomic, {n_chain} chains) · "
+                    f"skipped {n_dup_s0} Stage-0 dupes, {n_dup_other} other dupes "
+                    f"from {len(topn_raw):,} generated [{mode}]"
+                )
+            except Exception as exc:
+                log_warn(f"[TOPN]   In-memory generation failed: {exc}")
+
+        # Stage-0 chain set for Stage 2 accounting
+        s0_chain_set = set(ts_chains)
+        for _d, _chains in ts_sbd.items():
+            s0_chain_set.update(_chains)
+
         extra_seeds = [s for s in all_seeds if ' ' not in s.strip()]
         extra_valid = [s for s in extra_seeds if s not in builtin_set]
         rules_phase1 = list(dict.fromkeys(rules + ts_extra_singles + extra_valid))
         seed_chains = [s for s in all_seeds if ' ' in s.strip() and len(s.split()) <= self.user_max_depth]
+
+        # Split seed_chains for accurate Stage 2 logging
+        n_seed_topn = sum(1 for s in seed_chains if s in topn_injected_set)
+        n_seed_custom = sum(
+            1 for s in seed_chains
+            if s in getattr(self, "_custom_seeds_snapshot", set()) and s not in topn_injected_set
+        )
+        n_seed_s0_in_pool = sum(1 for s in seed_chains if s in s0_chain_set and s not in topn_injected_set)
+        n_seed_other = max(0, len(seed_chains) - n_seed_topn - n_seed_custom - n_seed_s0_in_pool)
+        self._stage2_seed_breakdown = {
+            "s0": n_s0_chains_to_stage2,
+            "topn": n_seed_topn,
+            "custom": n_seed_custom,
+            "s0_in_seed_pool": n_seed_s0_in_pool,
+            "other": n_seed_other,
+            "seed_chains_total": len(seed_chains),
+        }
+
 
         if extra_valid: log_info(f"[SEED] {len(extra_valid)} seed single-rule(s) added to STAGE 1")
         if seed_chains and self.user_max_depth<2: log_warn(f"[SEED] {len(seed_chains)} chain seed(s) ignored — requires --max-depth >= 2")
@@ -330,7 +425,15 @@ class GPUExtractor:
 
         if self.user_max_depth > 1 and not _kb.poll() and not no_gpu_left:
             log_section("STAGE 2 — Rule Chain Search")
-            log_info(f"[S2]    {bold(cyan(str(n_s0_chains_to_stage2)))} rules from STAGE 0 injected into chain search")
+            bd = getattr(self, "_stage2_seed_breakdown", None) or {}
+            log_info(
+                f"[S2]    Injection breakdown → "
+                f"STAGE0={bold(cyan(str(bd.get('s0', n_s0_chains_to_stage2))))} · "
+                f"Top-N={bold(cyan(str(bd.get('topn', 0))))} · "
+                f"custom={bold(cyan(str(bd.get('custom', 0))))} · "
+                f"S0-in-seed-pool={bd.get('s0_in_seed_pool', 0):,} · "
+                f"seed_chains_total={bd.get('seed_chains_total', len(seed_chains) if seed_chains else 0):,}"
+            )
 
             if self.genetic and self.user_max_depth >= 2:
                 _min_ga = 120.0

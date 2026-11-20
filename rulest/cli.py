@@ -57,6 +57,17 @@ def main():
         ap.add_argument(f'--depth{i}-chains', type=int, default=None, dest=f'depth{i}_chains')
     ap.add_argument('--allow-reject-rules', action='store_true')
     ap.add_argument('-n', '--no-builtin-seeds', action='store_true')
+    topn = ap.add_argument_group('Top-N Seed Injection (in-memory)')
+    topn.add_argument('--topn-seeds', action='store_true',
+                      help='Generate Top-N seeds from the target wordlist in memory and inject '
+                           'them into Stage S / Stage 1 (no intermediate .rule file).')
+    topn.add_argument('--topn-n', type=int, default=400000, metavar='N',
+                      help='How many top target passwords to analyse (default 400000).')
+    topn.add_argument('--topn-max-seeds', type=int, default=15000, metavar='N',
+                      help='Max seeds to generate. 0 = unlimited (default 15000).')
+    topn.add_argument('--topn-complementary', action='store_true',
+                      help='Bias Top-N toward patterns Stage 0 rarely emits '
+                           '(leet+year, reverse+digit, transform+year+special, …).')
     pt = ap.add_argument_group('STAGE 0 — Token-Strip')
     pt.add_argument('-T', '--token-strip', action='store_true')
     pt.add_argument('--token-strip-min-stem', type=int, default=4)
@@ -164,6 +175,10 @@ def main():
     shard_note = yellow('[sharding forced off]') if args.bloom_no_shard else dim('(auto: shard if >512MB)')
     log_info(f"  depth     : {bold(str(args.max_depth))}  |  hours: {bold(str(args.target_hours))}  |  bloom: {bold(str(args.bloom_mb or 'auto'))}MB  {dim('(GPU-only)')}  {shard_note}")
     if args.seed_rules: log_info(f"  seeds     : {bold(args.seed_rules)}")
+    if getattr(args, "topn_seeds", False):
+        mode = "complementary" if getattr(args, "topn_complementary", False) else "standard"
+        log_info(f"  topn      : {green('enabled')} [{mode}] — in-memory injection "
+                 f"(top_n={getattr(args,'topn_n',400000):,}, max_seeds={getattr(args,'topn_max_seeds',15000):,})")
     if args.seed is not None:
         log_info(f"  rng seed  : {bold(str(args.seed))}  {dim('(deterministic — reruns on the same data will match)')}")
     print()
@@ -265,6 +280,10 @@ def main():
         token_strip_chunk_size=args.token_strip_chunk_size,
         token_strip_bloom_mb=args.token_strip_bloom_mb,
         rng_seed=args.seed,
+        topn_seeds=args.topn_seeds,
+        topn_n=args.topn_n,
+        topn_max_seeds=args.topn_max_seeds,
+        topn_complementary=args.topn_complementary,
     )
     depth_overrides = {f'depth{i}_override': getattr(args, f'depth{i}_chains') for i in range(2,11)}
     # Greedy CELF selection (below) still needs one live GPU from this same

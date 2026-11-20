@@ -130,6 +130,33 @@ class SharedWordList(Sequence):
     def numpy_flatten(self):
         return self.numpy_flatten_range(0, self._count)
 
+    def numpy_flatten_celf(self):
+        """Expose CELF's packed target bytes and source offsets without copying.
+
+        The byte payload and uint64 offset vector are NumPy views directly over
+        the existing shared-memory segments. Only the int32 per-entry length
+        vector is materialized because the CELF OpenCL kernel consumes lengths
+        separately from offsets.
+        """
+        import numpy as np
+
+        if self._closed:
+            raise ValueError("wordlist is closed")
+        packed = np.frombuffer(
+            self._data_shm.buf, dtype=np.uint8, count=self._data_size
+        )
+        all_offsets = np.frombuffer(
+            self._offsets_shm.buf, dtype=np.uint64, count=self._count + 1
+        )
+        offsets = all_offsets[:-1]
+        lengths = np.empty(self._count, dtype=np.int32)
+        if self._count:
+            np.subtract(
+                all_offsets[1:], all_offsets[:-1],
+                out=lengths, casting="unsafe",
+            )
+        return packed, offsets, lengths
+
     def numpy_flatten_range(self, start, stop):
         """Expose packed bytes directly and build only the GPU int32 indices."""
         import numpy as np

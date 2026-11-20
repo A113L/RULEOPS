@@ -28,11 +28,13 @@ from .common import (
     FNV1A_SEED1, FNV1A_SEED2, SPECIAL_CHARS_TOP, SPECIAL_CHARS_CORE, LEET_OPS,
 )
 from .devices import estimate_free_vram, get_max_allocation, get_device_by_spec
-from .hashing import fnv1a64_batch, build_indexed_open_addressing_table, table_size_for_count
+from .hashing import (
+    fnv1a64_batch, build_indexed_open_addressing_table_from_packed_records,
+    table_size_for_count,
+)
 from .kernel_source import GPU_KERNEL_TEMPLATE
 from .progress import ActivityHeartbeat  # CELF_PROGRESS_DIAGNOSTICS_PATCH_V2
 from .celf_utils import target_ids_from_seen_words
-from . import hashing as _rulest_hashing
 from .profiling import GpuPhaseProfile
 
 class _KernelBuildTimeout(Exception):
@@ -1801,107 +1803,130 @@ class GPUEngine:
                 except Exception: pass
 
     def celf_initialize_target_table(self, target_words):
-        """Build a <=50%-loaded 64-bit fingerprint table and upload it once.
+        """Build and upload CELF's target table without materializing TARGET strings.
 
-        The slot occupancy and active-target bitmaps are separate uint32 arrays.
-        Each active bit is indexed by the same slot returned by open addressing.
+        SharedWordList inputs expose their original packed bytes and uint64
+        offsets directly from SharedMemory. Fingerprints are computed and
+        inserted in bounded batches, and the target-id-to-slot map is filled
+        during insertion. This avoids a Python ``list[str]``, a second packed
+        bytearray, a corpus-sized fingerprint array, a corpus-sized valid-ID
+        array, and the table-sized ``flatnonzero`` temporary from the old path.
         """
         _celf_hashmap_activity = ActivityHeartbeat(green("[CELF GPU] Building target hash map"), interval=0.5).start()  # CELF_PROGRESS_DIAGNOSTICS_PATCH_V2
         _table_t0 = time.perf_counter()
         if not self.context or not self.compile_kernel():
             raise RuntimeError("CELF GPU kernels are unavailable")
-        targets = target_words if isinstance(target_words, list) else list(target_words)
-        if not targets:
+
+        # Keep the original sequence alive. SharedWordList is deliberately
+        # not converted to list(): doing so decodes every entry into a Python
+        # string and duplicates hundreds of MiB to multiple GiB of RAM.
+        targets = target_words
+        if not hasattr(targets, "__len__") or not hasattr(targets, "__getitem__"):
+            targets = list(targets)
+        if len(targets) == 0:
             raise ValueError("CELF target table needs at least one target")
-        # Same sizing rule as before (next power of two at >=2x the target
-        # count, i.e. <=50% load factor), expressed via the shared helper.
+
         table_size = table_size_for_count(len(targets), load_factor=0.50)
-        bitmap_words = (table_size + 31) // 32
-        # RULEST_CELF_V11_PACKED_FASTPATH: single-pass bytearray pack; hash directly from this payload.
         _celf_pack_t0 = time.perf_counter()
-        target_slots = np.full(len(targets), -1, dtype=np.int32)
-        target_lengths = np.zeros(len(targets), dtype=np.int32)
-        target_offsets = np.zeros(len(targets), dtype=np.uint64)
-        _valid_ids_storage = np.empty(len(targets), dtype=np.int32)
-        _packed_target_payload = bytearray()
-        _valid_count = 0
-        for target_id, target in enumerate(targets):
-            raw = target.encode("latin-1", errors="strict")
-            length = len(raw)
-            target_lengths[target_id] = length
-            if 0 < length <= MAX_OUTPUT_LEN:
-                target_offsets[target_id] = len(_packed_target_payload)
-                _valid_ids_storage[_valid_count] = target_id
-                _valid_count += 1
-                _packed_target_payload.extend(raw)
-        valid_ids = _valid_ids_storage[:_valid_count]
-        packed_byte_count = len(_packed_target_payload)
-        target_bytes = (np.frombuffer(_packed_target_payload, dtype=np.uint8) if packed_byte_count
-                            else np.zeros(1, dtype=np.uint8))
+        target_slots = np.empty(len(targets), dtype=np.int32)
+        packed_view = getattr(targets, "numpy_flatten_celf", None)
+
+        if callable(packed_view):
+            # Both target_bytes and target_offsets are zero-copy NumPy views
+            # over SharedMemory. Only target_lengths is a compact int32 array.
+            target_bytes, target_offsets, target_lengths = packed_view()
+            packed_byte_count = int(target_bytes.size)
+            packed_source = "shared-memory offsets (zero-copy host view)"
+        else:
+            # Compatibility path for ordinary lists/tuples used by tests and
+            # external callers. Production TARGET wordlists use the branch
+            # above and never allocate this secondary payload.
+            _packed_target_payload = bytearray()
+            target_lengths = np.zeros(len(targets), dtype=np.int32)
+            target_offsets = np.zeros(len(targets), dtype=np.uint64)
+            for target_id, target in enumerate(targets):
+                raw = target.encode("latin-1", errors="strict")
+                length = len(raw)
+                target_lengths[target_id] = length
+                if 0 < length <= MAX_OUTPUT_LEN:
+                    target_offsets[target_id] = len(_packed_target_payload)
+                    _packed_target_payload.extend(raw)
+            packed_byte_count = len(_packed_target_payload)
+            target_bytes = (
+                np.frombuffer(_packed_target_payload, dtype=np.uint8)
+                if packed_byte_count else np.zeros(1, dtype=np.uint8)
+            )
+            packed_source = "compatibility packed-list fallback"
+
         _celf_pack_seconds = time.perf_counter() - _celf_pack_t0
         if os.environ.get("RULEST_CELF_PROFILE") == "1":
-            print(f"[CELF] packed target bytes: {packed_byte_count:,} bytes (dense stride would be {len(targets) * MAX_OUTPUT_LEN:,} bytes); pack={_celf_pack_seconds:.2f}s", flush=True)
+            print(
+                f"[CELF] target bytes: {packed_byte_count:,} bytes; "
+                f"source={packed_source}; lengths={target_lengths.nbytes / (1024 * 1024):.1f} MiB; "
+                f"target-slot map={target_slots.nbytes / (1024 * 1024):.1f} MiB; "
+                f"no Python string materialization; prepare={_celf_pack_seconds:.2f}s",
+                flush=True,
+            )
 
-        # Vectorized FNV-1a-64 over the padded byte matrix: one Python loop
-        # over columns (bounded by MAX_OUTPUT_LEN), not one per target. See
-        # hashing.fnv1a64_batch / build_indexed_open_addressing_table for the
-        # rule_ranker-derived approach this replaces the old per-key Python
-        # "hash then probe in a for loop" insertion with.
-        #
-        # progress=False on both calls below: this whole block already runs
-        # under the "[CELF GPU] Building target hash map" ActivityHeartbeat
-        # (started above), which owns one overwritten status line for this
-        # phase. Letting these two helpers print their own `[HASHMAP] ...`
-        # progress lines at the same time used to interleave two unrelated,
-        # differently-styled progress reporters -- the heartbeat's single
-        # \r-updated line kept getting interrupted by a wall of separate
-        # scrolling prints, which is the "hashmap building" noise this phase
-        # was mainly adding.
-        if valid_ids.size:
-            fingerprints = _rulest_hashing.fnv1a64_packed_records_chunked(
-                target_bytes,
-                target_offsets,
-                target_lengths,
-                valid_ids,
-                progress=False,
-                label="target hashes",
-            )
-            (
-                target_hashes,
-                slot_target_ids,
-                occupied,
-                table_size,
-                inserted,
-            ) = build_indexed_open_addressing_table(
-                fingerprints, ids=valid_ids, table_size=table_size, progress=False
-            )
-            bitmap_words = occupied.size
-            placed = slot_target_ids >= 0
-            target_slots[slot_target_ids[placed]] = np.flatnonzero(placed)
-        else:
-            target_hashes = np.zeros(table_size, dtype=np.uint64)
-            slot_target_ids = np.full(table_size, -1, dtype=np.int32)
-            occupied = np.zeros(bitmap_words, dtype=np.uint32)
-            inserted = 0
+        # Hash and insert each bounded batch immediately. No full-corpus
+        # fingerprints or valid-target-ID arrays are retained. The builder
+        # also fills target_slots[target_id] as each table slot is assigned.
+        (
+            target_hashes,
+            slot_target_ids,
+            occupied,
+            table_size,
+            inserted,
+        ) = build_indexed_open_addressing_table_from_packed_records(
+            target_bytes,
+            target_offsets,
+            target_lengths,
+            table_size=table_size,
+            max_record_len=MAX_OUTPUT_LEN,
+            target_slots_out=target_slots,
+            progress=False,
+        )
+        bitmap_words = occupied.size
 
         table_mask = table_size - 1
         _table_host_build_s = time.perf_counter() - _table_t0
         if inserted == 0:
             raise ValueError("No non-empty targets fit MAX_OUTPUT_LEN")
         active = occupied.copy()
+
         # Drop old buffers only after new host tables have been constructed.
         self.celf_release_target_table()
         mf = cl.mem_flags
         _table_upload_t0 = time.perf_counter()
-        self._celf_target_hashes_buf = cl.Buffer(self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_hashes)
-        self._celf_slot_target_ids_buf = cl.Buffer(self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=slot_target_ids)
-        self._celf_occupied_buf = cl.Buffer(self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=occupied)
-        self._celf_active_buf = cl.Buffer(self.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=active)
-        self._celf_clear_slots_buf = cl.Buffer(self.context, mf.READ_ONLY, max(4, len(targets) * 4))
-        self._celf_target_bytes_buf = cl.Buffer(self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_bytes)
-        self._celf_target_offsets_buf = cl.Buffer(self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_offsets)
+        self._celf_target_hashes_buf = cl.Buffer(
+            self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_hashes
+        )
+        # This is the largest transient host array (8 bytes per table slot).
+        # Its contents now live in the OpenCL buffer, so release it before
+        # allocating/uploading the remaining CELF tables.
+        del target_hashes
+        self._celf_slot_target_ids_buf = cl.Buffer(
+            self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=slot_target_ids
+        )
+        self._celf_occupied_buf = cl.Buffer(
+            self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=occupied
+        )
+        self._celf_active_buf = cl.Buffer(
+            self.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=active
+        )
+        self._celf_clear_slots_buf = cl.Buffer(
+            self.context, mf.READ_ONLY, max(4, len(targets) * 4)
+        )
+        self._celf_target_bytes_buf = cl.Buffer(
+            self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_bytes
+        )
+        self._celf_target_offsets_buf = cl.Buffer(
+            self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_offsets
+        )
+        self._celf_target_lengths_buf = cl.Buffer(
+            self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_lengths
+        )
 
-        self._celf_target_lengths_buf = cl.Buffer(self.context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=target_lengths)
         self._celf_target_count = len(targets)
         self._celf_table_size = table_size
         self._celf_table_mask = table_mask
@@ -1909,20 +1934,27 @@ class GPUEngine:
         self._celf_seen_words = (len(targets) + 31) // 32  # compact target-ID bitmap
         self._celf_slot_target_ids_host = slot_target_ids
         self._celf_target_slots_host = target_slots
-        self._celf_occupied_host = occupied.copy()
+        # The occupied table is immutable for this CELF run; active is a
+        # separate mutable copy. Reuse the existing host array for resets.
+        self._celf_occupied_host = occupied
         self._celf_pending_clear_buffers = []
         self._celf_pending_clear_host_arrays = []
-        self._celf_targets = targets
+        self._celf_targets = targets  # pins SharedWordList/SharedMemory lifetime
+
+        # COPY_HOST_PTR owns its device-side copy now. Release the 8-byte hash
+        # table and the derived host lengths/views before the long CELF loop;
+        # retain only the host maps required for winner/slot bookkeeping.
+        del target_bytes, target_offsets, target_lengths, active
         _deferred_word_buffer_logs = self._celf_initialize_word_buffers()
         load = inserted / table_size
         _celf_hashmap_activity.stop()  # CELF_PROGRESS_DIAGNOSTICS_PATCH_V2
-        # Printed only now, after the heartbeat's final "done" line -- these
-        # used to fire from inside _celf_initialize_word_buffers() while the
-        # heartbeat was still live, landing mid-line on top of its
-        # \r-overwritten status with no separating newline.
         for log_fn, message in _deferred_word_buffer_logs:
             log_fn(message)
-        log_info(f"[CELF GPU] Target hash table: {inserted:,} entries, {table_size:,} slots, load={load:.1%}; FNV-1a 64 + SplitMix64; separate occupied/active bitmaps")
+        log_info(
+            f"[CELF GPU] Target hash table: {inserted:,} entries, "
+            f"{table_size:,} slots, load={load:.1%}; FNV-1a 64 + SplitMix64; "
+            "separate occupied/active bitmaps"
+        )
         if os.environ.get("RULEST_CELF_PROFILE") == "1":
             log_info(
                 f"[CELF PROFILE] target-table host build/arrays={_table_host_build_s:.3f}s; "

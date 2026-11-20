@@ -1067,7 +1067,10 @@ class _GpuExactScorer:
     def __init__(self, gpu_engine, base_words, target_words, pair_batch_size, candidate_rules):
         self.gpu_engine = _resolve_single_engine(gpu_engine)
         self.base_words = base_words
-        self.targets = target_words if isinstance(target_words, list) else list(target_words)
+        # Keep SharedWordList/other sequence inputs lazy. CELF's target-table
+        # builder can consume the shared byte payload and offsets directly; a
+        # list() here would decode millions of Python strings and duplicate RAM.
+        self.targets = target_words
         self.candidate_rules = candidate_rules if isinstance(candidate_rules, list) else list(candidate_rules)
         self.pair_batch_size = max(1, int(pair_batch_size))
         self.gpu_engine.set_base_words(base_words)

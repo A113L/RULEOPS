@@ -2,6 +2,14 @@
 
 ## 2026-11-20
 
+### CELF shared-memory target-table construction
+
+- Changed `_GpuExactScorer` and CELF initialization to retain the original `SharedWordList` instead of converting it into a Python `list[str]`.
+- Added a CELF-specific packed view that exposes the existing SharedMemory byte payload and `uint64` record offsets directly. Per-record `int32` lengths are derived without decoding or re-encoding target strings.
+- Reworked target fingerprinting and open-addressing insertion into bounded batches. The builder no longer creates corpus-sized `valid_ids` or fingerprint arrays, and fills the target-ID-to-slot map as entries are inserted.
+- Removed the table-sized `placed` boolean mask and `flatnonzero()` slot-index array. The immutable occupied bitmap is also reused for host-side active-target resets instead of copied again.
+- Released the temporary host fingerprint table immediately after its OpenCL buffer is created. Target order, duplicate entries, target IDs, and the existing CELF matching rules are preserved.
+
 ### Top-N budget scaling for unlimited runs
 
 - Removed the small fixed attempt-budget ceiling used by unlimited Top-N generation. The initial budget now starts higher and can grow according to the affix inventory observed during the scan, up to a bounded maximum.

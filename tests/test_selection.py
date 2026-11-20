@@ -729,3 +729,34 @@ def test_selection_skips_gpu_setup_when_quit_arrives_before_target_setup(monkeyp
     assert selected == []
     assert covered.dtype == np.bool_
     assert covered.tolist() == [False]
+
+
+def test_gpu_exact_scorer_keeps_shared_wordlist_lazy(tmp_path):
+    from rulest.io_utils import load_wordlist
+
+    class RecordingEngine:
+        def __init__(self):
+            self.targets_received = None
+
+        def set_base_words(self, _base_words):
+            pass
+
+        def celf_initialize_target_table(self, targets):
+            self.targets_received = targets
+
+        def celf_prepare_candidate_pool(self, _rules):
+            pass
+
+    path = tmp_path / "targets.txt"
+    path.write_text("alpha\nbeta\nalpha\n", encoding="latin-1")
+    targets = load_wordlist(path)
+    engine = RecordingEngine()
+    try:
+        scorer = _GpuExactScorer(
+            engine, base_words=["base"], target_words=targets,
+            pair_batch_size=1, candidate_rules=[],
+        )
+        assert scorer.targets is targets
+        assert engine.targets_received is targets
+    finally:
+        targets.close()

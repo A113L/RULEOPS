@@ -49,3 +49,97 @@ class TestBuildIndexedOpenAddressingTableProgress:
                 assert np.array_equal(a, b)
             else:
                 assert a == b
+
+
+def test_packed_record_index_builder_matches_legacy_table_without_global_ids():
+    import numpy as np
+    from rulest.hashing import (
+        build_indexed_open_addressing_table,
+        build_indexed_open_addressing_table_from_packed_records,
+        fnv1a64_packed_records_chunked,
+        table_size_for_count,
+    )
+
+    records = [b"alpha", b"", b"too-long", b"beta", b"alpha"]
+    offsets = np.empty(len(records), dtype=np.uint64)
+    lengths = np.empty(len(records), dtype=np.int32)
+    payload = bytearray()
+    for index, record in enumerate(records):
+        offsets[index] = len(payload)
+        lengths[index] = len(record)
+        payload.extend(record)
+    packed = np.frombuffer(payload, dtype=np.uint8)
+    valid_ids = np.asarray([0, 3, 4], dtype=np.int32)
+    table_size = table_size_for_count(len(records), load_factor=0.50)
+
+    fingerprints = fnv1a64_packed_records_chunked(
+        packed, offsets, lengths, valid_ids, progress=False
+    )
+    expected = build_indexed_open_addressing_table(
+        fingerprints, ids=valid_ids, table_size=table_size, progress=False
+    )
+    expected_hashes, expected_ids, expected_occupied, _, expected_inserted = expected
+    expected_target_slots = np.full(len(records), -1, dtype=np.int32)
+    placed = expected_ids >= 0
+    expected_target_slots[expected_ids[placed]] = np.flatnonzero(placed)
+
+    actual_target_slots = np.empty(len(records), dtype=np.int32)
+    actual = build_indexed_open_addressing_table_from_packed_records(
+        packed,
+        offsets,
+        lengths,
+        table_size=table_size,
+        max_record_len=5,
+        target_slots_out=actual_target_slots,
+        progress=False,
+    )
+    actual_hashes, actual_ids, actual_occupied, _, actual_inserted = actual
+
+    assert actual_inserted == expected_inserted == len(valid_ids)
+    assert np.array_equal(actual_hashes, expected_hashes)
+    assert np.array_equal(actual_ids, expected_ids)
+    assert np.array_equal(actual_occupied, expected_occupied)
+    assert np.array_equal(actual_target_slots, expected_target_slots)
+
+
+def test_packed_record_index_builder_matches_legacy_across_multiple_chunks(monkeypatch):
+    import numpy as np
+    from rulest.hashing import (
+        build_indexed_open_addressing_table,
+        build_indexed_open_addressing_table_from_packed_records,
+        fnv1a64_packed_records_chunked,
+        table_size_for_count,
+    )
+
+    monkeypatch.setenv("RULEST_HASHMAP_BUILD_BATCH", "4096")
+    records = [f"target-{index % 137}".encode("ascii") for index in range(5000)]
+    offsets = np.empty(len(records), dtype=np.uint64)
+    lengths = np.empty(len(records), dtype=np.int32)
+    payload = bytearray()
+    for index, record in enumerate(records):
+        offsets[index] = len(payload)
+        lengths[index] = len(record)
+        payload.extend(record)
+    packed = np.frombuffer(payload, dtype=np.uint8)
+    ids = np.arange(len(records), dtype=np.int32)
+    table_size = table_size_for_count(len(records))
+
+    fingerprints = fnv1a64_packed_records_chunked(
+        packed, offsets, lengths, ids, progress=False
+    )
+    expected = build_indexed_open_addressing_table(
+        fingerprints, ids=ids, table_size=table_size, progress=False
+    )
+    target_slots = np.empty(len(records), dtype=np.int32)
+    actual = build_indexed_open_addressing_table_from_packed_records(
+        packed, offsets, lengths,
+        table_size=table_size,
+        max_record_len=64,
+        target_slots_out=target_slots,
+        progress=False,
+    )
+
+    assert actual[4] == expected[4] == len(records)
+    assert np.array_equal(actual[0], expected[0])
+    assert np.array_equal(actual[1], expected[1])
+    assert np.array_equal(actual[2], expected[2])

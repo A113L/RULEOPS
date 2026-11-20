@@ -367,3 +367,183 @@ def fnv1a64_packed_records_chunked(packed_bytes, target_offsets, target_lengths,
             last_reported = done
     return out
 
+
+
+def build_indexed_open_addressing_table_from_packed_records(
+    packed_bytes,
+    target_offsets,
+    target_lengths,
+    *,
+    table_size: int,
+    max_record_len: int,
+    target_slots_out=None,
+    progress: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
+    """Build CELF's indexed table directly from packed records in bounded batches.
+
+    Unlike the older two-step path, this does not allocate a corpus-sized
+    fingerprint array or a corpus-sized ``valid_ids`` array. It scans record
+    lengths in chunks, hashes only eligible IDs for that chunk, and inserts
+    those fingerprints immediately. ``target_slots_out[target_id]`` is filled
+    as each target is placed, avoiding a table-sized ``flatnonzero`` temporary
+    after construction.
+
+    ``packed_bytes`` and ``target_offsets`` may be views over SharedMemory.
+    The function never decodes records to Python strings or copies the packed
+    byte payload.
+    """
+    import os as _os
+    import time as _time
+
+    packed = np.asarray(packed_bytes, dtype=np.uint8)
+    offsets = np.asarray(target_offsets)
+    lengths = np.asarray(target_lengths, dtype=np.int32)
+    if packed.ndim != 1 or offsets.ndim != 1 or lengths.ndim != 1:
+        raise ValueError("packed CELF inputs must be one-dimensional")
+    if offsets.dtype != np.dtype(np.uint64):
+        raise TypeError("target_offsets must be uint64 (OpenCL ulong layout)")
+    n = int(lengths.size)
+    if offsets.size != n:
+        raise ValueError("target_offsets and target_lengths must have equal length")
+    i32_max = int(np.iinfo(np.int32).max)
+    if n > i32_max:
+        raise ValueError("target IDs use int32; target count exceeds capacity")
+    table_size = int(table_size)
+    if table_size < 2 or (table_size & (table_size - 1)) != 0:
+        raise ValueError("table_size must be a power of two >= 2")
+    if n and table_size < table_size_for_count(n):
+        raise ValueError("table_size is too small for the requested load factor")
+    if target_slots_out is None:
+        target_slots = np.full(n, -1, dtype=np.int32)
+    else:
+        target_slots = np.asarray(target_slots_out)
+        if target_slots.dtype != np.dtype(np.int32) or target_slots.ndim != 1 or target_slots.size != n:
+            raise ValueError("target_slots_out must be an int32 array matching target count")
+        target_slots.fill(-1)
+
+    mask = table_size - 1
+    bitmap_words = (table_size + 31) // 32
+    hash_table = np.zeros(table_size, dtype=np.uint64)
+    slot_ids = np.full(table_size, -1, dtype=np.int32)
+    occupied_bitmap = np.zeros(bitmap_words, dtype=np.uint32)
+    if n == 0:
+        return hash_table, slot_ids, occupied_bitmap, table_size, 0
+
+    try:
+        chunk_size = int(_os.environ.get("RULEST_HASHMAP_BUILD_BATCH", "250000"))
+    except ValueError:
+        chunk_size = 250000
+    chunk_size = max(4096, min(2_000_000, chunk_size))
+    try:
+        hash_batch_size = int(_os.environ.get("RULEST_HASH_BATCH_SIZE", "32768"))
+    except ValueError:
+        hash_batch_size = 32768
+    hash_batch_size = max(1, min(1_000_000, hash_batch_size))
+
+    started = _time.monotonic()
+    last_report = started
+    inserted = 0
+    eligible = 0
+    if progress:
+        print(
+            f"[HASHMAP] packed indexed build: entries={n:,}, slots={table_size:,}, "
+            f"table arrays={(hash_table.nbytes + slot_ids.nbytes + occupied_bitmap.nbytes) / (1024**2):.1f} MiB, "
+            f"chunk={chunk_size:,}",
+            flush=True,
+        )
+
+    for chunk_start in range(0, n, chunk_size):
+        chunk_end = min(n, chunk_start + chunk_size)
+        chunk_lengths = lengths[chunk_start:chunk_end]
+        valid_mask = (chunk_lengths > 0) & (chunk_lengths <= int(max_record_len))
+        valid_local = np.flatnonzero(valid_mask)
+        del valid_mask
+        valid_count = int(valid_local.size)
+        eligible += valid_count
+        if valid_count:
+            valid_ids = valid_local.astype(np.int32, copy=False)
+            if chunk_start:
+                valid_ids = valid_ids + np.int32(chunk_start)
+            fingerprints = fnv1a64_packed_records_chunked(
+                packed,
+                offsets,
+                lengths,
+                valid_ids,
+                batch_size=hash_batch_size,
+                progress=False,
+            )
+
+            # Same vectorized linear-probing semantics as
+            # build_indexed_open_addressing_table(), but scoped to this one
+            # bounded fingerprint batch.
+            pending_keys = fingerprints
+            pending_ids = valid_ids
+            pending_slots = _slot_for_key(pending_keys, mask)
+            rounds = 0
+            while pending_keys.size:
+                rounds += 1
+                if rounds > table_size:
+                    raise RuntimeError("hash table insertion exceeded table-size probe limit")
+                _, first = np.unique(pending_slots, return_index=True)
+                winner = np.zeros(pending_slots.size, dtype=bool)
+                winner[first] = True
+                candidate_slots = pending_slots[winner]
+                candidate_keys = pending_keys[winner]
+                candidate_ids = pending_ids[winner]
+                free = slot_ids[candidate_slots] < 0
+                if np.any(free):
+                    placed_slots = candidate_slots[free]
+                    placed_ids = candidate_ids[free]
+                    slot_ids[placed_slots] = placed_ids
+                    hash_table[placed_slots] = candidate_keys[free]
+                    target_slots[placed_ids] = placed_slots
+                    inserted += int(np.count_nonzero(free))
+
+                retry = ~winner
+                winner_positions = np.flatnonzero(winner)
+                blocked = ~free
+                if np.any(blocked):
+                    retry[winner_positions[blocked]] = True
+                pending_keys = pending_keys[retry]
+                pending_ids = pending_ids[retry]
+                pending_slots = (pending_slots[retry] + 1) & mask
+
+        now = _time.monotonic()
+        if progress and (now - last_report >= 0.75 or chunk_end == n):
+            elapsed = max(now - started, 1e-9)
+            print(
+                f"[HASHMAP] inserted {inserted:,}/{eligible:,} eligible targets "
+                f"({inserted:,} placed; scanned {chunk_end:,}/{n:,}) | "
+                f"{inserted / elapsed:,.0f} targets/s | {elapsed:.1f}s",
+                flush=True,
+            )
+            last_report = now
+
+    if inserted != eligible:
+        raise RuntimeError(
+            f"indexed hashmap inserted {inserted:,} keys for {eligible:,} eligible rows"
+        )
+
+    # Pack occupancy in bounded slices; no table-sized boolean mask or
+    # flatnonzero index vector is created.
+    slots_per_pack = 8 * 1024 * 1024
+    for slot_start in range(0, table_size, slots_per_pack):
+        slot_end = min(table_size, slot_start + slots_per_pack)
+        occupied_chunk = slot_ids[slot_start:slot_end] >= 0
+        packed_bits = np.packbits(occupied_chunk, bitorder="little")
+        del occupied_chunk
+        if packed_bits.size % 4:
+            padded = np.zeros((-packed_bits.size) % 4, dtype=np.uint8)
+            packed_bits = np.concatenate((packed_bits, padded))
+        word_start = slot_start // 32
+        word_count = (slot_end - slot_start + 31) // 32
+        occupied_bitmap[word_start:word_start + word_count] = packed_bits.view(np.uint32)[:word_count]
+
+    elapsed = max(_time.monotonic() - started, 1e-9)
+    if progress:
+        print(
+            f"[HASHMAP] packed indexed build ready: {inserted:,}/{eligible:,} eligible targets "
+            f"in {elapsed:.1f}s | {inserted / elapsed:,.0f} targets/s",
+            flush=True,
+        )
+    return hash_table, slot_ids, occupied_bitmap, table_size, inserted

@@ -97,6 +97,30 @@ class TestLoadWordlist:
             words.close()
 
 
+    def test_numpy_flatten_celf_reuses_shared_bytes_and_offsets(self, tmp_path):
+        import numpy as np
+
+        path = _write(tmp_path, 'celf-words.txt', b"alpha\nbeta\ngamma\n")
+        words = load_wordlist(path)
+        try:
+            packed, offsets, lengths = words.numpy_flatten_celf()
+            source_bytes = np.frombuffer(
+                words._data_shm.buf, dtype=np.uint8, count=words._data_size
+            )
+            source_offsets = np.frombuffer(
+                words._offsets_shm.buf, dtype=np.uint64, count=len(words) + 1
+            )
+
+            assert bytes(packed) == b"alphabetagamma"
+            assert offsets.dtype == np.uint64
+            assert offsets.tolist() == [0, 5, 9]
+            assert lengths.tolist() == [5, 4, 5]
+            assert np.shares_memory(packed, source_bytes)
+            assert np.shares_memory(offsets, source_offsets)
+            del packed, offsets, lengths, source_bytes, source_offsets
+        finally:
+            words.close()
+
     def test_wordlist_pickle_attaches_shared_memory_in_spawn(self, tmp_path):
         path = _write(tmp_path, 'words.txt', b"alpha\nbeta\ngamma\n")
         words = load_wordlist(path)

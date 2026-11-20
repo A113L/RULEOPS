@@ -1474,6 +1474,14 @@ async function pollStatus() {
     }
   }
 }
+async function apiGet(path) {
+  const response = await fetch(path, { method: 'GET', headers: { 'X-CSRF-Token': csrfToken } });
+  const data = await response.json();
+  if (response.status === 401 && data.auth_required) { window.location.replace('/'); throw new Error('Your session expired. Please sign in again.'); }
+  if (!response.ok) throw new Error(data.error || 'Request failed.');
+  if (data.csrf_token) csrfToken = data.csrf_token;
+  return data;
+}
 async function apiPost(path, payload) {
   const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, body: JSON.stringify(payload) });
   const data = await response.json();
@@ -1485,6 +1493,10 @@ async function apiPost(path, payload) {
 async function startRun() {
   if (!uploadState.base || !uploadState.target) { toast('Upload both BASE and TARGET wordlists first.', true); return; }
   const config = collectConfig();
+  if (config.topn_seeds) {
+    if (typeof topnPcfgProfilePath !== 'undefined' && topnPcfgProfilePath) config.topn_profile_path = topnPcfgProfilePath;
+    else if (typeof topnPcfgProfile !== 'undefined' && topnPcfgProfile) config.topn_profile_json = topnPcfgProfile;
+  }
   if (!config.output_name.trim()) { toast('Enter an output filename.', true); return; }
   const rngSeedText = String(config.rng_seed ?? '').trim();
   if (rngSeedText !== '' && (!/^[0-9]{1,10}$/.test(rngSeedText) || !Number.isSafeInteger(Number(rngSeedText)) || Number(rngSeedText) > 4294967295)) {
@@ -2198,35 +2210,98 @@ document.addEventListener('DOMContentLoaded', boot);
 
 /* ---- Top-N Seed Generator (lightweight Stage S helper) -------------------- */
 
-// Parsed `ruleops.pcfg-profile.v1` report, if the user attached one. Read
-// and JSON.parse'd entirely client-side -- the raw file never has to touch
-// the server as an upload; only the parsed aggregate-stats object is sent
-// alongside the normal /api/tools/topn-seeds request body.
+// Parsed `ruleops.pcfg-profile.v1` report, if the user attached one (upload
+// or saved reports/ dropdown). Sent with /api/tools/topn-seeds and with
+// the main rulest run as topn_profile_json / topn_profile_path.
 let topnPcfgProfile = null;
+let topnPcfgProfilePath = null; // project-relative path when chosen from reports/
 
 function wireTopNPcfgProfileUpload() {
   const input = document.getElementById('topn-pcfg-profile-file');
+  const select = document.getElementById('topn-pcfg-profile-select');
   const stateEl = document.getElementById('topn-pcfg-profile-state');
-  if (!input || !stateEl) return;
+  if (!stateEl) return;
 
-  input.addEventListener('change', async () => {
-    const file = input.files && input.files[0];
-    if (!file) { topnPcfgProfile = null; stateEl.textContent = 'No PCFG profile attached'; return; }
+  async function loadSavedProfiles() {
+    if (!select) return;
     try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-      if (parsed && parsed.schema && String(parsed.schema).indexOf('pcfg-profile') === -1) {
-        toast('That JSON does not look like a run_pcfg_profile.py report', true);
-      }
-      topnPcfgProfile = parsed;
-      stateEl.textContent = `✓ ${file.name} attached`;
+      const data = await apiGet('/api/tools/pcfg-profiles');
+      const profiles = (data && data.profiles) || [];
+      const current = select.value;
+      select.innerHTML = '<option value="">Choose saved PCFG profile…</option>';
+      profiles.forEach((p) => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        const entries = p.profiled_entries ? ` · ${Number(p.profiled_entries).toLocaleString()} entries` : '';
+        opt.textContent = `${p.name}${entries}`;
+        opt.dataset.path = p.path || '';
+        select.appendChild(opt);
+      });
+      if (current) select.value = current;
     } catch (error) {
-      topnPcfgProfile = null;
-      input.value = '';
-      stateEl.textContent = 'No PCFG profile attached';
-      toast('Could not parse that file as JSON', true);
+      // Non-fatal: upload still works without the dropdown.
     }
-  });
+  }
+
+  if (input) {
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      if (!file) {
+        if (!topnPcfgProfilePath) {
+          topnPcfgProfile = null;
+          stateEl.textContent = 'No PCFG profile attached';
+        }
+        return;
+      }
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.schema && String(parsed.schema).indexOf('pcfg-profile') === -1) {
+          toast('That JSON does not look like a run_pcfg_profile.py report', true);
+        }
+        topnPcfgProfile = parsed;
+        topnPcfgProfilePath = null;
+        if (select) select.value = '';
+        stateEl.textContent = `✓ ${file.name} attached (upload)`;
+      } catch (error) {
+        topnPcfgProfile = null;
+        topnPcfgProfilePath = null;
+        input.value = '';
+        stateEl.textContent = 'No PCFG profile attached';
+        toast('Could not parse that file as JSON', true);
+      }
+    });
+  }
+
+  if (select) {
+    select.addEventListener('change', async () => {
+      const id = select.value;
+      if (!id) {
+        topnPcfgProfile = null;
+        topnPcfgProfilePath = null;
+        stateEl.textContent = 'No PCFG profile attached';
+        return;
+      }
+      try {
+        const data = await apiGet(`/api/tools/pcfg-profiles/load?id=${encodeURIComponent(id)}`);
+        topnPcfgProfile = data.profile;
+        topnPcfgProfilePath = data.path || null;
+        if (input) input.value = '';
+        const entries = data.profile && data.profile.input
+          ? Number(data.profile.input.profiled_entries || 0).toLocaleString()
+          : '?';
+        stateEl.textContent = `✓ ${id} (saved · ${entries} entries)`;
+      } catch (error) {
+        topnPcfgProfile = null;
+        topnPcfgProfilePath = null;
+        select.value = '';
+        stateEl.textContent = 'No PCFG profile attached';
+        toast(error.message || 'Could not load saved profile', true);
+      }
+    });
+  }
+
+  loadSavedProfiles();
 }
 
 function wireTopNSeedGenerator() {

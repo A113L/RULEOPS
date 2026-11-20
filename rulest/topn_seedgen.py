@@ -79,34 +79,56 @@ _PRIMARY_BUDGET_FAMILIES = (
 )
 
 FAMILY_BUDGET_STANDARD = {
-    "suffix_digit": 0.18,
-    "prefix_digit": 0.06,
-    "suffix_special": 0.08,
-    "prefix_special": 0.04,
-    "year": 0.10,
-    "leet_basic": 0.08,
-    "depth2_digit_special": 0.12,
-    "depth2_transform": 0.08,
-    "leet_year": 0.08,
-    "transform_year_special": 0.08,
-    "reverse_digit": 0.05,
-    "cap_special_digit": 0.05,
+    "suffix_digit": 0.14,
+    "prefix_digit": 0.04,
+    "suffix_special": 0.04,
+    "prefix_special": 0.02,
+    "year": 0.08,
+    "leet_basic": 0.06,
+    "depth2_digit_special": 0.08,
+    "depth2_transform": 0.06,
+    "leet_year": 0.06,
+    "transform_year_special": 0.05,
+    "reverse_digit": 0.03,
+    "cap_special_digit": 0.03,
+    # High-ROI pcfg-lite pattern categories
+    "case_only": 0.06,
+    "title_digit": 0.05,
+    "title_year": 0.04,
+    "length_adjust": 0.04,
+    "insert_digit": 0.06,
+    "date_pattern": 0.04,
+    "season_month": 0.02,
 }
 
 FAMILY_BUDGET_COMPLEMENTARY = {
-    "suffix_digit": 0.04,
+    "suffix_digit": 0.03,
     "prefix_digit": 0.02,
-    "suffix_special": 0.03,
+    "suffix_special": 0.02,
     "prefix_special": 0.02,
-    "year": 0.06,
-    "leet_basic": 0.10,
-    "depth2_digit_special": 0.08,
-    "depth2_transform": 0.08,
-    "leet_year": 0.18,
-    "transform_year_special": 0.16,
-    "reverse_digit": 0.12,
-    "cap_special_digit": 0.11,
+    "year": 0.05,
+    "leet_basic": 0.08,
+    "depth2_digit_special": 0.06,
+    "depth2_transform": 0.06,
+    "leet_year": 0.14,
+    "transform_year_special": 0.12,
+    "reverse_digit": 0.08,
+    "cap_special_digit": 0.08,
+    "case_only": 0.04,
+    "title_digit": 0.04,
+    "title_year": 0.04,
+    "length_adjust": 0.03,
+    "insert_digit": 0.04,
+    "date_pattern": 0.03,
+    "season_month": 0.02,
 }
+
+# Season / month tokens for the season_month family (appended as $c sequences).
+SEASON_MONTH_TOKENS = (
+    "jan", "feb", "mar", "apr", "may", "jun",
+    "jul", "aug", "sep", "oct", "nov", "dec",
+    "spring", "summer", "autumn", "fall", "winter",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +165,16 @@ _SYMBOL_SENSITIVE_FAMILIES = (
     "suffix_special", "prefix_special", "depth2_digit_special",
     "cap_special_digit", "transform_year_special",
 )
-_DIGIT_SENSITIVE_FAMILIES = ("suffix_digit", "prefix_digit")
-# depth2_transform is the one family whose entire point is a case transform
-# (c/u/l/C/t/r); its value scales with how often the corpus actually mixes case.
-_UPPER_SENSITIVE_FAMILIES = ("depth2_transform",)
+_DIGIT_SENSITIVE_FAMILIES = (
+    "suffix_digit", "prefix_digit", "insert_digit", "date_pattern",
+    "title_digit",
+)
+# Case / title families scale with uppercase presence in the corpus.
+_UPPER_SENSITIVE_FAMILIES = (
+    "depth2_transform", "case_only", "title_digit", "title_year",
+)
+# Length-adjust scales up when the corpus peaks outside short lengths.
+_LENGTH_SENSITIVE_FAMILIES = ("length_adjust",)
 
 
 def load_pcfg_profile(source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
@@ -185,6 +213,11 @@ def summarize_pcfg_profile(profile: Dict[str, Any]) -> Dict[str, float]:
     """
     comp = profile.get("composition") or {}
     presence = comp.get("weighted_class_presence") or comp.get("unweighted_class_presence") or {}
+    combinations = (
+        comp.get("weighted_class_combinations")
+        or comp.get("unweighted_class_combinations")
+        or {}
+    )
     length = profile.get("length") or {}
     length_hist = length.get("weighted_histogram") or length.get("unweighted_histogram") or {}
 
@@ -197,6 +230,11 @@ def summarize_pcfg_profile(profile: Dict[str, Any]) -> Dict[str, float]:
     total = max(1, int(total))
 
     len_total = max(1, sum(length_hist.values())) if length_hist else 1
+    combo_total = max(1, sum(int(v) for v in combinations.values())) if combinations else 1
+
+    def _combo(*parts: str) -> float:
+        key = "+".join(parts)
+        return float(combinations.get(key, 0)) / combo_total
 
     return {
         "digit_share": presence.get("digits", 0) / total,
@@ -208,6 +246,11 @@ def summarize_pcfg_profile(profile: Dict[str, Any]) -> Dict[str, float]:
         "long_length_share": sum(
             v for k, v in length_hist.items() if k not in ("2-7", "8-11")
         ) / len_total,
+        # dual_class_boost inputs from class-combination distribution
+        "lower_digit_combo_share": _combo("lowercase", "digits"),
+        "lower_upper_digit_combo_share": _combo("lowercase", "uppercase", "digits"),
+        "pure_lower_share": _combo("lowercase"),
+        "pure_digit_share": _combo("digits"),
         "profiled_entries": total,
     }
 
@@ -219,9 +262,8 @@ def _profile_share_multiplier(observed_share: float, baseline_share: float) -> f
 
 
 def profile_informed_priors(budgets_src: Dict[str, float], profile_summary: Dict[str, float]) -> Dict[str, float]:
-    """Return a copy of `budgets_src` with digit/symbol/uppercase-sensitive
-    family shares nudged by how over- or under-represented those character
-    classes are in `profile_summary` relative to the generic baseline, then
+    """Return a copy of `budgets_src` with digit/symbol/uppercase/length and
+    dual-class-sensitive family shares nudged by the aggregate profile, then
     renormalized back to sum to 1.0 so total budget semantics are unchanged.
     """
     digit_mult = _profile_share_multiplier(
@@ -236,17 +278,33 @@ def profile_informed_priors(budgets_src: Dict[str, float], profile_summary: Dict
         profile_summary.get("uppercase_share", _PROFILE_BASELINE_SHARE["uppercase"]),
         _PROFILE_BASELINE_SHARE["uppercase"],
     )
+    # Bias length_adjust toward corpora whose mass sits in the 8-11 peak
+    # (or longer) rather than pure short passwords.
+    mid = float(profile_summary.get("mid_length_share", 0.5))
+    long_ = float(profile_summary.get("long_length_share", 0.1))
+    length_mult = min(_PROFILE_MULT_MAX, max(_PROFILE_MULT_MIN, 0.6 + mid + 0.5 * long_))
+
+    # dual_class_boost: strengthen digit/title/case families when
+    # lowercase+digits or lowercase+uppercase+digits dominate combinations.
+    ld = float(profile_summary.get("lower_digit_combo_share", 0.35))
+    lud = float(profile_summary.get("lower_upper_digit_combo_share", 0.10))
+    pure_l = float(profile_summary.get("pure_lower_share", 0.20))
+    dual_digit_mult = min(_PROFILE_MULT_MAX, max(0.7, 0.5 + ld * 1.5 + lud))
+    dual_case_mult = min(_PROFILE_MULT_MAX, max(0.7, 0.5 + pure_l + lud * 1.2))
 
     adjusted = dict(budgets_src)
     for k in _DIGIT_SENSITIVE_FAMILIES:
         if k in adjusted:
-            adjusted[k] = adjusted[k] * digit_mult
+            adjusted[k] = adjusted[k] * digit_mult * dual_digit_mult
     for k in _SYMBOL_SENSITIVE_FAMILIES:
         if k in adjusted:
             adjusted[k] = adjusted[k] * symbol_mult
     for k in _UPPER_SENSITIVE_FAMILIES:
         if k in adjusted:
-            adjusted[k] = adjusted[k] * upper_mult
+            adjusted[k] = adjusted[k] * upper_mult * dual_case_mult
+    for k in _LENGTH_SENSITIVE_FAMILIES:
+        if k in adjusted:
+            adjusted[k] = adjusted[k] * length_mult
 
     total = sum(adjusted.values()) or 1.0
     return {k: v / total for k, v in adjusted.items()}
@@ -274,6 +332,30 @@ def _looks_like_year(s: str) -> bool:
         v = int(s)
         return 1950 <= v <= 2035
     return False
+
+
+def _looks_like_date(s: str) -> bool:
+    """True for common 6/8-digit date-shaped tails (ddmmyy, yyyymmdd, etc.)."""
+    if not s or not s.isascii() or not s.isdigit():
+        return False
+    n = len(s)
+    if n == 6:
+        # ddmmyy / mmddyy / yymmdd — accept any all-digit 6-char as date-ish
+        return True
+    if n == 8:
+        # yyyymmdd or ddmmyyyy
+        y1, y2 = int(s[:4]), int(s[4:])
+        if 1950 <= y1 <= 2035:
+            return True
+        if 1950 <= y2 <= 2035:
+            return True
+        return True
+    return False
+
+
+def _rule_append_token(token: str) -> str:
+    """Build a Hashcat multi-char append rule: $a$b$c for token 'abc'."""
+    return "".join(f"${c}" for c in token)
 
 
 def stream_top_n(path: Path, top_n: int, encoding: str = "latin-1") -> List[str]:
@@ -752,6 +834,98 @@ def generate_seeds(
                 if n >= budgets["cap_special_digit"]:
                     break
             if n >= budgets["cap_special_digit"]:
+                break
+
+        # --- case_only: pure case transforms (high early coverage) ----------
+        n = 0
+        for r in (":", "l", "u", "c", "C", "t", "r"):
+            add(r)
+            n += 1
+        for i in range(10):
+            add(f"T{i}")
+            n += 1
+            if n >= budgets.get("case_only", 40):
+                break
+
+        # --- title_digit / title_year: capitalize + digits / years ----------
+        n = 0
+        for d in "0123456789":
+            add(f"c ${d}")
+            n += 1
+            if n >= budgets.get("title_digit", 40):
+                break
+        for a in "0123456789":
+            for b in "0123456789":
+                add(f"c ${a}${b}")
+                n += 1
+                if n >= budgets.get("title_digit", 40):
+                    break
+            if n >= budgets.get("title_digit", 40):
+                break
+
+        n = 0
+        for s, _ in year_items[: budgets.get("title_year", 40)]:
+            add(f"c {_rule_append(s)}")
+            add(f"C {_rule_append(s)}")
+            n += 2
+            if n >= budgets.get("title_year", 40):
+                break
+
+        # --- length_adjust: truncate / delete toward mid-length peak --------
+        n = 0
+        for r in ("]", "[", "D0", "D1", "D2", "D3", "y4", "Y4"):
+            add(r)
+            n += 1
+            if n >= budgets.get("length_adjust", 20):
+                break
+
+        # --- insert_digit / overwrite digit at front positions -------------
+        n = 0
+        for pos in "01234":
+            for d in "0123456789":
+                add(f"i{pos}{d}")
+                n += 1
+                if n >= budgets.get("insert_digit", 50):
+                    break
+            if n >= budgets.get("insert_digit", 50):
+                break
+        for pos in "0123":
+            for d in "0123456789":
+                add(f"o{pos}{d}")
+                n += 1
+                if n >= budgets.get("insert_digit", 50):
+                    break
+            if n >= budgets.get("insert_digit", 50):
+                break
+
+        # --- date_pattern: 6/8-digit date-shaped suffixes from the sample --
+        n = 0
+        date_suf = [(s, c) for s, c in dig_suf if _looks_like_date(s)]
+        date_suf.sort(key=lambda x: -x[1])
+        for s, _ in date_suf[: budgets.get("date_pattern", 40)]:
+            add(_rule_append(s))
+            n += 1
+            if n >= budgets.get("date_pattern", 40):
+                break
+        # Structural year+month scaffolds (yyyy01 … yyyy12) when sample is thin
+        if n < budgets.get("date_pattern", 40) // 2:
+            for y in range(2015, 2027):
+                ys = str(y)
+                for mm in ("01", "06", "12"):
+                    add(f"${ys[0]}${ys[1]}${ys[2]}${ys[3]}${mm[0]}${mm[1]}")
+                    n += 1
+                    if n >= budgets.get("date_pattern", 40):
+                        break
+                if n >= budgets.get("date_pattern", 40):
+                    break
+
+        # --- season_month: jan..dec / seasons as multi-char appends --------
+        n = 0
+        for tok in SEASON_MONTH_TOKENS:
+            add(_rule_append_token(tok))
+            add(f"c {_rule_append_token(tok)}")
+            n += 2
+            if n >= budgets.get("season_month", 20):
                 break
 
         if len(seeds) < max_seeds:

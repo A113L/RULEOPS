@@ -71,6 +71,9 @@ def main():
     topn.add_argument('--topn-no-adaptive-budget', action='store_false', dest='topn_adaptive', default=True,
                       help='Disable data-driven family-budget reallocation for Top-N and use only '
                            'the static priors (adaptive budgeting is on by default).')
+    topn.add_argument('--topn-profile', default=None, metavar='PATH',
+                      help='Path to a ruleops.pcfg-profile.v1 JSON report (e.g. reports/pcfg.hashmob.medium.json). '
+                           'Nudges Top-N family budgets using aggregate composition stats.')
     pt = ap.add_argument_group('STAGE 0 — Token-Strip')
     pt.add_argument('-T', '--token-strip', action='store_true')
     pt.add_argument('--token-strip-min-stem', type=int, default=4)
@@ -180,8 +183,10 @@ def main():
     if args.seed_rules: log_info(f"  seeds     : {bold(args.seed_rules)}")
     if getattr(args, "topn_seeds", False):
         mode = "complementary" if getattr(args, "topn_complementary", False) else "standard"
+        prof = getattr(args, "topn_profile", None)
+        prof_note = f"  profile={prof}" if prof else ""
         log_info(f"  topn      : {green('enabled')} [{mode}] — in-memory injection "
-                 f"(top_n={getattr(args,'topn_n',400000):,}, max_seeds={getattr(args,'topn_max_seeds',15000):,})")
+                 f"(top_n={getattr(args,'topn_n',400000):,}, max_seeds={getattr(args,'topn_max_seeds',15000):,}){prof_note}")
     if args.seed is not None:
         log_info(f"  rng seed  : {bold(str(args.seed))}  {dim('(deterministic — reruns on the same data will match)')}")
     print()
@@ -288,6 +293,7 @@ def main():
         topn_max_seeds=args.topn_max_seeds,
         topn_complementary=args.topn_complementary,
         topn_adaptive=args.topn_adaptive,
+        topn_profile=getattr(args, "topn_profile", None),
     )
     depth_overrides = {f'depth{i}_override': getattr(args, f'depth{i}_chains') for i in range(2,11)}
     # Greedy CELF selection (below) still needs one live GPU from this same

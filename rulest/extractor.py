@@ -34,7 +34,7 @@ class GPUExtractor:
                  token_strip_workers=0, token_strip_chunk_size=0,
                  token_strip_bloom_mb=0, rng_seed=None,
                  topn_seeds=False, topn_n=400000, topn_max_seeds=15000, topn_complementary=False,
-                 topn_adaptive=True):
+                 topn_adaptive=True, topn_profile=None):
         self.base_count = base_count
         self.target_count = target_count
         self.user_max_depth = max_depth
@@ -65,6 +65,7 @@ class GPUExtractor:
         self.topn_max_seeds = int(topn_max_seeds) if topn_max_seeds is not None else 15000
         self.topn_complementary = bool(topn_complementary)
         self.topn_adaptive = bool(topn_adaptive)
+        self.topn_profile = topn_profile
         self.params = calculate_dynamic_parameters(base_count, target_count, None, target_hours,
                                                    bloom_mb_override=bloom_mb, bloom_no_shard=bloom_no_shard)
         self.params['MAX_CHAIN_DEPTH'] = self.user_max_depth
@@ -264,6 +265,7 @@ class GPUExtractor:
                     max_seeds=self.topn_max_seeds,
                     complementary=self.topn_complementary,
                     adaptive=self.topn_adaptive,
+                    pcfg_profile=self.topn_profile,
                 )
 
                 known = set(all_seeds)

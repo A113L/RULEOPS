@@ -2810,6 +2810,26 @@ def build_command(options: dict, run_dir: Path):
     # person explicitly unchecked it.
     if options.get("topn_seeds") and options.get("topn_adaptive") is False:
         cmd.append("--topn-no-adaptive-budget")
+    # Optional PCFG aggregate profile path for Top-N budget nudging.
+    topn_profile_path = options.get("topn_profile_path") or options.get("topn_profile")
+    if options.get("topn_seeds") and topn_profile_path:
+        profile_candidate = Path(str(topn_profile_path))
+        if not profile_candidate.is_file():
+            # Allow project-relative paths (e.g. reports/pcfg.hashmob.medium.json)
+            alt = ROOT / str(topn_profile_path)
+            if alt.is_file():
+                profile_candidate = alt
+        if not profile_candidate.is_file():
+            raise ValueError(f"PCFG profile not found: {topn_profile_path}")
+        cmd.extend(["--topn-profile", str(profile_candidate)])
+    # Inline profile JSON written by the UI into the run directory.
+    topn_profile_inline = options.get("topn_profile_json")
+    if options.get("topn_seeds") and topn_profile_inline and not topn_profile_path:
+        if not isinstance(topn_profile_inline, dict):
+            raise ValueError("topn_profile_json must be a JSON object.")
+        profile_out = run_dir / "topn_pcfg_profile.json"
+        profile_out.write_text(json.dumps(topn_profile_inline), encoding="utf-8")
+        cmd.extend(["--topn-profile", str(profile_out)])
     for key, flag in VALUE_OPTIONS.items():
         value = options.get(key)
         if value is None or value == "":
@@ -3705,6 +3725,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, **storage_intelligence_summary()})
             except (OSError, ValueError, RuntimeError) as exc:
                 self.send_json({"error": f"Storage Intelligence unavailable: {exc}"}, 500)
+        elif path == "/api/tools/pcfg-profiles":
+            self.handle_list_pcfg_profiles()
+        elif path == "/api/tools/pcfg-profiles/load":
+            self.handle_load_pcfg_profile()
         elif path == "/api/status":
             qs = urllib.parse.parse_qs(parsed.query)
             try:
@@ -4645,6 +4669,63 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
         self.send_json({"ok": True, "action": "cancel"})
+
+    def handle_list_pcfg_profiles(self):
+        """List saved ruleops.pcfg-profile.v1 JSON reports under reports/."""
+        reports_dir = ROOT / "reports"
+        items = []
+        if reports_dir.is_dir():
+            for path in sorted(reports_dir.glob("*.json")):
+                try:
+                    with path.open("r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    schema = str(data.get("schema") or "")
+                    if "pcfg-profile" not in schema:
+                        continue
+                    input_meta = data.get("input") or {}
+                    length = data.get("length") or {}
+                    items.append({
+                        "id": path.name,
+                        "name": path.name,
+                        "path": str(path.relative_to(ROOT)).replace("\\", "/"),
+                        "file_name": input_meta.get("file_name") or path.stem,
+                        "profiled_entries": int(
+                            input_meta.get("profiled_entries")
+                            or input_meta.get("weighted_observations")
+                            or 0
+                        ),
+                        "weighted_mean_length": length.get("weighted_mean"),
+                    })
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+        self.send_json({"ok": True, "profiles": items})
+
+    def handle_load_pcfg_profile(self):
+        """Load one saved reports/*.json profile by id (filename)."""
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        profile_id = (qs.get("id") or [""])[0].strip()
+        if not profile_id or "/" in profile_id or "\\" in profile_id or ".." in profile_id:
+            self.send_json({"error": "Invalid profile id."}, 400)
+            return
+        path = ROOT / "reports" / profile_id
+        if not path.is_file() or path.suffix.lower() != ".json":
+            self.send_json({"error": "Profile not found."}, 404)
+            return
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if "pcfg-profile" not in str(data.get("schema") or ""):
+                self.send_json({"error": "Not a pcfg-profile report."}, 400)
+                return
+        except (OSError, json.JSONDecodeError) as exc:
+            self.send_json({"error": f"Unable to read profile: {exc}"}, 500)
+            return
+        self.send_json({
+            "ok": True,
+            "id": profile_id,
+            "path": str(path.relative_to(ROOT)).replace("\\", "/"),
+            "profile": data,
+        })
 
     def handle_topn_seeds(self):
         """Lightweight Top-N seed generator for Stage S (--seed-rules)."""

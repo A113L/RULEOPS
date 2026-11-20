@@ -17,7 +17,7 @@ python run_pcfg_profile.py TARGET.txt --output reports/target-profile.json
 Compare the current input with a previously generated aggregate profile:
 
 ```bash
-python run_pcfg_profile.py medium.txt \
+python run_pcfg_profile.py MEDIUM.txt \
   --compare reports/small-profile.json \
   --output reports/medium-profile.json
 ```

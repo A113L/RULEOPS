@@ -2,10 +2,13 @@
 
 ## 2026-11-20
 
-HEAD
-- Follow-up: removed dictionary deduplication from `load_wordlist()` as well. Every valid input entry is now retained in its original order, including duplicates. The optional Stage 0 membership hash index remains a separate lookup accelerator and does not alter the loaded wordlist.
+### Expanded PCFG-Lite pattern families
 
-- Removed the redundant target-wordlist deduplication pass from the initial CELF phase. The standard `load_wordlist()` path already normalizes and deduplicates dictionary entries during loading, so sorting and compacting the same targets again added startup time without providing value for the normal pipeline.
+- Extended the Top-N seed-rule catalogue with dedicated families for case-only transformations, title-style variants with numeric or year suffixes, and length-adjustment operations.
+- Added separate families for digit insertion/overwrite variants, date-shaped numeric patterns, and month/season token suffixes.
+- Assigned each family its own standard and complementary budget share so the two generation modes can retain distinct pattern emphasis.
+- Included the new families in aggregate-profile prior calibration where applicable: digit prevalence informs digit/date-related families, uppercase and class-combination statistics inform case/title families, and length-bucket shares inform length adjustment. The adjusted family weights are normalized to preserve the overall budget.
+
 
 ### Profile-informed Top-N / PCFG-Lite budget priors
 
@@ -41,7 +44,6 @@ HEAD
 - Follow-up: removed dictionary deduplication from `load_wordlist()` as well. Every valid input entry is now retained in its original order, including duplicates. The optional Stage 0 membership hash index remains a separate lookup accelerator and does not alter the loaded wordlist.
 
 - Removed the redundant target-wordlist deduplication pass from the initial CELF phase. Most source dictionaries are already deduplicated upstream, so sorting and compacting them again added startup time without providing value. A later loader change also stopped filtering repeated entries, preserving the source wordlist exactly.
-
 
 ### Top-N / PCFG-Lite seed generation
 

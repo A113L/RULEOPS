@@ -459,17 +459,41 @@ class GPUExtractor:
                 if _kb.poll():
                     log_warn("[SEED] Early exit during seed-family generation — skipping seed GPU scan")
                 elif ts_sbd:
-                    n_injected = 0
-                    n_ts_total = 0
+                    # ts_sbd holds Stage 0 chains and in-run Top-N chains; split
+                    # the log so Top-N is not mislabelled as STAGE 0 only.
+                    n_s0_new = 0
+                    n_topn_new = 0
+                    n_s0_total = 0
+                    n_topn_total = 0
                     for depth, chains in ts_sbd.items():
-                        n_ts_total += len(chains)
-                        before = len(sbd.setdefault(depth, set()))
-                        sbd[depth].update(chains)
-                        n_injected += len(sbd[depth]) - before
-                    n_dupes = n_ts_total - n_injected
-                    dupe_str = f"  ({n_dupes:,} already in builtin families)" if n_dupes else ""
-                    if n_injected:
-                        log_info(f"[SEED]    STAGE 0 injected {bold(cyan(str(n_injected)))} chain(s) into STAGE S sbd{dupe_str}")
+                        bucket = sbd.setdefault(depth, set())
+                        for chain in chains:
+                            is_topn = chain in topn_injected_set
+                            if is_topn:
+                                n_topn_total += 1
+                            else:
+                                n_s0_total += 1
+                            before = len(bucket)
+                            bucket.add(chain)
+                            if len(bucket) > before:
+                                if is_topn:
+                                    n_topn_new += 1
+                                else:
+                                    n_s0_new += 1
+                    n_s0_dupes = n_s0_total - n_s0_new
+                    n_topn_dupes = n_topn_total - n_topn_new
+                    if n_s0_new or n_s0_total:
+                        dupe_s0 = f"  ({n_s0_dupes:,} already in builtin families)" if n_s0_dupes else ""
+                        log_info(
+                            f"[SEED]    STAGE 0 injected {bold(cyan(str(n_s0_new)))} chain(s) "
+                            f"into STAGE S sbd{dupe_s0}"
+                        )
+                    if n_topn_new or n_topn_total:
+                        dupe_tn = f"  ({n_topn_dupes:,} already in builtin/S0)" if n_topn_dupes else ""
+                        log_info(
+                            f"[SEED]    Top-N injected {bold(cyan(str(n_topn_new)))} chain(s) "
+                            f"into STAGE S sbd{dupe_tn}"
+                        )
 
                 # Custom/file-based seed chains — e.g. a Top-N seed file generated
                 # ahead of time via the Web UI/API and registered as --seed-rules —

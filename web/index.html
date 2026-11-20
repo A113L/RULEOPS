@@ -153,13 +153,13 @@
                 <label class="field">
                   <span>Inject cap (chains)</span>
                   <div class="input-suffix"><input type="number" min="0" step="5000" value="100000" id="topn_inject_cap"><b>chains</b></div>
-                  <small>Max Top-N chain seeds injected into Stage S / Stage 2 after quality sort. Atomic seeds always kept. 0 = no cap. Default 100 000.</small>
+                  <small>Max Top-N chain seeds into Stage S / Stage 2 after quality sort (atomic always kept). Prefer <b>60k–100k</b>; large floods dilute Seed Pass. 0 = no cap.</small>
                 </label>
               </div>
               <div class="optional-copy" style="margin-top:0.8rem">
                 <div>
                   <b>PCFG corpus profile <span>OPTIONAL</span></b>
-                  <small>Attach a report from <code>run_pcfg_profile.py</code> (aggregate-only: length/character-class stats, no passwords) to nudge family budgets (digits/symbols/case/length + dual-class boosts) toward this corpus. Choose a saved profile from <code>reports/</code> or upload your own JSON.</small>
+                  <small>Aggregate report from <code>run_pcfg_profile.py</code> (length / class stats only — no passwords). Gently nudges Top-N family budgets. On digit-heavy corpora the gain is small at low rule budgets and clearer at larger ones (e.g. ~150k rules). Saved profiles: <code>reports/</code> or upload JSON.</small>
                 </div>
                 <label class="secondary-upload" for="topn-pcfg-profile-file">＋ Add profile JSON<input id="topn-pcfg-profile-file" type="file" accept=".json,application/json"></label>
               </div>

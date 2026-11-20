@@ -158,27 +158,33 @@ SEASON_MONTH_TOKENS = (
 # the middle of the plausible range for general-purpose leaked-password
 # corpora; a supplied profile's measured shares are compared against them,
 # not treated as ground truth on their own.
-_PROFILE_BASELINE_SHARE = {"digits": 0.55, "symbols": 0.20, "uppercase": 0.30}
-# Multipliers are clamped so one profile can't zero out or blow up a family
-# budget outright -- it nudges the static priors, it doesn't replace them.
-_PROFILE_MULT_MIN = 0.5
-_PROFILE_MULT_MAX = 2.0
-# suffix_special/prefix_special are the direct special-char-affix families;
-# the rest below also assume a literal "$x" symbol token somewhere in the rule.
+# Baselines match typical leaked-password composition more closely than the
+# old (0.55 / 0.20 / 0.30) priors. Hashmob-like corpora sit near digits~0.75,
+# symbols~0.03, uppercase~0.15 -- using inflated symbol/upper baselines made
+# every real profile smash special/case families for no gain.
+_PROFILE_BASELINE_SHARE = {"digits": 0.65, "symbols": 0.05, "uppercase": 0.18}
+# Very tight clamps: profile is a soft prior nudge only.
+_PROFILE_MULT_MIN = 0.90
+_PROFILE_MULT_MAX = 1.15
+# Productive digit affixes — never cut on digit-heavy corpora (Stage 0 does
+# not replace Top-N coverage of long/rare digit tails). Mild boost only.
+_DIGIT_AFFIX_FAMILIES = ("suffix_digit", "prefix_digit")
+# Structured digit patterns (NOT title_* — those have their own group to
+# avoid double application of multipliers).
+_DIGIT_STRUCTURE_FAMILIES = ("insert_digit", "date_pattern")
+# Title families: case + digit/year. Applied exactly once (was double-hit
+# when title_digit sat in both structure and upper groups).
+_TITLE_FAMILIES = ("title_digit", "title_year")
 _SYMBOL_SENSITIVE_FAMILIES = (
     "suffix_special", "prefix_special", "depth2_digit_special",
     "cap_special_digit", "transform_year_special",
 )
-_DIGIT_SENSITIVE_FAMILIES = (
-    "suffix_digit", "prefix_digit", "insert_digit", "date_pattern",
-    "title_digit",
-)
-# Case / title families scale with uppercase presence in the corpus.
 _UPPER_SENSITIVE_FAMILIES = (
-    "depth2_transform", "case_only", "title_digit", "title_year",
+    "depth2_transform", "case_only",
 )
-# Length-adjust scales up when the corpus peaks outside short lengths.
 _LENGTH_SENSITIVE_FAMILIES = ("length_adjust",)
+# Floor before renormalize — keep diversity without starving productive families.
+_PROFILE_FAMILY_FLOOR = 0.85
 
 
 def load_pcfg_profile(source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
@@ -266,49 +272,66 @@ def _profile_share_multiplier(observed_share: float, baseline_share: float) -> f
 
 
 def profile_informed_priors(budgets_src: Dict[str, float], profile_summary: Dict[str, float]) -> Dict[str, float]:
-    """Return a copy of `budgets_src` with digit/symbol/uppercase/length and
-    dual-class-sensitive family shares nudged by the aggregate profile, then
-    renormalized back to sum to 1.0 so total budget semantics are unchanged.
+    """Gently nudge family priors from an aggregate PCFG profile.
+
+    Each family is multiplied by **at most one** class of factor (no stacking).
+    Digit-heavy corpora (hashmob-like) must NOT cut suffix/prefix digit budgets
+    — those families remain the most productive; quality sorting at inject time
+    already prefers structured chains when a hard inject-cap is hit.
     """
-    digit_mult = _profile_share_multiplier(
-        profile_summary.get("digit_share", _PROFILE_BASELINE_SHARE["digits"]),
-        _PROFILE_BASELINE_SHARE["digits"],
-    )
-    symbol_mult = _profile_share_multiplier(
-        profile_summary.get("symbol_share", _PROFILE_BASELINE_SHARE["symbols"]),
-        _PROFILE_BASELINE_SHARE["symbols"],
-    )
-    upper_mult = _profile_share_multiplier(
-        profile_summary.get("uppercase_share", _PROFILE_BASELINE_SHARE["uppercase"]),
-        _PROFILE_BASELINE_SHARE["uppercase"],
-    )
-    # Bias length_adjust toward corpora whose mass sits in the 8-11 peak
-    # (or longer) rather than pure short passwords.
+    digit_share = float(profile_summary.get("digit_share", _PROFILE_BASELINE_SHARE["digits"]))
+    symbol_share = float(profile_summary.get("symbol_share", _PROFILE_BASELINE_SHARE["symbols"]))
+    upper_share = float(profile_summary.get("uppercase_share", _PROFILE_BASELINE_SHARE["uppercase"]))
     mid = float(profile_summary.get("mid_length_share", 0.5))
     long_ = float(profile_summary.get("long_length_share", 0.1))
-    length_mult = min(_PROFILE_MULT_MAX, max(_PROFILE_MULT_MIN, 0.6 + mid + 0.5 * long_))
-
-    # dual_class_boost: strengthen digit/title/case families when
-    # lowercase+digits or lowercase+uppercase+digits dominate combinations.
     ld = float(profile_summary.get("lower_digit_combo_share", 0.35))
     lud = float(profile_summary.get("lower_upper_digit_combo_share", 0.10))
     pure_l = float(profile_summary.get("pure_lower_share", 0.20))
-    dual_digit_mult = min(_PROFILE_MULT_MAX, max(0.7, 0.5 + ld * 1.5 + lud))
-    dual_case_mult = min(_PROFILE_MULT_MAX, max(0.7, 0.5 + pure_l + lud * 1.2))
+
+    digit_mult = _profile_share_multiplier(digit_share, _PROFILE_BASELINE_SHARE["digits"])
+    symbol_mult = _profile_share_multiplier(symbol_share, _PROFILE_BASELINE_SHARE["symbols"])
+    upper_mult = _profile_share_multiplier(upper_share, _PROFILE_BASELINE_SHARE["uppercase"])
+    length_mult = min(_PROFILE_MULT_MAX, max(_PROFILE_MULT_MIN, 0.85 + 0.25 * mid + 0.2 * long_))
+
+    # Mild structure/title/case lifts — never invert digit affix budgets.
+    structure_boost = min(_PROFILE_MULT_MAX, max(1.0, 0.92 + 0.25 * ld + 0.15 * lud))
+    title_boost = min(
+        _PROFILE_MULT_MAX,
+        max(_PROFILE_MULT_MIN, 0.5 * upper_mult + 0.5 * structure_boost),
+    )
+    case_boost = min(
+        _PROFILE_MULT_MAX,
+        max(_PROFILE_MULT_MIN, 0.5 * upper_mult + 0.5 * (0.9 + 0.3 * pure_l + 0.3 * lud)),
+    )
+
+    # Digit affixes: only boost when under-represented; never cut when heavy.
+    affix_digit_mult = max(1.0, digit_mult) if digit_share >= _PROFILE_BASELINE_SHARE["digits"] else digit_mult
+    affix_digit_mult = min(_PROFILE_MULT_MAX, max(1.0, affix_digit_mult))
 
     adjusted = dict(budgets_src)
-    for k in _DIGIT_SENSITIVE_FAMILIES:
+    for k in _DIGIT_AFFIX_FAMILIES:
         if k in adjusted:
-            adjusted[k] = adjusted[k] * digit_mult * dual_digit_mult
+            adjusted[k] = adjusted[k] * affix_digit_mult
+    for k in _DIGIT_STRUCTURE_FAMILIES:
+        if k in adjusted:
+            adjusted[k] = adjusted[k] * structure_boost
+    for k in _TITLE_FAMILIES:
+        if k in adjusted:
+            adjusted[k] = adjusted[k] * title_boost  # once only
     for k in _SYMBOL_SENSITIVE_FAMILIES:
         if k in adjusted:
             adjusted[k] = adjusted[k] * symbol_mult
     for k in _UPPER_SENSITIVE_FAMILIES:
         if k in adjusted:
-            adjusted[k] = adjusted[k] * upper_mult * dual_case_mult
+            adjusted[k] = adjusted[k] * case_boost
     for k in _LENGTH_SENSITIVE_FAMILIES:
         if k in adjusted:
             adjusted[k] = adjusted[k] * length_mult
+
+    # Floor: no family drops below floor * prior (absolute mass, pre-renorm).
+    for k, prior in budgets_src.items():
+        if k in adjusted and prior > 0:
+            adjusted[k] = max(adjusted[k], prior * _PROFILE_FAMILY_FLOOR)
 
     total = sum(adjusted.values()) or 1.0
     return {k: v / total for k, v in adjusted.items()}
@@ -978,6 +1001,36 @@ def generate_seeds(
                     break
 
         if not unlimited and len(seeds) > max_seeds:
+            # Prefer structured/case/leet over pure digit-append chains when
+            # truncating — matches Stage S/S2 empirical hit density.
+            def _q(rule: str) -> tuple:
+                parts = rule.split()
+                depth = len(parts)
+                pure_digit = depth >= 1 and all(
+                    (p.startswith("$") or p.startswith("^"))
+                    and len(p) == 2 and p[1].isdigit()
+                    for p in parts
+                )
+                has_case = any(
+                    p in ("c", "u", "l", "C", "t", "r")
+                    or (len(p) == 2 and p[0] == "T" and p[1].isdigit())
+                    for p in parts
+                )
+                has_leet = any(len(p) >= 3 and p[0] == "s" for p in parts)
+                has_insert = any(len(p) >= 3 and p[0] in "io" for p in parts)
+                # Mild diversity tilt only — pure digit remains viable.
+                score = min(depth, 6)
+                if not pure_digit:
+                    score += 2
+                if has_case:
+                    score += 4
+                if has_leet:
+                    score += 3
+                if has_insert:
+                    score += 3
+                return (score, depth)
+
+            seeds.sort(key=_q, reverse=True)
             seeds = seeds[:max_seeds]
     except Exception:
         # Always stop the background heartbeat thread on failure too --

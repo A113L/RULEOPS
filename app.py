@@ -154,6 +154,7 @@ VALUE_OPTIONS = {
     "device": "--device", "max_depth": "--max-depth", "target_hours": "--target-hours",
     "max_chains": "--max-chains", "bloom_mb": "--bloom-mb",
     "topn_n": "--topn-n", "topn_max_seeds": "--topn-max-seeds",
+    "topn_inject_cap": "--topn-inject-cap",
     "token_strip_min_stem": "--token-strip-min-stem",
     "token_strip_max_prefix": "--token-strip-max-prefix",
     "token_strip_max_suffix": "--token-strip-max-suffix",

@@ -34,7 +34,7 @@ class GPUExtractor:
                  token_strip_workers=0, token_strip_chunk_size=0,
                  token_strip_bloom_mb=0, rng_seed=None,
                  topn_seeds=False, topn_n=400000, topn_max_seeds=15000, topn_complementary=False,
-                 topn_adaptive=True, topn_profile=None):
+                 topn_adaptive=True, topn_profile=None, topn_inject_cap=100000):
         self.base_count = base_count
         self.target_count = target_count
         self.user_max_depth = max_depth
@@ -66,6 +66,8 @@ class GPUExtractor:
         self.topn_complementary = bool(topn_complementary)
         self.topn_adaptive = bool(topn_adaptive)
         self.topn_profile = topn_profile
+        # 0 = no quality inject cap (inject every non-duplicate chain).
+        self.topn_inject_cap = int(topn_inject_cap) if topn_inject_cap is not None else 100000
         self.params = calculate_dynamic_parameters(base_count, target_count, None, target_hours,
                                                    bloom_mb_override=bloom_mb, bloom_no_shard=bloom_no_shard)
         self.params['MAX_CHAIN_DEPTH'] = self.user_max_depth
@@ -292,8 +294,68 @@ class GPUExtractor:
                     topn_new.append(rule)
                     known.add(rule)
 
+                # Quality-first ordering: pure $digit/$digit chains score low
+                # (Stage 0 already covers them); case/leet/insert/title score high.
+                # Empirically ~60–100k high-quality seeds beat 300k+ digit-heavy
+                # floods in Stage S / Stage 2 hit counts.
+                def _topn_quality(rule: str) -> tuple:
+                    parts = rule.split()
+                    depth = len(parts)
+                    pure_digit = depth >= 1 and all(
+                        (p.startswith("$") or p.startswith("^"))
+                        and len(p) == 2
+                        and p[1].isdigit()
+                        for p in parts
+                    )
+                    has_case = any(
+                        p in ("c", "u", "l", "C", "t", "r")
+                        or (len(p) == 2 and p[0] == "T" and p[1].isdigit())
+                        for p in parts
+                    )
+                    has_leet = any(len(p) >= 3 and p[0] == "s" for p in parts)
+                    has_insert = any(len(p) >= 3 and p[0] in "io" for p in parts)
+                    has_special = any(
+                        (p.startswith("$") or p.startswith("^"))
+                        and len(p) == 2
+                        and not p[1].isdigit()
+                        for p in parts
+                    )
+                    has_yearish = any(
+                        (p.startswith("$") or p.startswith("^"))
+                        and len(p) == 2
+                        and p[1].isdigit()
+                        for p in parts
+                    ) and depth >= 4
+                    # Mild diversity preference only — pure digit chains stay
+                    # competitive (high-yield on digit-heavy corpora). Avoid
+                    # stacking a hard penalty on top of profile budget cuts.
+                    score = 0
+                    if pure_digit:
+                        score += min(depth, 6)
+                    else:
+                        score += 2
+                    if has_case:
+                        score += 5
+                    if has_leet:
+                        score += 4
+                    if has_insert:
+                        score += 4
+                    if has_special:
+                        score += 2
+                    if has_yearish:
+                        score += 2
+                    if depth >= 2:
+                        score += 1
+                    return (score, depth, rule)
+
+                topn_new.sort(key=_topn_quality, reverse=True)
+
+                # Soft cap on chain injection (--topn-inject-cap). Atomic rules
+                # are cheap and always kept. 0 = inject every non-duplicate chain.
+                inject_cap = int(getattr(self, "topn_inject_cap", 100000) or 0)
                 n_single = 0
                 n_chain = 0
+                n_chain_capped = 0
                 for rule in topn_new:
                     depth = len(rule.split())
                     if depth <= 1:
@@ -302,16 +364,24 @@ class GPUExtractor:
                         n_single += 1
                     else:
                         if depth <= self.user_max_depth or depth <= 9:
+                            if inject_cap > 0 and n_chain >= inject_cap:
+                                n_chain_capped += 1
+                                continue
                             ts_sbd[depth].add(rule)
                             all_seeds.append(rule)
                             topn_injected_set.add(rule)
                             n_chain += 1
 
+                cap_note = (
+                    f" · quality-capped {n_chain_capped:,} low-priority chains "
+                    f"(inject_cap={inject_cap:,})"
+                    if n_chain_capped else ""
+                )
                 log_info(
-                    f"[TOPN]   Kept {bold(cyan(str(len(topn_new))))} new seeds "
+                    f"[TOPN]   Kept {bold(cyan(str(n_single + n_chain)))} new seeds "
                     f"({n_single} atomic, {n_chain} chains) · "
                     f"skipped {n_dup_s0} Stage-0 dupes, {n_dup_other} other dupes "
-                    f"from {len(topn_raw):,} generated [{mode}]"
+                    f"from {len(topn_raw):,} generated [{mode}]{cap_note}"
                 )
             except Exception as exc:
                 log_warn(f"[TOPN]   In-memory generation failed: {exc}")

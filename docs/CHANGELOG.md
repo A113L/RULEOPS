@@ -2,6 +2,22 @@
 
 ## 2026-11-20
 
+### Top-N budget scaling for unlimited runs
+
+- Removed the small fixed attempt-budget ceiling used by unlimited Top-N generation. The initial budget now starts higher and can grow according to the affix inventory observed during the scan, up to a bounded maximum.
+- Scaled internal candidate-pool limits with each family budget instead of relying on small fixed slices, preventing large inputs from being constrained by the previous hard-coded pool sizes.
+
+Commit: [ddfaf08](https://github.com/A113L/RULEOPS/commit/ddfaf08a80e024bcbc0fd30167586d5642cbc85a)
+
+### Expanded PCFG-Lite pattern families
+
+- Added dedicated families for case-only transformations, title-style variants with digit or year suffixes, length adjustment, digit insertion/overwrite, date-shaped patterns, and month/season tokens.
+- Assigned the new families separate standard and complementary budget shares, then rebalanced those shares to retain capacity for the established affix and combination families.
+- Extended aggregate-profile calibration to use class-combination and length-bucket statistics for relevant case, title, digit, date, and length-adjustment families.
+- Added saved-profile discovery and loading in the Top-N UI, while retaining JSON upload; the selected profile can be passed through the CLI/API path to the generator.
+
+Commits: [455629f](https://github.com/A113L/RULEOPS/commit/455629f5a4402f1586b3e65b1c70efc6d5c5a9c5), [fe94a70](https://github.com/A113L/RULEOPS/commit/fe94a70cc055306b772b8534c1b5d7d71d88d732)
+
 ### Profile-informed Top-N / PCFG-Lite budget priors
 
 - Added `load_pcfg_profile()` and `summarize_pcfg_profile()` to `rulest.topn_seedgen` to read `ruleops.pcfg-profile.v1` reports and extract aggregate character-class shares for budget calibration. The attached profile is used only as aggregate metadata; it is not treated as a wordlist and contributes no raw passwords, affixes, or candidate values.
@@ -10,6 +26,8 @@
 - Added `--pcfg-profile PATH` to the CLI and an optional `pcfg_profile` JSON field to `/api/tools/topn-seeds`. The Top-N panel reads and parses the selected JSON in the browser, then sends the aggregate object to the endpoint without requiring a separate server-side upload. CLI and API results report the digit, symbol, and uppercase shares used for calibration.
 - The saved plain profile for `hashmob.medium.found` contains about 12.9 million entries, with digit presence at 77.2%, symbol presence at 2.6%, and uppercase presence at 14.6%. These corpus measurements move the relevant priors away from generic defaults while preserving the overall budget total.
 - Scope limitation: this change recalibrates existing rule-family priors; it does not expand the structures represented by PCFG-Lite. For example, the same Medium profile classifies about 14.1% of entries as digits-only, a structure not represented by the current prefix/suffix-oriented families and therefore outside this calibration step.
+
+Commit: [7a95559](https://github.com/A113L/RULEOPS/commit/7a95559fc4705f7662da6ff10498c78569987b83)
 
 ### PCFG frequency-weight diagnostics and safe large-count handling
 
@@ -34,8 +52,10 @@
 - Added CLI entry point `run_pcfg_profile.py`, report documentation, and focused tests.
 
 - Follow-up: removed dictionary deduplication from `load_wordlist()` as well. Every valid input entry is now retained in its original order, including duplicates. The optional Stage 0 membership hash index remains a separate lookup accelerator and does not alter the loaded wordlist.
+  Commit: [e2d80a3](https://github.com/A113L/RULEOPS/commit/e2d80a3b70d93a8ddf58de8f9af44739a7fe080b)
 
 - Removed the redundant target-wordlist deduplication pass from the initial CELF phase. Most source dictionaries are already deduplicated upstream, so sorting and compacting them again added startup time without providing value. A later loader change also stopped filtering repeated entries, preserving the source wordlist exactly.
+  Commit: [fd95de0](https://github.com/A113L/RULEOPS/commit/fd95de0fd81c5ab199c276d635b52bac44aacfdc)
 
 ### Top-N / PCFG-Lite seed generation
 
@@ -110,5 +130,4 @@ Commit: [eddc2f3](https://github.com/A113L/RULEOPS/commit/eddc2f37fc28c4c612de3e
 - Documented a command-line procedure for resetting the local admin password.
 - The procedure prompts for the new password without echoing it and enforces a minimum length of 12 characters.
 
-Commit: [3d4c360](https://github.com/A113L/RULEOPS/commit/3d4c3
-
+Commit: [3d4c360](https://github.com/A113L/RULEOPS/commit/3d4c360c7ab1523212767e723be1a457ca61ada9)

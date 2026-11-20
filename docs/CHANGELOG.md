@@ -2,14 +2,6 @@
 
 ## 2026-11-20
 
-### Expanded PCFG-Lite pattern families
-
-- Extended the Top-N seed-rule catalogue with dedicated families for case-only transformations, title-style variants with numeric or year suffixes, and length-adjustment operations.
-- Added separate families for digit insertion/overwrite variants, date-shaped numeric patterns, and month/season token suffixes.
-- Assigned each family its own standard and complementary budget share so the two generation modes can retain distinct pattern emphasis.
-- Included the new families in aggregate-profile prior calibration where applicable: digit prevalence informs digit/date-related families, uppercase and class-combination statistics inform case/title families, and length-bucket shares inform length adjustment. The adjusted family weights are normalized to preserve the overall budget.
-
-
 ### Profile-informed Top-N / PCFG-Lite budget priors
 
 - Added `load_pcfg_profile()` and `summarize_pcfg_profile()` to `rulest.topn_seedgen` to read `ruleops.pcfg-profile.v1` reports and extract aggregate character-class shares for budget calibration. The attached profile is used only as aggregate metadata; it is not treated as a wordlist and contributes no raw passwords, affixes, or candidate values.

@@ -78,49 +78,53 @@ _PRIMARY_BUDGET_FAMILIES = (
     "suffix_digit", "prefix_digit", "suffix_special", "prefix_special", "year",
 )
 
+# Core affix/combo families keep roughly their pre-expansion weight so the
+# Top-N set does not shrink when new low-cardinality families are added.
+# New families take a modest slice; generate_seeds also oversubscribes the
+# attempt budget slightly (see budget_base) so they do not displace core hits.
 FAMILY_BUDGET_STANDARD = {
-    "suffix_digit": 0.14,
-    "prefix_digit": 0.04,
-    "suffix_special": 0.04,
-    "prefix_special": 0.02,
-    "year": 0.08,
-    "leet_basic": 0.06,
-    "depth2_digit_special": 0.08,
-    "depth2_transform": 0.06,
-    "leet_year": 0.06,
-    "transform_year_special": 0.05,
-    "reverse_digit": 0.03,
-    "cap_special_digit": 0.03,
-    # High-ROI pcfg-lite pattern categories
-    "case_only": 0.06,
-    "title_digit": 0.05,
-    "title_year": 0.04,
-    "length_adjust": 0.04,
-    "insert_digit": 0.06,
-    "date_pattern": 0.04,
-    "season_month": 0.02,
+    "suffix_digit": 0.16,
+    "prefix_digit": 0.05,
+    "suffix_special": 0.06,
+    "prefix_special": 0.03,
+    "year": 0.09,
+    "leet_basic": 0.07,
+    "depth2_digit_special": 0.10,
+    "depth2_transform": 0.07,
+    "leet_year": 0.07,
+    "transform_year_special": 0.06,
+    "reverse_digit": 0.04,
+    "cap_special_digit": 0.04,
+    # High-ROI pcfg-lite expansions (modest shares — few unique rules each)
+    "case_only": 0.03,
+    "title_digit": 0.04,
+    "title_year": 0.03,
+    "length_adjust": 0.02,
+    "insert_digit": 0.04,
+    "date_pattern": 0.03,
+    "season_month": 0.01,
 }
 
 FAMILY_BUDGET_COMPLEMENTARY = {
-    "suffix_digit": 0.03,
+    "suffix_digit": 0.04,
     "prefix_digit": 0.02,
-    "suffix_special": 0.02,
+    "suffix_special": 0.03,
     "prefix_special": 0.02,
     "year": 0.05,
-    "leet_basic": 0.08,
-    "depth2_digit_special": 0.06,
-    "depth2_transform": 0.06,
-    "leet_year": 0.14,
-    "transform_year_special": 0.12,
-    "reverse_digit": 0.08,
+    "leet_basic": 0.09,
+    "depth2_digit_special": 0.07,
+    "depth2_transform": 0.07,
+    "leet_year": 0.15,
+    "transform_year_special": 0.13,
+    "reverse_digit": 0.09,
     "cap_special_digit": 0.08,
-    "case_only": 0.04,
-    "title_digit": 0.04,
-    "title_year": 0.04,
-    "length_adjust": 0.03,
-    "insert_digit": 0.04,
-    "date_pattern": 0.03,
-    "season_month": 0.02,
+    "case_only": 0.03,
+    "title_digit": 0.03,
+    "title_year": 0.03,
+    "length_adjust": 0.02,
+    "insert_digit": 0.03,
+    "date_pattern": 0.02,
+    "season_month": 0.01,
 }
 
 # Season / month tokens for the season_month family (appended as $c sequences).
@@ -630,12 +634,18 @@ def generate_seeds(
     if pcfg_profile is not None:
         profile_summary = summarize_pcfg_profile(load_pcfg_profile(pcfg_profile))
         budgets_src = profile_informed_priors(budgets_src, profile_summary)
-    # Scale family budgets; when unlimited, use a large nominal target so families expand
-    budget_base = 25_000 if unlimited else max_seeds
+    # Scale family budgets. Oversubscribe slightly vs max_seeds so low-cardinality
+    # expansion families (case_only, length_adjust, …) cannot shrink the core
+    # affix yield: each family still respects its own budget, and the final
+    # list is truncated to max_seeds after generation (insertion order keeps
+    # early high-value families).
+    budget_base = 25_000 if unlimited else max(max_seeds, int(max_seeds * 1.20))
     # A static baseline is always available immediately (used as-is for the
-    # seven synthetic combo families, and as the pre-adaptive fallback for
-    # the five primary ones until the affix scan below has real evidence).
-    budgets = {k: max(40, int(budget_base * v)) for k, v in budgets_src.items()}
+    # synthetic combo families, and as the pre-adaptive fallback for the
+    # five primary ones until the affix scan below has real evidence).
+    # Renormalize shares so hand-tuned tables need not sum to exactly 1.0.
+    share_total = sum(budgets_src.values()) or 1.0
+    budgets = {k: max(40, int(budget_base * (v / share_total))) for k, v in budgets_src.items()}
 
     # Unified progress: 0-30% affix scan, 30-100% family generation
     try:
@@ -734,6 +744,55 @@ def generate_seeds(
                 return True
             return False
 
+        # --- High-ROI expansions first (survive max_seeds truncation) --------
+        for r in (":", "l", "u", "c", "C", "t", "r"):
+            add(r)
+        for i in range(10):
+            add(f"T{i}")
+
+        n = 0
+        for d in "0123456789":
+            add(f"c ${d}")
+            n += 1
+        for a in "0123456789":
+            for b in "0123456789":
+                add(f"c ${a}${b}")
+                n += 1
+                if n >= budgets.get("title_digit", 40):
+                    break
+            if n >= budgets.get("title_digit", 40):
+                break
+
+        n = 0
+        for s, _ in year_items[: max(1, budgets.get("title_year", 40))]:
+            add(f"c {_rule_append(s)}")
+            add(f"C {_rule_append(s)}")
+            n += 2
+            if n >= budgets.get("title_year", 40):
+                break
+
+        for r in ("]", "[", "D0", "D1", "D2", "D3", "y4", "Y4"):
+            add(r)
+
+        n = 0
+        for pos in "01234":
+            for d in "0123456789":
+                add(f"i{pos}{d}")
+                n += 1
+                if n >= budgets.get("insert_digit", 50):
+                    break
+            if n >= budgets.get("insert_digit", 50):
+                break
+        for pos in "0123":
+            for d in "0123456789":
+                add(f"o{pos}{d}")
+                n += 1
+                if n >= budgets.get("insert_digit", 50):
+                    break
+            if n >= budgets.get("insert_digit", 50):
+                break
+
+        # --- Core affix families (restored weight) --------------------------
         for s in _budgeted_affixes(dig_suf, budgets["suffix_digit"]):
             add(_rule_append(s))
         for s in _budgeted_affixes(dig_pre, budgets["prefix_digit"]):
@@ -834,68 +893,6 @@ def generate_seeds(
                 if n >= budgets["cap_special_digit"]:
                     break
             if n >= budgets["cap_special_digit"]:
-                break
-
-        # --- case_only: pure case transforms (high early coverage) ----------
-        n = 0
-        for r in (":", "l", "u", "c", "C", "t", "r"):
-            add(r)
-            n += 1
-        for i in range(10):
-            add(f"T{i}")
-            n += 1
-            if n >= budgets.get("case_only", 40):
-                break
-
-        # --- title_digit / title_year: capitalize + digits / years ----------
-        n = 0
-        for d in "0123456789":
-            add(f"c ${d}")
-            n += 1
-            if n >= budgets.get("title_digit", 40):
-                break
-        for a in "0123456789":
-            for b in "0123456789":
-                add(f"c ${a}${b}")
-                n += 1
-                if n >= budgets.get("title_digit", 40):
-                    break
-            if n >= budgets.get("title_digit", 40):
-                break
-
-        n = 0
-        for s, _ in year_items[: budgets.get("title_year", 40)]:
-            add(f"c {_rule_append(s)}")
-            add(f"C {_rule_append(s)}")
-            n += 2
-            if n >= budgets.get("title_year", 40):
-                break
-
-        # --- length_adjust: truncate / delete toward mid-length peak --------
-        n = 0
-        for r in ("]", "[", "D0", "D1", "D2", "D3", "y4", "Y4"):
-            add(r)
-            n += 1
-            if n >= budgets.get("length_adjust", 20):
-                break
-
-        # --- insert_digit / overwrite digit at front positions -------------
-        n = 0
-        for pos in "01234":
-            for d in "0123456789":
-                add(f"i{pos}{d}")
-                n += 1
-                if n >= budgets.get("insert_digit", 50):
-                    break
-            if n >= budgets.get("insert_digit", 50):
-                break
-        for pos in "0123":
-            for d in "0123456789":
-                add(f"o{pos}{d}")
-                n += 1
-                if n >= budgets.get("insert_digit", 50):
-                    break
-            if n >= budgets.get("insert_digit", 50):
                 break
 
         # --- date_pattern: 6/8-digit date-shaped suffixes from the sample --

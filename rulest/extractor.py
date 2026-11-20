@@ -254,9 +254,10 @@ class GPUExtractor:
                 sample = target_words if self.topn_n <= 0 else target_words[: self.topn_n]
                 mode = "complementary" if self.topn_complementary else "standard"
                 budget_mode = "adaptive" if self.topn_adaptive else "static"
+                max_seeds_label = "unlimited" if self.topn_max_seeds <= 0 else f"{self.topn_max_seeds:,}"
                 log_section(f"TOP-N — In-memory seed generation (deduped, {mode})")
                 log_info(
-                    f"[TOPN]   Analysing {len(sample):,} target passwords → up to {self.topn_max_seeds:,} seeds ({budget_mode} budget)"
+                    f"[TOPN]   Analysing {len(sample):,} target passwords → up to {max_seeds_label} seeds ({budget_mode} budget)"
                 )
                 topn_raw = generate_seeds(
                     sample,

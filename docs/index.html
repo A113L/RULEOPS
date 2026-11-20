@@ -126,6 +126,12 @@
     .tool-tag { border: 1px solid var(--line); border-radius: 999px; color: #8798b1; font-size: .65rem; padding: 4px 9px; text-transform: uppercase; letter-spacing: .08em; }
     .tool-card h3 { margin: 0 0 8px; font-size: 1.1rem; letter-spacing: -.02em; }
     .tool-card p { margin: 0; color: var(--muted); font-size: .88rem; line-height: 1.7; }
+    .ranker-card { min-height: 290px; }
+    .ranker-subfeature { margin-top: 17px; padding-top: 16px; border-top: 1px solid var(--line); }
+    .ranker-subfeature-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .ranker-subfeature h4 { margin: 0; color: var(--text); font-size: .94rem; letter-spacing: -.01em; }
+    .ranker-subfeature p { font-size: .84rem; }
+    .ranker-subfeature code { display: inline-block; margin-top: 10px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: rgba(4,10,19,.42); color: var(--cyan); font: .72rem ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .pipeline-section { background: linear-gradient(180deg, transparent, rgba(20,31,49,.42), transparent); }
     .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
     .pipeline-card { position: relative; padding: 23px 22px; border: 1px solid var(--line); border-radius: 18px; background: rgba(14,23,38,.86); }
@@ -294,15 +300,15 @@
             <h3>RULEST</h3>
             <p>Generate candidate Hashcat rules from paired BASE and TARGET wordlists, with optional Stage 0 processing and genetic-algorithm refinement.</p>
           </article>
-          <article class="tool-card">
-            <div class="tool-top"><div class="tool-icon">↗</div><span class="tool-tag">Scoring</span></div>
+          <article class="tool-card ranker-card">
+            <div class="tool-top"><div class="tool-icon">↗</div><span class="tool-tag">Scoring &amp; selection</span></div>
             <h3>Rule Ranker</h3>
-            <p>Score candidate rules against a wordlist and a permitted cracked-password sample, with adaptive and legacy ranking workflows.</p>
-          </article>
-          <article class="tool-card">
-            <div class="tool-top"><div class="tool-icon">⌁</div><span class="tool-tag">Selection</span></div>
-            <h3>Ranker CELF Optimizer</h3>
-            <p>Apply greedy / CELF maximum-coverage selection to find a smaller rule subset under a chosen rule budget.</p>
+            <p>Score candidate rules against a wordlist and an authorized cracked-password sample, using adaptive multi-armed-bandit (MAB) or legacy exhaustive ranking.</p>
+            <div class="ranker-subfeature">
+              <div class="ranker-subfeature-head"><h4>Ranker CELF Optimizer</h4><span class="tool-tag">Post-processing</span></div>
+              <p>Continue from the ranking results with lazy-greedy CELF maximum-coverage selection. The GPU recompute approach evaluates candidates against the shrinking uncovered target set without building a large candidate-by-target coverage matrix. Set a candidate limit and a final rule budget to produce a compact, high-coverage ruleset.</p>
+              <code>python run_ranker.py postprocess --help</code>
+            </div>
           </article>
           <article class="tool-card">
             <div class="tool-top"><div class="tool-icon">▤</div><span class="tool-tag">Collections</span></div>

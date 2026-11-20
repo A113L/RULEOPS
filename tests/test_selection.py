@@ -276,29 +276,6 @@ def test_budgeted_run_uses_the_real_budget_as_total(monkeypatch):
     assert "approx" not in captured["desc"]
 
 
-def test_dedupe_targets_no_longer_spams_raw_hashmap_prints(capsys):
-    """The sort+compact dedupe pass used to print a brand new `[HASHMAP]
-    ...` line via bare print() at least once a second; it now reports
-    through the same single-line ActivityHeartbeat the rest of this stage
-    uses (see progress.py's `set_desc`), which writes `\\r`-overwritten
-    status to the stream it was given, not scrolling stdout lines captured
-    by capsys."""
-    from rulest.selection import _rulest_dedupe_targets_with_progress
-
-    words = [f"word{i % 37}" for i in range(500)]
-    result = _rulest_dedupe_targets_with_progress(list(words))
-
-    assert sorted(result) == sorted(set(words))
-    out = capsys.readouterr().out
-    assert "[HASHMAP]" not in out
-    assert "print" not in out  # sanity: nothing scrolling landed on stdout
-
-
-def test_dedupe_targets_handles_empty_input():
-    from rulest.selection import _rulest_dedupe_targets_with_progress
-    assert _rulest_dedupe_targets_with_progress([]) == []
-
-
 def test_greedy_selection_reads_celf_state_from_the_selected_single_gpu(monkeypatch):
     """The MultiGPUEngine itself has no CELF workspace fields; its primary
     ProcessEngineProxy does. Selection must use that same primary proxy for
@@ -736,10 +713,9 @@ def test_gpu_scorer_keeps_compact_candidate_index_api_after_archived_celf_restor
     scorer.close()
 
 
-def test_selection_skips_gpu_setup_when_quit_arrives_during_target_prep(monkeypatch):
+def test_selection_skips_gpu_setup_when_quit_arrives_before_target_setup(monkeypatch):
     import rulest.selection as selection
 
-    monkeypatch.setattr(selection, "_rulest_dedupe_targets_with_progress", lambda words: ["target"])
     poll_results = iter((False, True))
     monkeypatch.setattr(selection._kb, "poll", lambda: next(poll_results, True))
 

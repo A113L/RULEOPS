@@ -1,8 +1,8 @@
 # Changelog
 
-Notable project changes, grouped by release date. Related implementation and follow-up commits are consolidated into a single entry.
-
 ## 2026-11-20
+
+- Removed the redundant target-wordlist deduplication pass from the initial CELF phase. The standard `load_wordlist()` path already normalizes and deduplicates dictionary entries during loading, so sorting and compacting the same targets again added startup time without providing value for the normal pipeline.
 
 ### Top-N / PCFG-Lite seed generation
 
@@ -77,4 +77,5 @@ Commit: [eddc2f3](https://github.com/A113L/RULEOPS/commit/eddc2f37fc28c4c612de3e
 - Documented a command-line procedure for resetting the local admin password.
 - The procedure prompts for the new password without echoing it and enforces a minimum length of 12 characters.
 
-Commit: [3d4c360](https://github.com/A113L/RULEOPS/commit/3d4c360c7ab1523212767e723be1a457ca61ada9)
+Commit: [3d4c360](https://github.com/A113L/RULEOPS/commit/3d4c3
+

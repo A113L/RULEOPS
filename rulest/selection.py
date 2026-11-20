@@ -36,65 +36,6 @@ from .common import (
     log_warn,
     _kb,
 )
-# RULEST_TARGET_DEDUPE_INPLACE_SORT_V9
-def _rulest_dedupe_targets_with_progress(target_words):
-    """Memory-bounded exact dedupe by in-place sort + compaction.
-
-    This deliberately avoids a Python set/dict: with millions of mostly-unique
-    target strings, a set plus an output list adds large hash-table/pointer
-    overhead while the original list is still live. Target ordering is not
-    semantically meaningful to CELF; target IDs are assigned after sorting.
-
-    If `target_words` is already a list, it is sorted and compacted in place.
-    This preserves the list object and string objects and uses only sort's
-    temporary pointer array (rather than another O(n) set plus list).
-
-    Progress is reported through the same single-line ActivityHeartbeat used
-    for "[CELF] Building heap" and "[CELF GPU] Building target hash map" right
-    before and after this runs, instead of this function's own unstyled,
-    unthrottled `[HASHMAP] ...` print() -- which used to emit a brand new
-    scrolling line at least once a second and looked like a different tool
-    entirely in the middle of the selection stage's output.
-    """
-    import time as _dedupe_time
-    if not isinstance(target_words, list):
-        target_words = list(target_words)
-    total = len(target_words)
-    started = _dedupe_time.monotonic()
-    with ActivityHeartbeat(green(f"[CELF] Target dedupe ({total:,} strings)")) as heartbeat:
-        target_words.sort()
-        sorted_at = _dedupe_time.monotonic()
-        if total == 0:
-            return target_words
-
-        write = 1
-        for read in range(1, total):
-            if read % 4096 == 0 and _kb.poll():
-                # A partial target map is never used for scoring. The caller
-                # notices q and skips CELF instead of reporting false coverage.
-                break
-            value = target_words[read]
-            if value != target_words[write - 1]:
-                if write != read:
-                    target_words[write] = value
-                write += 1
-            now = _dedupe_time.monotonic()
-            # Last row always re-renders (force=True) so the heartbeat's own
-            # "done" line, printed right after this block exits, reflects the
-            # final unique count rather than a stale mid-sweep one.
-            heartbeat.set_desc(
-                green(
-                    f"[CELF] Target dedupe {read + 1:,}/{total:,} "
-                    f"({100.0*(read+1)/max(total,1):.1f}%, unique={write:,}, "
-                    f"{(read+1)/max(now-sorted_at,1e-9):,.0f} rows/s)"
-                ),
-                force=(read + 1 == total),
-            )
-        del target_words[write:]
-    return target_words
-
-
-
 # CELF_ADAPTIVE_BATCH_PATCH_V4
 def _celf_auto_rescore_batch(requested, target_count, gpu_engine=None):
     """Conservative rescore batch: VRAM is not the only cost driver.
@@ -1298,7 +1239,9 @@ def select_rules_by_marginal_coverage(
     if _kb.poll():
         log_warn("[CELF] Early exit before target preparation — skipping GPU selection")
         return [], np.zeros(0, dtype=bool)
-    unique_targets = _rulest_dedupe_targets_with_progress(target_words)
+    # load_wordlist() normalizes and deduplicates targets before CELF starts.
+    # Repeating that work here only adds an O(n log n) sort to the hot path.
+    unique_targets = target_words
     target_count = len(unique_targets)
     empty_mask = np.zeros(target_count, dtype=bool)
     if _kb.poll():

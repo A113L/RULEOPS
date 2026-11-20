@@ -323,7 +323,7 @@
           <article class="tool-card">
             <div class="tool-top"><div class="tool-icon">≋</div><span class="tool-tag">Minimization</span></div>
             <h3>Rule Minimizer</h3>
-            <p>Identify behaviorally equivalent rules over a probe-word set. Available inside RuleEST and as a standalone command-line tool.</p>
+            <p>Identify behaviorally equivalent rules over a probe-word set. Available inside Rulest and as a standalone command-line tool.</p>
           </article>
           <article class="tool-card">
             <div class="tool-top"><div class="tool-icon">＠</div><span class="tool-tag">Browser utility</span></div>
@@ -360,7 +360,7 @@
         </div>
         <div class="memory-list">
           <article class="memory-item"><div class="memory-num">01</div><div><h3>Shared wordlist memory</h3><p>Unique word bytes live in shared memory, with a compact 64-bit offset table for direct access. Worker processes attach to the same data instead of receiving copies of huge Python string sets.</p></div></article>
-          <article class="memory-item"><div class="memory-num">02</div><div><h3>Offset-based minimization</h3><p>RuleEST and standalone minimizer use fixed-width NumPy records with compact signatures and offsets into the original rule list. Later probe rounds focus on collisions rather than building large Python dictionaries for every rule.</p></div></article>
+          <article class="memory-item"><div class="memory-num">02</div><div><h3>Offset-based minimization</h3><p>Rulest and standalone minimizer use fixed-width NumPy records with compact signatures and offsets into the original rule list. Later probe rounds focus on collisions rather than building large Python dictionaries for every rule.</p></div></article>
           <article class="memory-item"><div class="memory-num">03</div><div><h3>Bounded genetic-search cache</h3><p>Large-target GA work uses bounded samples, compact coverage bitmaps and a capped cross-generation cache to limit retained hit-map memory.</p></div></article>
           <article class="memory-item"><div class="memory-num">04</div><div><h3>Reuse packed GPU inputs</h3><p>GPU batches can reference prepared word bytes and reuse offsets and lengths, reducing repeated flattening and temporary data copies.</p></div></article>
           <article class="memory-item"><div class="memory-num">05</div><div><h3>Shared worker inputs</h3><p>Stage 0 workers receive small word-index ranges and attach to shared data structures, avoiding serialization of multi-million-entry wordlists.</p></div></article>

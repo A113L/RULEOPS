@@ -187,7 +187,7 @@ def main():
     log_info(f"  {bold(cyan('STAGE 1'))}  : {green('enabled')} — single-rule GPU sweep  {_INCL}")
 
     if not args.no_builtin_seeds:
-        log_info(f"  {bold(cyan('STAGE S'))}  : {green('enabled')} — numeric/pattern seed families A-M  {_EXCL}")
+        log_info(f"  {bold(cyan('STAGE S'))}  : {green('enabled')} — numeric/pattern seed families A-Q  {_EXCL}")
     else:
         log_info(f"  {bold(dim('STAGE S'))}  : {red('disabled')}  (--no-builtin-seeds)")
 

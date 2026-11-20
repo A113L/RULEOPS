@@ -1076,7 +1076,144 @@ class GPUEngine:
                         sbd[2].add(f"{leet_op} {t_op}")
                     if HashcatRuleValidator.validate_rule_for_gpu(f"{t_op} {leet_op}"):
                         sbd[2].add(f"{t_op} {leet_op}")
+        # N – Combined Prefix + Suffix: combinations of characters and digits on both ends
+        chars_n = list(digits) + list(SPECIAL_CHARS_CORE)
+        if max_depth >= 2:
+            for px in chars_n:
+                if _kb.poll(): return dict(sbd)
+                for sx in chars_n:
+                    chain = f'^{px} ${sx}'
+                    if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                        sbd[2].add(chain)
+        if max_depth >= 3:
+            for a, b, c in itertools.product(chars_n, repeat=3):
+                if _kb.poll(): return dict(sbd)
+                for chain in (f'^{a} ^{b} ${c}', f'^{a} ${b} ${c}'):
+                    if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                        sbd[3].add(chain)
+        if max_depth >= 4:
+            for a, b in itertools.product(digits, repeat=2):
+                if _kb.poll(): return dict(sbd)
+                for c, d in itertools.product(chars_n, repeat=2):
+                    for chain in (f'^{a} ^{b} ${c} ${d}', f'^{c} ^{d} ${a} ${b}'):
+                        if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                            sbd[4].add(chain)
+            for a, b, c in itertools.product(digits, repeat=3):
+                if _kb.poll(): return dict(sbd)
+                for d in chars_n:
+                    for chain in (f'^{a} ^{b} ^{c} ${d}', f'^{d} ${a} ${b} ${c}'):
+                        if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                            sbd[4].add(chain)
+        # O – Internal Insertions: inserting digits and characters inside words
+        insert_pos = list(range(0, 6))  # i0 .. i5
+        insert_chars = list(digits) + list(SPECIAL_CHARS_CORE)
+        for pos in insert_pos:
+            if _kb.poll(): return dict(sbd)
+            for ch in insert_chars:
+                seed = f'i{pos}{ch}'
+                if HashcatRuleValidator.validate_rule_for_gpu(seed):
+                    sbd[1].add(seed)
+        if max_depth >= 2:
+            for pos in insert_pos:
+                if _kb.poll(): return dict(sbd)
+                for ch in insert_chars:
+                    for t in ('l', 'u', 'c', 'C', 't', 'r'):
+                        for chain in (f'{t} i{pos}{ch}', f'i{pos}{ch} {t}'):
+                            if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                                sbd[2].add(chain)
+                    for d in digits:
+                        for chain in (f'i{pos}{ch} ${d}', f'^{d} i{pos}{ch}'):
+                            if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                                sbd[2].add(chain)
+        if max_depth >= 3:
+            for p1 in range(0, 4):
+                for p2 in range(p1 + 1, 5):
+                    if _kb.poll(): return dict(sbd)
+                    for c1 in digits:
+                        for c2 in digits:
+                            chain = f'i{p1}{c1} i{p2}{c2}'
+                            if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                                sbd[3].add(chain)
+        # P – Extended Numeric Patterns: additional numeric patterns
+        # repeated digits and short popular sequences
+        popular_pats = [
+            '00', '11', '22', '33', '44', '55', '66', '77', '88', '99',
+            '000', '111', '222', '333', '444', '555', '666', '777', '888', '999',
+            '0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
+            '123', '321', '0123', '1234', '4321', '2345', '5432', '6789', '9876',
+            '1357', '2468', '1122', '2211', '1212', '2121', '1221', '2112',
+            '1337', '7331', '420', '007', '69', '666', '777', '999',
+            '2020', '2021', '2022', '2023', '2024', '2025', '2026',
+            '2010', '2015', '2019', '2000', '1990', '1999', '1980', '1970', '1960',
+        ]
+        for pat in popular_pats:
+            L = len(pat)
+            if L > max_depth or L < 1:
+                continue
+            if _kb.poll(): return dict(sbd)
+            app = ' '.join(f'${c}' for c in pat)
+            pre = ' '.join(f'^{c}' for c in reversed(pat))
+            if HashcatRuleValidator.validate_rule_for_gpu(app):
+                sbd[L].add(app)
+            if HashcatRuleValidator.validate_rule_for_gpu(pre):
+                sbd[L].add(pre)
+        # additional pure digit products limited for length 3-4 (low diversity)
+        for length in (3, 4):
+            if length > max_depth:
+                continue
+            for combo in itertools.product(digits, repeat=length):
+                if length >= 3 and len(set(combo)) > 2:
+                    continue
+                if _kb.poll(): return dict(sbd)
+                pat = ''.join(combo)
+                app = ' '.join(f'${c}' for c in pat)
+                pre = ' '.join(f'^{c}' for c in reversed(pat))
+                if HashcatRuleValidator.validate_rule_for_gpu(app):
+                    sbd[length].add(app)
+                if HashcatRuleValidator.validate_rule_for_gpu(pre):
+                    sbd[length].add(pre)
+        # Q – Extended Date + Special: combinations of dates and special characters
+        if max_depth >= 5:
+            for position, ds in enumerate(date4):
+                if position % 64 == 0 and _kb.poll(): return dict(sbd)
+                app = ' '.join(f'${c}' for c in ds)
+                pre = ' '.join(f'^{c}' for c in reversed(ds))
+                for sp in SPECIAL_CHARS_CORE:
+                    for chain in (
+                        f'{app} ${sp}',
+                        f'^{sp} {pre}',
+                        f'{app} ^{sp}',
+                        f'${sp} {pre}',
+                    ):
+                        if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                            sbd[5].add(chain)
+        if max_depth >= 6:
+            # special + date + special (sampled to control size)
+            for position, ds in enumerate(date4):
+                if position % 2 != 0:
+                    continue
+                if position % 128 == 0 and _kb.poll(): return dict(sbd)
+                app = ' '.join(f'${c}' for c in ds)
+                for sp1 in SPECIAL_CHARS_CORE[:5]:
+                    for sp2 in SPECIAL_CHARS_CORE[:5]:
+                        chain = f'^{sp1} {app} ${sp2}'
+                        if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                            sbd[6].add(chain)
+        if max_depth >= 7:
+            # transform + date + special
+            for position, ds in enumerate(date4):
+                if position % 3 != 0:
+                    continue
+                if position % 128 == 0 and _kb.poll(): return dict(sbd)
+                app = ' '.join(f'${c}' for c in ds)
+                pre = ' '.join(f'^{c}' for c in reversed(ds))
+                for t_op in ('l', 'u', 'c', 't'):
+                    for sp in SPECIAL_CHARS_CORE:
+                        for chain in (f'{t_op} {app} ${sp}', f'{t_op} ^{sp} {pre}'):
+                            if HashcatRuleValidator.validate_rule_for_gpu(chain):
+                                sbd[7].add(chain)
         return dict(sbd)
+
 
     def run_seed_extraction_pass(self, base_words, sbd, bloom_filter, phase1_rules, _silent=False,
                                   _position=None, _label=None):

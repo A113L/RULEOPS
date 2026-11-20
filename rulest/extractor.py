@@ -1,7 +1,7 @@
 """
 GPUExtractor: the top-level pipeline orchestrator. Wires together device
 selection, Stage 0 (token-strip), Stage 1 (single-rule GPU sweep), Stage S
-(built-in numeric/pattern seed families), Stage 2 (rule-chain GPU search),
+(built-in numeric/pattern seed families A-Q), Stage 2 (rule-chain GPU search),
 and Stage 3 (--genetic) into one `extract_rules()` call, and owns the
 single-vs-multi-GPU decision.
 """
@@ -275,7 +275,7 @@ class GPUExtractor:
 
         seed_hits = Counter()
         if self.builtin_seeds and not _kb.poll():
-            log_section("STAGE S — Seed Extraction (families A-M)")
+            log_section("STAGE S — Seed Extraction (families A-Q)")
             with stage_profiler.track("STAGE S — Seed Extraction") as _sst:
                 sbd = self.gpu_engine.build_numeric_seed_families(max_depth=seed_pass_depth)
                 if _kb.poll():

@@ -33,7 +33,8 @@ class GPUExtractor:
                  token_strip_max_suffix=4, token_strip_min_leet_amb=3,
                  token_strip_workers=0, token_strip_chunk_size=0,
                  token_strip_bloom_mb=0, rng_seed=None,
-                 topn_seeds=False, topn_n=400000, topn_max_seeds=15000, topn_complementary=False):
+                 topn_seeds=False, topn_n=400000, topn_max_seeds=15000, topn_complementary=False,
+                 topn_adaptive=True):
         self.base_count = base_count
         self.target_count = target_count
         self.user_max_depth = max_depth
@@ -63,6 +64,7 @@ class GPUExtractor:
         self.topn_n = int(topn_n) if topn_n is not None else 400000
         self.topn_max_seeds = int(topn_max_seeds) if topn_max_seeds is not None else 15000
         self.topn_complementary = bool(topn_complementary)
+        self.topn_adaptive = bool(topn_adaptive)
         self.params = calculate_dynamic_parameters(base_count, target_count, None, target_hours,
                                                    bloom_mb_override=bloom_mb, bloom_no_shard=bloom_no_shard)
         self.params['MAX_CHAIN_DEPTH'] = self.user_max_depth
@@ -251,14 +253,16 @@ class GPUExtractor:
                 # not a zero-length slice (max(0, 0) == 0 used to do exactly that).
                 sample = target_words if self.topn_n <= 0 else target_words[: self.topn_n]
                 mode = "complementary" if self.topn_complementary else "standard"
+                budget_mode = "adaptive" if self.topn_adaptive else "static"
                 log_section(f"TOP-N — In-memory seed generation (deduped, {mode})")
                 log_info(
-                    f"[TOPN]   Analysing {len(sample):,} target passwords → up to {self.topn_max_seeds:,} seeds"
+                    f"[TOPN]   Analysing {len(sample):,} target passwords → up to {self.topn_max_seeds:,} seeds ({budget_mode} budget)"
                 )
                 topn_raw = generate_seeds(
                     sample,
                     max_seeds=self.topn_max_seeds,
                     complementary=self.topn_complementary,
+                    adaptive=self.topn_adaptive,
                 )
 
                 known = set(all_seeds)

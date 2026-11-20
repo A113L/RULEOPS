@@ -68,6 +68,9 @@ def main():
     topn.add_argument('--topn-complementary', action='store_true',
                       help='Bias Top-N toward patterns Stage 0 rarely emits '
                            '(leet+year, reverse+digit, transform+year+special, …).')
+    topn.add_argument('--topn-no-adaptive-budget', action='store_false', dest='topn_adaptive', default=True,
+                      help='Disable data-driven family-budget reallocation for Top-N and use only '
+                           'the static priors (adaptive budgeting is on by default).')
     pt = ap.add_argument_group('STAGE 0 — Token-Strip')
     pt.add_argument('-T', '--token-strip', action='store_true')
     pt.add_argument('--token-strip-min-stem', type=int, default=4)
@@ -284,6 +287,7 @@ def main():
         topn_n=args.topn_n,
         topn_max_seeds=args.topn_max_seeds,
         topn_complementary=args.topn_complementary,
+        topn_adaptive=args.topn_adaptive,
     )
     depth_overrides = {f'depth{i}_override': getattr(args, f'depth{i}_chains') for i in range(2,11)}
     # Greedy CELF selection (below) still needs one live GPU from this same

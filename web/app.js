@@ -50,7 +50,7 @@ try { completionSoundEnabled = localStorage.getItem('ruleops-completion-sound') 
 const defaults = {
   max_depth: 2, target_hours: 0.5, max_chains: 0, rng_seed: '', bloom_mb: 0, device: '', output_name: 'rulest_output.txt',
   bloom_no_shard: false, allow_reject_rules: false, no_builtin_seeds: false,
-  topn_seeds: false, topn_complementary: false, topn_n: 400000, topn_max_seeds: 15000,
+  topn_seeds: false, topn_complementary: false, topn_adaptive: true, topn_n: 400000, topn_max_seeds: 15000,
   token_strip: false, token_strip_min_stem: 4, token_strip_max_prefix: 4,
   token_strip_max_suffix: 4, token_strip_min_leet_amb: 3, token_strip_workers: 0, token_strip_chunk_size: 0,
   token_strip_bloom_mb: 0,
@@ -2203,11 +2203,13 @@ function wireTopNSeedGenerator() {
   if (!btn || !stateEl) return;
 
   btn.addEventListener('click', async () => {
-    const topN = parseInt((document.getElementById('topn_top_n') || {}).value || '400000', 10);
+    const topN = parseInt((document.getElementById('topn_n') || {}).value || '400000', 10);
     const maxSeeds = parseInt((document.getElementById('topn_max_seeds') || {}).value || '15000', 10);
+    const complementary = !!(document.getElementById('topn_complementary') || {}).checked;
+    const adaptive = (document.getElementById('topn_adaptive') || {}).checked !== false;
 
-    if (!Number.isFinite(topN) || topN < 10000) {
-      toast('Top-N must be at least 10 000', true);
+    if (!Number.isFinite(topN) || (topN !== 0 && topN < 10000)) {
+      toast('Top-N must be 0 (unlimited) or at least 10 000', true);
       return;
     }
     if (!Number.isFinite(maxSeeds) || maxSeeds < 0) {
@@ -2221,6 +2223,8 @@ function wireTopNSeedGenerator() {
       const data = await apiPost('/api/tools/topn-seeds', {
         top_n: topN,
         max_seeds: maxSeeds,
+        complementary: complementary,
+        adaptive: adaptive,
       });
       stateEl.textContent = `✓ ${data.seeds_generated.toLocaleString()} seeds · ${data.output_name || 'topn_seeds.rule'}`;
       if (data.registered_as_seed) {

@@ -46,8 +46,34 @@ DEFAULT_MIN_SEEDS = 0
 DEFAULT_HARD_CAP = None  # no upper limit
 
 MAX_AFFIX_LEN = 4
+# All-digit suffixes/prefixes are scanned over a wider window than special-char
+# or year affixes: real-world leaks are full of long numeric tails (dates like
+# ddmmyyyy/yyyymmdd, phone-number fragments, PINs) that a 4-char cap silently
+# drops entirely, no matter how common they are in the sample.
+MAX_DIGIT_AFFIX_LEN = 8
 MIN_SUFFIX_COUNT = 3
+# Affixes longer than MAX_AFFIX_LEN carry more entropy (more distinct possible
+# values), so a hit count that would be meaningful at length 4 is much more
+# likely to be coincidental at length 8 -- require more repeats before trusting it.
+MIN_LONG_DIGIT_SUFFIX_COUNT = 5
+# A length-L digit suffix is always at least as frequent as the length-(L-1)
+# suffix it contains (every password ending in "15061995" also ends in
+# "1995", "995", "95", ...), so a single count-sorted list, truncated by
+# budget, silently starves longer/more-specific digit affixes (full dates,
+# phone-number tails) in favor of shorter/more-generic ones every time.
+# Reserve this fraction of the suffix_digit/prefix_digit budgets for affixes
+# longer than MAX_AFFIX_LEN specifically, so they always get a guaranteed
+# share instead of only the leftovers after short ones take everything.
+LONG_DIGIT_BUDGET_RESERVE = 0.30
 MIN_YEAR_COUNT = 2
+# How much weight the hand-tuned FAMILY_BUDGET_* priors keep once real
+# per-family evidence has been observed in THIS sample, for the five
+# directly-measurable "primary" affix families (see _adaptive_primary_budgets).
+# 0.0 = fully data-driven, 1.0 = ignore the data and use only the static table.
+ADAPTIVE_BUDGET_SHRINKAGE = 0.35
+_PRIMARY_BUDGET_FAMILIES = (
+    "suffix_digit", "prefix_digit", "suffix_special", "prefix_special", "year",
+)
 
 FAMILY_BUDGET_STANDARD = {
     "suffix_digit": 0.18,
@@ -149,24 +175,130 @@ def stream_top_n(path: Path, top_n: int, encoding: str = "latin-1") -> List[str]
     return out
 
 
-def extract_affixes(passwords: Iterable[str]) -> Tuple[Counter, Counter, Counter]:
-    suffixes: Counter = Counter()
-    prefixes: Counter = Counter()
-    years: Counter = Counter()
-    for pw in passwords:
-        n = len(pw)
-        if n < 3:
-            continue
-        for L in range(1, min(MAX_AFFIX_LEN, n - 1) + 1):
-            suf = pw[-L:]
-            pre = pw[:L]
+def _scan_password_affixes(pw: str, suffixes: Counter, prefixes: Counter, years: Counter) -> None:
+    """Accumulate one password's suffix/prefix/year affix hits in place.
+
+    Lengths up to MAX_AFFIX_LEN are checked for digit, special-char and
+    year-shaped affixes (unchanged behavior). Lengths beyond that, up to
+    MAX_DIGIT_AFFIX_LEN, are checked for all-digit affixes only -- covers
+    long numeric tails (dates, phone fragments, PINs) without blowing up
+    the special-char/year combinatorics, which don't benefit from it.
+    """
+    n = len(pw)
+    if n < 3:
+        return
+    max_len = min(MAX_DIGIT_AFFIX_LEN, n - 1)
+    for L in range(1, max_len + 1):
+        suf = pw[-L:]
+        pre = pw[:L]
+        if L <= MAX_AFFIX_LEN:
             if _is_digit_str(suf) or _is_special_str(suf) or _looks_like_year(suf):
                 suffixes[suf] += 1
             if _is_digit_str(pre) or _is_special_str(pre):
                 prefixes[pre] += 1
             if _looks_like_year(suf):
                 years[suf] += 1
+        else:
+            if _is_digit_str(suf):
+                suffixes[suf] += 1
+            if _is_digit_str(pre):
+                prefixes[pre] += 1
+
+
+def extract_affixes(passwords: Iterable[str]) -> Tuple[Counter, Counter, Counter]:
+    suffixes: Counter = Counter()
+    prefixes: Counter = Counter()
+    years: Counter = Counter()
+    for pw in passwords:
+        _scan_password_affixes(pw, suffixes, prefixes, years)
     return suffixes, prefixes, years
+
+
+def _split_long_short(items: list, max_len: int = MAX_AFFIX_LEN) -> Tuple[list, list]:
+    """Split a count-sorted (affix, count) list into (long, short) by length,
+    each still sorted by descending count within its own group."""
+    long_items = [x for x in items if len(x[0]) > max_len]
+    short_items = [x for x in items if len(x[0]) <= max_len]
+    return long_items, short_items
+
+
+def _budgeted_affixes(items: list, budget: int, reserve_frac: float = LONG_DIGIT_BUDGET_RESERVE) -> list:
+    """Pick up to `budget` affixes from a count-sorted (affix, count) list,
+    guaranteeing a reserved *minimum* share to affixes longer than
+    MAX_AFFIX_LEN first (see LONG_DIGIT_BUDGET_RESERVE) so they are never
+    entirely crowded out by the inherently-more-frequent shorter affixes
+    they're substrings of. The reserve is a floor, not a ceiling: if the
+    shorter pool runs out before the budget is spent, the remainder is
+    backfilled with more long affixes rather than left unused.
+    """
+    long_items, short_items = _split_long_short(items)
+    if not long_items:
+        return [s for s, _ in short_items[:budget]]
+    if not short_items:
+        return [s for s, _ in long_items[:budget]]
+
+    n_long_min = min(len(long_items), int(budget * reserve_frac))
+    picked_long = long_items[:n_long_min]
+    remaining = max(0, budget - len(picked_long))
+    picked_short = short_items[:remaining]
+
+    used = len(picked_long) + len(picked_short)
+    if used < budget and len(long_items) > n_long_min:
+        picked_long = picked_long + long_items[n_long_min: n_long_min + (budget - used)]
+
+    return [s for s, _ in picked_long] + [s for s, _ in picked_short]
+
+
+def _min_count_for(affix: str) -> int:
+    """Longer affixes carry more entropy, so demand more repeats before trusting one."""
+    return MIN_SUFFIX_COUNT if len(affix) <= MAX_AFFIX_LEN else MIN_LONG_DIGIT_SUFFIX_COUNT
+
+
+def _adaptive_primary_budgets(suffixes: Counter, prefixes: Counter, years: Counter,
+                               budgets_src: dict, budget_base: int,
+                               shrinkage: float = ADAPTIVE_BUDGET_SHRINKAGE) -> dict:
+    """Reallocate the five directly-observable affix families' combined budget
+    share by how much of THIS sample's evidence mass each one actually holds,
+    instead of a fixed prior -- this is the actual "probabilistic" half of
+    PCFG (grammar probabilities estimated from the corpus, not hand-tuned).
+
+    The seven synthetic depth-2/combo families (leet_year, reverse_digit, ...)
+    have no direct per-family evidence from this lightweight scan, so they are
+    left exactly as the static table set them; only the mass that the static
+    table itself allocated to the five primary families is redistributed
+    *among* those five, never taken from or given to the combo families.
+    """
+    static_sub = {k: budgets_src.get(k, 0.0) for k in _PRIMARY_BUDGET_FAMILIES}
+    static_sum = sum(static_sub.values())
+    if static_sum <= 0:
+        return {}
+    static_share = {k: v / static_sum for k, v in static_sub.items()}
+
+    data_mass = {
+        "suffix_digit": sum(c for s, c in suffixes.items() if _is_digit_str(s)),
+        "prefix_digit": sum(c for s, c in prefixes.items() if _is_digit_str(s)),
+        "suffix_special": sum(c for s, c in suffixes.items() if _is_special_str(s)),
+        "prefix_special": sum(c for s, c in prefixes.items() if _is_special_str(s)),
+        "year": sum(years.values()),
+    }
+    total_mass = sum(data_mass.values())
+    data_share = (
+        {k: v / total_mass for k, v in data_mass.items()}
+        if total_mass > 0 else static_share
+    )
+
+    shrinkage = min(1.0, max(0.0, float(shrinkage)))
+    blended = {
+        k: shrinkage * static_share[k] + (1.0 - shrinkage) * data_share[k]
+        for k in _PRIMARY_BUDGET_FAMILIES
+    }
+    bsum = sum(blended.values()) or 1.0
+    blended = {k: v / bsum for k, v in blended.items()}
+
+    return {
+        k: max(40, int(budget_base * static_sum * blended[k]))
+        for k in _PRIMARY_BUDGET_FAMILIES
+    }
 
 
 def _rule_append(s: str) -> str:
@@ -189,6 +321,7 @@ def generate_seeds(
     max_seeds: int = DEFAULT_MAX_SEEDS,
     complementary: bool = False,
     show_progress: bool = True,
+    adaptive: bool = True,
 ) -> List[str]:
     max_seeds = max(0, int(max_seeds)) if max_seeds else 0
     # 0 / negative => unlimited (still practical soft stop via family budgets)
@@ -198,6 +331,9 @@ def generate_seeds(
     budgets_src = FAMILY_BUDGET_COMPLEMENTARY if complementary else FAMILY_BUDGET_STANDARD
     # Scale family budgets; when unlimited, use a large nominal target so families expand
     budget_base = 25_000 if unlimited else max_seeds
+    # A static baseline is always available immediately (used as-is for the
+    # seven synthetic combo families, and as the pre-adaptive fallback for
+    # the five primary ones until the affix scan below has real evidence).
     budgets = {k: max(40, int(budget_base * v)) for k, v in budgets_src.items()}
 
     # Unified progress: 0-30% affix scan, 30-100% family generation
@@ -215,17 +351,7 @@ def generate_seeds(
             years = __import__("collections").Counter()
             step = max(1, n_pw // 20)
             for i, pw in enumerate(passwords):
-                n = len(pw)
-                if n >= 3:
-                    for L in range(1, min(MAX_AFFIX_LEN, n - 1) + 1):
-                        suf = pw[-L:]
-                        pre = pw[:L]
-                        if _is_digit_str(suf) or _is_special_str(suf) or _looks_like_year(suf):
-                            suffixes[suf] += 1
-                        if _is_digit_str(pre) or _is_special_str(pre):
-                            prefixes[pre] += 1
-                        if _looks_like_year(suf):
-                            years[suf] += 1
+                _scan_password_affixes(pw, suffixes, prefixes, years)
                 if i % step == 0:
                     bar.n = int(30 * (i + 1) / n_pw)
                     bar.refresh()
@@ -237,8 +363,15 @@ def generate_seeds(
                 bar.n = 30
                 bar.refresh()
 
+        # Data-driven reallocation of the five directly-observable families'
+        # combined budget share, now that the scan above has real evidence
+        # from THIS sample to work with (see _adaptive_primary_budgets).
+        if adaptive:
+            adaptive_budgets = _adaptive_primary_budgets(suffixes, prefixes, years, budgets_src, budget_base)
+            budgets.update(adaptive_budgets)
+
         dig_suf = sorted(
-            [(s, c) for s, c in suffixes.items() if _is_digit_str(s) and c >= MIN_SUFFIX_COUNT],
+            [(s, c) for s, c in suffixes.items() if _is_digit_str(s) and c >= _min_count_for(s)],
             key=lambda x: (-x[1], x[0]),
         )
         sp_suf = sorted(
@@ -246,7 +379,7 @@ def generate_seeds(
             key=lambda x: (-x[1], x[0]),
         )
         dig_pre = sorted(
-            [(s, c) for s, c in prefixes.items() if _is_digit_str(s) and c >= MIN_SUFFIX_COUNT],
+            [(s, c) for s, c in prefixes.items() if _is_digit_str(s) and c >= _min_count_for(s)],
             key=lambda x: (-x[1], x[0]),
         )
         sp_pre = sorted(
@@ -285,9 +418,9 @@ def generate_seeds(
                 return True
             return False
 
-        for s, _ in dig_suf[: budgets["suffix_digit"]]:
+        for s in _budgeted_affixes(dig_suf, budgets["suffix_digit"]):
             add(_rule_append(s))
-        for s, _ in dig_pre[: budgets["prefix_digit"]]:
+        for s in _budgeted_affixes(dig_pre, budgets["prefix_digit"]):
             add(_rule_prepend(s))
         for s, _ in sp_suf[: budgets["suffix_special"]]:
             add(_rule_append(s))
@@ -443,9 +576,10 @@ def run(
     max_seeds: int = DEFAULT_MAX_SEEDS,
     encoding: str = "latin-1",
     complementary: bool = False,
+    adaptive: bool = True,
 ) -> dict:
     passwords = stream_top_n(target_path, top_n, encoding=encoding)
-    seeds = generate_seeds(passwords, max_seeds=max_seeds, complementary=complementary)
+    seeds = generate_seeds(passwords, max_seeds=max_seeds, complementary=complementary, adaptive=adaptive)
     write_seeds(seeds, output_path)
     return {
         "target": str(target_path),
@@ -454,6 +588,7 @@ def run(
         "seeds_generated": len(seeds),
         "output": str(output_path),
         "complementary": complementary,
+        "adaptive": adaptive,
     }
 
 
@@ -466,6 +601,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("-m", "--max-seeds", type=int, default=DEFAULT_MAX_SEEDS)
     p.add_argument("--encoding", default="latin-1")
     p.add_argument("--complementary", action="store_true")
+    p.add_argument("--no-adaptive-budget", action="store_false", dest="adaptive", default=True,
+                    help="Disable data-driven family-budget reallocation and use only the static priors.")
     args = p.parse_args(argv)
     if not args.target.is_file():
         print(f"error: target not found: {args.target}", file=sys.stderr)
@@ -473,7 +610,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     stats = run(
         args.target, args.output,
         top_n=args.top_n, max_seeds=args.max_seeds,
-        encoding=args.encoding, complementary=args.complementary,
+        encoding=args.encoding, complementary=args.complementary, adaptive=args.adaptive,
     )
     mode = "complementary" if stats["complementary"] else "standard"
     print(f"[topn-seedgen] mode={mode} loaded {stats['passwords_loaded']:,} → {stats['seeds_generated']:,} seeds → {stats['output']}")

@@ -2587,6 +2587,8 @@ def detect_active_stage(line: str):
         return "Minimization"
     if "SELECTION — CELF" in upper or "SELECTION - CELF" in upper or "[CELF]" in upper or "[SELECT]" in upper:
         return "Rule Selection · CELF"
+    if "TOP-N" in upper or "[TOPN]" in upper:
+        return "Top-N · PCFG-Lite seed generation"
     if "BLOOM FILTER" in upper or "BUILDING BLOOM" in upper:
         return "GPU Setup · Bloom Filter"
     if re.search(r"\bSTAGE\s*0\b", upper) or "[S0]" in upper:
@@ -2802,6 +2804,12 @@ def build_command(options: dict, run_dir: Path):
     for key, flag in BOOL_OPTIONS.items():
         if options.get(key):
             cmd.append(flag)
+    # "topn_adaptive" is a positive UI toggle (checked = adaptive budgeting,
+    # the engine's own default) over the engine's negative/inverted flag, so
+    # it can't be a plain BOOL_OPTIONS entry: only send the flag when the
+    # person explicitly unchecked it.
+    if options.get("topn_seeds") and options.get("topn_adaptive") is False:
+        cmd.append("--topn-no-adaptive-budget")
     for key, flag in VALUE_OPTIONS.items():
         value = options.get(key)
         if value is None or value == "":
@@ -4673,6 +4681,10 @@ class Handler(BaseHTTPRequestHandler):
         out_name = "topn_seeds.rule"
         out_path = UPLOADS / out_name
 
+        complementary = bool(payload.get("complementary"))
+        _adaptive_raw = payload.get("adaptive")
+        adaptive = bool(_adaptive_raw) if _adaptive_raw is not None else True
+
         try:
             from rulest.topn_seedgen import run as topn_run
             stats = topn_run(
@@ -4680,6 +4692,8 @@ class Handler(BaseHTTPRequestHandler):
                 output_path=out_path,
                 top_n=top_n,
                 max_seeds=max_seeds,
+                complementary=complementary,
+                adaptive=adaptive,
             )
         except Exception as exc:
             add_log(f"[TOPN] Generation failed: {exc}")
@@ -4703,6 +4717,8 @@ class Handler(BaseHTTPRequestHandler):
             "top_n": top_n,
             "output_name": out_name,
             "registered_as_seed": True,
+            "complementary": complementary,
+            "adaptive": adaptive,
         })
 
     def handle_concentrator_cancel(self):

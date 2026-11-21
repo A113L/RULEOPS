@@ -50,6 +50,7 @@ try { completionSoundEnabled = localStorage.getItem('ruleops-completion-sound') 
 const defaults = {
   max_depth: 2, target_hours: 0.5, max_chains: 0, rng_seed: '', bloom_mb: 0, device: '', output_name: 'rulest_output.txt',
   bloom_no_shard: false, allow_reject_rules: false, no_builtin_seeds: false,
+  minimize_rules: true,
   topn_seeds: false, topn_complementary: true, topn_adaptive: true, topn_n: 400000, topn_max_seeds: 150000, topn_inject_cap: 100000,
   token_strip: false, token_strip_min_stem: 4, token_strip_max_prefix: 4,
   token_strip_max_suffix: 4, token_strip_min_leet_amb: 3, token_strip_workers: 0, token_strip_chunk_size: 0,

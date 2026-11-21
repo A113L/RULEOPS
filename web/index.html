@@ -202,6 +202,7 @@
             <div class="toggle-row compact-toggle"><div><b>Disable Bloom sharding</b><small>Force one Bloom filter shard, even for large filters.</small></div><label class="switch"><input type="checkbox" id="bloom_no_shard"><span></span></label></div>
             <div class="toggle-row compact-toggle"><div><b>Allow reject rules</b><small>Allow rules which intentionally reject candidate words.</small></div><label class="switch"><input type="checkbox" id="allow_reject_rules"><span></span></label></div>
             <div class="toggle-row compact-toggle"><div><b>Disable built-in seeds</b><small>Skip the built-in numeric and pattern seed families (A–Q).</small></div><label class="switch"><input type="checkbox" id="no_builtin_seeds"><span></span></label></div>
+            <div class="toggle-row compact-toggle"><div><b>Functional rule minimization</b><small>Remove rules that behave equivalently on the built-in probe set. Enabled by default; turn off to skip this post-processing stage and retain the extracted candidates.</small></div><label class="switch"><input type="checkbox" id="minimize_rules" checked><span></span></label></div>
             <div class="subsection depth-overrides"><div class="subsection-title"><div><h3>Per-depth chain limits</h3><p>Override automatically calculated chain counts for individual depths.</p></div><span class="subtle-tag">OPTIONAL OVERRIDES</span></div><div class="depth-grid" id="depth-grid"></div></div>
           </section>
 

@@ -2,6 +2,16 @@
 
 ## 2026-11-21
 
+### Optional functional minimization in RULEST
+
+- Added `--no-minimize` to skip the signature-based functional-equivalence
+  pruning stage while retaining the extracted rule candidates.
+- Added a positive `Functional rule minimization` toggle to the RULEST engine
+  configuration UI. It is enabled by default, preserving the previous pipeline
+  behaviour; the setting is passed through the web API to the CLI.
+- Run output headers now record when minimization was skipped, and the stage
+  profiler reports the user-selected skip state.
+
 ### UI: expose `--select-cost-profile` on the Rule selection panel
 
 - Added an optional CELF cost-profile picker (upload JSON or choose a saved

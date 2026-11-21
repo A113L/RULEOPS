@@ -58,6 +58,8 @@ def main():
         ap.add_argument(f'--depth{i}-chains', type=int, default=None, dest=f'depth{i}_chains')
     ap.add_argument('--allow-reject-rules', action='store_true')
     ap.add_argument('-n', '--no-builtin-seeds', action='store_true')
+    ap.add_argument('--no-minimize', action='store_true',
+                    help='Skip signature-based functional minimization and keep the extracted rule set as-is.')
     topn = ap.add_argument_group('Top-N Seed Injection (in-memory)')
     topn.add_argument('--topn-seeds', action='store_true',
                       help='Generate Top-N seeds from the target wordlist in memory and inject '
@@ -198,6 +200,10 @@ def main():
     shard_note = yellow('[sharding forced off]') if args.bloom_no_shard else dim('(auto: shard if >512MB)')
     log_info(f"  depth     : {bold(str(args.max_depth))}  |  hours: {bold(str(args.target_hours))}  |  bloom: {bold(str(args.bloom_mb or 'auto'))}MB  {dim('(GPU-only)')}  {shard_note}")
     if args.seed_rules: log_info(f"  seeds     : {bold(args.seed_rules)}")
+    if args.no_minimize:
+        log_info(f"  minimize  : {yellow('disabled')} — functional-equivalence pruning will be skipped")
+    else:
+        log_info(f"  minimize  : {green('enabled')} — signature-based functional minimization")
     if getattr(args, "topn_seeds", False):
         mode = "complementary" if getattr(args, "topn_complementary", False) else "standard"
         prof = getattr(args, "topn_profile", None)
@@ -365,9 +371,13 @@ def main():
     log_info(f"\n[GPU]  Raw bloom-filter candidates: {bold(cyan(str(raw_candidate_count)))}"); print()
 
     if _kb.quit_requested:
-        log_warn("[MIN] Skipped — early exit requested; preserving discovered candidates without deduplication")
+        log_warn("[MIN] Skipped — early exit requested; preserving discovered candidates without functional minimization")
         final_counts = raw_counts
         stage_profiler.note("Minimization (dedup)", extra="skipped: early exit")
+    elif args.no_minimize:
+        log_info("[MIN] Disabled by user — preserving all extracted candidates without functional-equivalence pruning")
+        final_counts = raw_counts
+        stage_profiler.note("Minimization (dedup)", extra="disabled by user")
     else:
         with stage_profiler.track("Minimization (dedup)", unit="rule") as _mint:
             final_counts = minimize_by_signature(raw_counts, BUILTIN_PROBES)
@@ -410,7 +420,7 @@ def main():
         if r != ':': depth_dist[len(r.split())] += 1
     ds = '  '.join(f"d{d}:{depth_dist[d]:,}" for d in sorted(depth_dist))
     final_rules = len(final_counts) - (1 if ':' in final_counts else 0)
-    removed = raw_candidate_count - len(final_counts)
+    removed = max(0, raw_candidate_count - len(final_counts))
 
     # Greedy CELF consumes the rule pool directly; sorting millions of rules
     # by frequency here was unused work and an avoidable large temporary list.
@@ -442,9 +452,13 @@ def main():
                 f.write(f"# STAGE 3 GA     : pop={args.genetic_pop}  gen={args.genetic_generations}  elite={args.genetic_elite:.0%}\n")
             f.write("#\n")
             f.write(f"# GPU raw candidates      : {raw_candidate_count:,}\n")
-            f.write("# Minimization            : in-memory offset index (compact records)\n")
-            f.write(f"#   Probe words           : {len(BUILTIN_PROBES)}  (built-in)\n")
-            f.write(f"#   Equiv. rules removed  : {removed:,}\n")
+            if args.no_minimize:
+                f.write("# Minimization            : skipped (--no-minimize)\n")
+                f.write("#   Functional pruning    : disabled; extracted candidates retained\n")
+            else:
+                f.write("# Minimization            : in-memory offset index (compact records)\n")
+                f.write(f"#   Probe words           : {len(BUILTIN_PROBES)}  (built-in)\n")
+                f.write(f"#   Equiv. rules removed  : {removed:,}\n")
             f.write("#\n")
             f.write(f"# Rules kept     : {len(ordered_rules):,}\n")
             f.write(f"# Sorted by      : {sort_desc}\n")

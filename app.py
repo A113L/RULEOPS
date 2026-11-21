@@ -2805,6 +2805,10 @@ def build_command(options: dict, run_dir: Path):
     for key, flag in BOOL_OPTIONS.items():
         if options.get(key):
             cmd.append(flag)
+    # Minimization remains enabled by default for backwards compatibility.
+    # The UI exposes a positive toggle, while the CLI uses --no-minimize.
+    if options.get("minimize_rules", True) is False:
+        cmd.append("--no-minimize")
     # "topn_adaptive" is a positive UI toggle (checked = adaptive budgeting,
     # the engine's own default) over the engine's negative/inverted flag, so
     # it can't be a plain BOOL_OPTIONS entry: only send the flag when the

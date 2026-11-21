@@ -170,10 +170,56 @@ class _TargetFingerprintIndex:
         return None
 
 
-def _rule_cost(rule, cost_alpha):
-    if cost_alpha <= 0:
+def _rule_cost(rule, cost_alpha, cost_weights=None):
+    base = max(1, len(rule.split())) ** float(cost_alpha) if cost_alpha > 0 else 1.0
+    if not cost_weights:
+        return base
+    return base * _rule_profile_multiplier(rule, cost_weights)
+
+
+def _rule_literal_chars(rule):
+    """Literal characters appended/prepended by a rule's `$c` / `^c` tokens --
+    the only two-char operator+literal forms rulest.topn_seedgen emits.
+    Structural ops (c, u, t, l, :, Tn, ...) contribute nothing and are
+    skipped; they get no profile-based cost adjustment."""
+    return [token[1] for token in rule.split() if len(token) == 2 and token[0] in "$^"]
+
+
+def _char_class(ch):
+    if ch.isdigit():
+        return "digit"
+    if ch.isalpha():
+        return "letter"
+    return "symbol"
+
+
+def build_profile_cost_weights(profile_summary):
+    """Derive a small {'digit'|'letter'|'symbol': multiplier} table from a
+    pcfg-profile summary (rulest.topn_seedgen.summarize_pcfg_profile), using
+    the same kind of baseline shares as topn_seedgen.profile_informed_priors.
+    A class OVER-represented in the corpus relative to the generic baseline
+    gets multiplier < 1 (cheaper, so CELF's cost-aware marginal-gain ranking
+    favors rules built from it); an UNDER-represented class gets > 1
+    (costlier). Clamped so one profile can't make a class free or, at the
+    other extreme, effectively unselectable.
+    """
+    baseline = {"digit": 0.55, "symbol": 0.20, "letter": 0.60}
+    observed = {
+        "digit": profile_summary.get("digit_share", baseline["digit"]),
+        "symbol": profile_summary.get("symbol_share", baseline["symbol"]),
+        "letter": profile_summary.get("lowercase_share", baseline["letter"]),
+    }
+    return {
+        cls: min(3.0, max(0.4, base / max(1e-6, observed.get(cls, base))))
+        for cls, base in baseline.items()
+    }
+
+
+def _rule_profile_multiplier(rule, cost_weights):
+    chars = _rule_literal_chars(rule)
+    if not chars:
         return 1.0
-    return max(1, len(rule.split())) ** float(cost_alpha)
+    return sum(cost_weights.get(_char_class(ch), 1.0) for ch in chars) / len(chars)
 
 
 class _ConstantCosts:
@@ -327,7 +373,7 @@ def _celf_select_from_upper_bounds(
     on_select=None, score_batch_fn=None, rescore_batch_size=32,
     on_scan_progress=None, score_exact_batch_fn=None,
     capture_exact_winner_fn=None, materialize_winner_ids_fn=None,
-    gpu_dispatch_counts_fn=None,
+    gpu_dispatch_counts_fn=None, cost_weights=None,
 ):
     """Heap CELF with admissible bounds and optional batched exact rescoring.
 
@@ -353,13 +399,16 @@ def _celf_select_from_upper_bounds(
     # Report it with the same heartbeat spinner used for GPU setup, and skip
     # the per-rule Python cost loop entirely in the common cost_alpha<=0 case
     # (cost is always 1.0, so priority == bound and no per-rule division or
-    # function call is needed at all).
+    # function call is needed at all). A supplied cost_weights table (PCFG
+    # composition-profile-informed, see build_profile_cost_weights) also
+    # needs the per-rule loop even when cost_alpha<=0, since it reads each
+    # rule's literal $/^ characters rather than just its chain depth.
     cpu_profile_started = time.perf_counter()
     heap_build_started = time.perf_counter()
     with ActivityHeartbeat(f"[CELF] Building heap ({len(rules):,} candidates)"):
         bounds_arr = np.maximum(0, np.asarray(upper_bounds, dtype=np.int64))
         positive = np.flatnonzero(bounds_arr)
-        if cost_alpha <= 0:
+        if cost_alpha <= 0 and not cost_weights:
             # costs[index] is still read later (priority()/push() index into
             # it by full rule index, including rules that start at bound=0
             # but get re-pushed with a tightened bound later), so this needs
@@ -371,7 +420,7 @@ def _celf_select_from_upper_bounds(
             for position, rule in enumerate(rules):
                 if position % 16384 == 0 and _kb.poll():
                     return [], covered
-                costs.append(_rule_cost(rule, cost_alpha))
+                costs.append(_rule_cost(rule, cost_alpha, cost_weights))
         if _kb.poll():
             return [], covered
         heap = []
@@ -1235,9 +1284,31 @@ def _restore_depth(gpu_engine, restore_depth):
 
 def select_rules_by_marginal_coverage(
     gpu_engine, base_words, target_words, rules, max_depth, budget=None,
-    cost_alpha=0.0, pair_batch_size=100_000,
+    cost_alpha=0.0, pair_batch_size=100_000, cost_profile=None,
 ):
-    """One GPU upper-bound pass followed by exact batched lazy-greedy CELF recompute."""
+    """One GPU upper-bound pass followed by exact batched lazy-greedy CELF recompute.
+
+    `cost_profile`, if given, is a pcfg-profile summary (see
+    rulest.topn_seedgen.summarize_pcfg_profile) or a raw ruleops.pcfg-profile.v1
+    dict/path/JSON text (summarized here via the same function). It is turned
+    into per-character-class cost weights (build_profile_cost_weights) that
+    multiply each candidate's cost_alpha-based cost, so CELF's cost-aware
+    marginal-gain ranking additionally favors rule literals (digits, letters,
+    symbols) in proportion to how common they actually are in the corpus --
+    unlike cost_alpha alone, which only looks at chain depth. This changes
+    *ranking order*, so it affects which rules make a small cap, not just
+    the overall candidate pool PCFG-Lite's seed generator produces.
+    """
+    cost_weights = None
+    if cost_profile is not None:
+        if isinstance(cost_profile, dict) and (
+            "digit_share" in cost_profile or "symbol_share" in cost_profile
+        ):
+            profile_summary = cost_profile  # already summarized by the caller
+        else:
+            from .topn_seedgen import load_pcfg_profile, summarize_pcfg_profile
+            profile_summary = summarize_pcfg_profile(load_pcfg_profile(cost_profile))
+        cost_weights = build_profile_cost_weights(profile_summary)
     log_section("SELECTION — CELF (GPU hash table + exact batched lazy recompute)")
     if _kb.poll():
         log_warn("[CELF] Early exit before target preparation — skipping GPU selection")
@@ -1396,6 +1467,7 @@ def select_rules_by_marginal_coverage(
                     if exact_batch_enabled else None
                 ),
                 gpu_dispatch_counts_fn=getattr(scorer, "gpu_dispatch_counts", None),
+                cost_weights=cost_weights,
             )
         except _CelfExactBatchMismatch as exc:
             if not exact_batch_enabled:
@@ -1437,6 +1509,7 @@ def select_rules_by_marginal_coverage(
                 on_scan_progress=scan_progress,
                 score_exact_batch_fn=None,
                 gpu_dispatch_counts_fn=getattr(scorer, "gpu_dispatch_counts", None),
+                cost_weights=cost_weights,
             )
         log_info(
             f"[CELF] Selected {bold(str(len(selected)))} rules; exact recovery "

@@ -1,6 +1,66 @@
 # Changelog
 
+## 2026-11-21
+
+### UI: expose `--select-cost-profile` on the Rule selection panel
+
+- Added an optional CELF cost-profile picker (upload JSON or choose a saved
+  `reports/*.json` pcfg-profile) next to Cost alpha / Selection budget.
+- The selected profile is passed through to `run_rulest.py` as
+  `--select-cost-profile`, composing with `--select-cost-alpha` the same way
+  the CLI does. Only meaningful when Selection mode is Greedy.
+- Reuses the existing `/api/tools/pcfg-profiles` list/load endpoints; no new
+  backend storage was required.
+
+
 ## 2026-11-20
+
+### CELF cost-aware selection informed by aggregate corpus profiles
+
+Why: on `--pcfg-max-seeds 0` (unlimited) runs, PCFG-Lite's family-budget
+weighting -- adaptive or `--pcfg-profile`-informed -- almost never actually
+binds: `generate_seeds()` auto-scales its attempt budget up to match the
+observed affix inventory, and the fixed `MIN_SUFFIX_COUNT`/`MIN_YEAR_COUNT`
+frequency thresholds, not the family weights, end up being what limits each
+family's candidate count on a multi-million-row corpus. The result is a huge
+candidate pool whose composition barely differs between configurations, and
+downstream CELF then picks the final rule set purely from real per-rule
+marginal coverage -- so seed-side tuning has no visible effect on the final
+coverage curve at any `--select-budget`, matching observed runs where
+coverage differed by ~0.01-0.3 percentage points across cuts from 75k to
+220k+ rules of otherwise very differently-generated pools.
+
+Since CELF's own ranking is what actually decides which rules occupy a
+small cap, that is also the only place composition-profile information can
+still move the needle on a smaller rule set:
+
+- Added `build_profile_cost_weights()` / `_rule_profile_multiplier()` to
+  `rulest/selection.py`: given a pcfg-profile summary, each candidate's
+  CELF cost is now additionally multiplied by how over/under-represented its
+  literal `$c`/`^c` digit/letter/symbol characters are in the corpus (cheap
+  for common classes, costlier for rare ones, clamped to [0.4x, 3x]).
+  Structural rules with no literal-char tokens (`c`, `u`, `t`, `l`, `:`, ...)
+  are unaffected. This changes the actual *ranking order* CELF uses, not
+  just which seeds exist in the pool, so it is visible at any cap size.
+- `select_rules_by_marginal_coverage(..., cost_profile=...)` accepts a raw
+  `ruleops.pcfg-profile.v1` report (dict/path/JSON text) or an
+  already-summarized one; `--select-cost-profile PATH` wires it into
+  `rulest/cli.py`'s CELF stage. Composes with `--select-cost-alpha` (chain
+  depth) -- either or both may be set.
+- The existing `cost_alpha<=0` fast path (`_ConstantCosts`, no per-rule
+  Python loop) is preserved exactly when no cost profile is supplied, so
+  default behaviour and performance are unchanged; the per-rule cost loop
+  only runs when a profile is actually given.
+- Practical recommendation for anyone chasing bigger differentiation at
+  small `--select-budget` sizes: binding `--pcfg-max-seeds` to a few times
+  your eventual cap (instead of 0/unlimited) re-enables the seed-side family
+  budgets as a real pre-filter, which is cheap and speeds up CELF, but the
+  coverage ceiling itself (consistently ~40% across very different rule
+  sets against the same base/target in observed runs) looks like a property
+  of affix-style rules against that base wordlist, not of any one tool's
+  ranking -- raising it further needs structural coverage PCFG-Lite doesn't
+  model yet (see the known-gap note in the PCFG-profile entry below), not
+  more of the same affix families.
 
 ### CELF shared-memory target-table construction
 

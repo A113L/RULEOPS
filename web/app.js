@@ -1520,6 +1520,11 @@ async function startRun() {
     if (typeof topnPcfgProfilePath !== 'undefined' && topnPcfgProfilePath) config.topn_profile_path = topnPcfgProfilePath;
     else if (typeof topnPcfgProfile !== 'undefined' && topnPcfgProfile) config.topn_profile_json = topnPcfgProfile;
   }
+  if (typeof selectCostProfilePath !== 'undefined' && selectCostProfilePath) {
+    config.select_cost_profile_path = selectCostProfilePath;
+  } else if (typeof selectCostProfile !== 'undefined' && selectCostProfile) {
+    config.select_cost_profile_json = selectCostProfile;
+  }
   if (!config.output_name.trim()) { toast('Enter an output filename.', true); return; }
   const rngSeedText = String(config.rng_seed ?? '').trim();
   if (rngSeedText !== '' && (!/^[0-9]{1,10}$/.test(rngSeedText) || !Number.isSafeInteger(Number(rngSeedText)) || Number(rngSeedText) > 4294967295)) {
@@ -2239,6 +2244,10 @@ document.addEventListener('DOMContentLoaded', boot);
 let topnPcfgProfile = null;
 let topnPcfgProfilePath = null; // project-relative path when chosen from reports/
 
+// Optional pcfg-profile for CELF --select-cost-profile (Rule selection panel).
+let selectCostProfile = null;
+let selectCostProfilePath = null;
+
 function wireTopNPcfgProfileUpload() {
   const input = document.getElementById('topn-pcfg-profile-file');
   const select = document.getElementById('topn-pcfg-profile-select');
@@ -2327,6 +2336,94 @@ function wireTopNPcfgProfileUpload() {
   loadSavedProfiles();
 }
 
+
+function wireSelectCostProfile() {
+  const input = document.getElementById('select-cost-profile-file');
+  const select = document.getElementById('select-cost-profile-select');
+  const stateEl = document.getElementById('select-cost-profile-state');
+  if (!stateEl) return;
+
+  async function loadSavedProfiles() {
+    if (!select) return;
+    try {
+      const data = await apiGet('/api/tools/pcfg-profiles');
+      const profiles = (data && data.profiles) || [];
+      const current = select.value;
+      select.innerHTML = '<option value="">Choose saved PCFG profile…</option>';
+      profiles.forEach((p) => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        const entries = p.profiled_entries ? ` · ${Number(p.profiled_entries).toLocaleString()} entries` : '';
+        opt.textContent = `${p.name}${entries}`;
+        opt.dataset.path = p.path || '';
+        select.appendChild(opt);
+      });
+      if (current) select.value = current;
+    } catch (error) {
+      // Non-fatal: upload still works without the dropdown.
+    }
+  }
+
+  if (input) {
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      if (!file) {
+        if (!selectCostProfilePath) {
+          selectCostProfile = null;
+          stateEl.textContent = 'No cost profile attached';
+        }
+        return;
+      }
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.schema && String(parsed.schema).indexOf('pcfg-profile') === -1) {
+          toast('That JSON does not look like a run_pcfg_profile.py report', true);
+        }
+        selectCostProfile = parsed;
+        selectCostProfilePath = null;
+        if (select) select.value = '';
+        stateEl.textContent = `✓ ${file.name} attached (upload)`;
+      } catch (error) {
+        selectCostProfile = null;
+        selectCostProfilePath = null;
+        input.value = '';
+        stateEl.textContent = 'No cost profile attached';
+        toast('Could not parse profile JSON', true);
+      }
+    });
+  }
+
+  if (select) {
+    select.addEventListener('change', async () => {
+      const id = select.value;
+      if (!id) {
+        selectCostProfile = null;
+        selectCostProfilePath = null;
+        if (input) input.value = '';
+        stateEl.textContent = 'No cost profile attached';
+        return;
+      }
+      try {
+        const data = await apiGet(`/api/tools/pcfg-profiles/load?id=${encodeURIComponent(id)}`);
+        selectCostProfile = data.profile || data;
+        selectCostProfilePath = data.path || (select.selectedOptions[0] && select.selectedOptions[0].dataset.path) || id;
+        if (input) input.value = '';
+        const name = (select.selectedOptions[0] && select.selectedOptions[0].textContent) || id;
+        stateEl.textContent = `✓ ${name} (saved profile)`;
+      } catch (error) {
+        selectCostProfile = null;
+        selectCostProfilePath = null;
+        select.value = '';
+        stateEl.textContent = 'No cost profile attached';
+        toast(error.message || 'Could not load saved profile', true);
+      }
+    });
+  }
+
+  loadSavedProfiles();
+}
+
 function wireTopNSeedGenerator() {
   const btn = document.getElementById('topn-generate-btn');
   const stateEl = document.getElementById('topn-seed-state');
@@ -2380,6 +2477,7 @@ function wireTopNSeedGenerator() {
 }
 
 document.addEventListener('DOMContentLoaded', wireTopNPcfgProfileUpload);
+document.addEventListener('DOMContentLoaded', wireSelectCostProfile);
 document.addEventListener('DOMContentLoaded', wireTopNSeedGenerator);
 
 /* About page: retain the administrator-only regular-user password control. */

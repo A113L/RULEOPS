@@ -2831,6 +2831,25 @@ def build_command(options: dict, run_dir: Path):
         profile_out = run_dir / "topn_pcfg_profile.json"
         profile_out.write_text(json.dumps(topn_profile_inline), encoding="utf-8")
         cmd.extend(["--topn-profile", str(profile_out)])
+    # Optional CELF cost profile (--select-cost-profile). Same report format as
+    # Top-N / run_pcfg_profile.py; composes with --select-cost-alpha.
+    select_cost_profile_path = options.get("select_cost_profile_path") or options.get("select_cost_profile")
+    if select_cost_profile_path:
+        profile_candidate = Path(str(select_cost_profile_path))
+        if not profile_candidate.is_file():
+            alt = ROOT / str(select_cost_profile_path)
+            if alt.is_file():
+                profile_candidate = alt
+        if not profile_candidate.is_file():
+            raise ValueError(f"Select cost profile not found: {select_cost_profile_path}")
+        cmd.extend(["--select-cost-profile", str(profile_candidate)])
+    select_cost_profile_inline = options.get("select_cost_profile_json")
+    if select_cost_profile_inline and not select_cost_profile_path:
+        if not isinstance(select_cost_profile_inline, dict):
+            raise ValueError("select_cost_profile_json must be a JSON object.")
+        profile_out = run_dir / "select_cost_profile.json"
+        profile_out.write_text(json.dumps(select_cost_profile_inline), encoding="utf-8")
+        cmd.extend(["--select-cost-profile", str(profile_out)])
     for key, flag in VALUE_OPTIONS.items():
         value = options.get(key)
         if value is None or value == "":

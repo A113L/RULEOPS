@@ -12,6 +12,7 @@ import atexit
 import datetime
 import multiprocessing as mp
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 
@@ -114,6 +115,15 @@ def main():
                       help="gain(r) = new_recovery(r) / depth(r)**alpha. 0 (default) = pure "
                            "marginal coverage. >0 favors shorter/cheaper chains among rules "
                            "with similar marginal gain.")
+    sel.add_argument('--select-cost-profile', type=Path, default=None,
+                      help="Optional ruleops.pcfg-profile.v1 JSON report (see run_pcfg_profile.py "
+                           "/ --pcfg-profile on run_topn_seedgen.py). Multiplies each candidate's "
+                           "cost by how over/under-represented its literal digit/letter/symbol "
+                           "characters are in this corpus, so CELF's cost-aware ranking -- which "
+                           "decides what actually lands in a small --select-budget, unlike the "
+                           "seed pool's own family budgets once that pool is generated unlimited "
+                           "-- favors characteristically common, cheap literals over rare ones. "
+                           "Works with or without --select-cost-alpha (chain-depth cost).")
     sel.add_argument('-e', '--exact-recovery', action='store_true',
                       help="Explicitly report exact distinct target-word recovery after greedy "
                            "selection. Greedy coverage is already exact: bloom-positive GPU "
@@ -137,6 +147,10 @@ def main():
                          'RULEST_CELF_PROFILE=1 GPU-event accounting); use for tuning, not '
                          'for normal runs, since the CELF side adds a little per-call overhead.')
     args = ap.parse_args()
+
+    if args.select_cost_profile is not None and not args.select_cost_profile.is_file():
+        log_error(f"--select-cost-profile not found: {args.select_cost_profile}")
+        sys.exit(1)
 
     if args.seed is not None:
         # Python randomizes str/bytes hashing per-process (PYTHONHASHSEED),
@@ -231,6 +245,9 @@ def main():
         budget_note = 'unbounded (saturation)' if args.select_budget <= 0 else f'{args.select_budget:,}'
         log_info(f"  {bold(cyan('SELECT'))}  : {green('greedy')} — CELF marginal-coverage over real TARGET  "
                  f"budget={budget_note}  cost_alpha={args.select_cost_alpha}")
+        if args.select_cost_profile:
+            log_info(f"            cost profile: {args.select_cost_profile} "
+                     f"(digit/letter/symbol literals cost-weighted by corpus composition)")
         if args.select_budgets:
             log_info(f"            budget sweep: {args.select_budgets}")
     else:
@@ -469,6 +486,7 @@ def main():
                     args.max_depth,
                     budget=budget,
                     cost_alpha=args.select_cost_alpha,
+                    cost_profile=args.select_cost_profile,
                 )
                 _selt.set_count(len(candidate_rules))
         finally:

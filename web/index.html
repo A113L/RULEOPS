@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b&topn-pcfg-ui=20261120a">
+  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b&topn-pcfg-ui=20261120a&select-cost-profile=20261121a">
 </head>
 <body>
   <div class="app-shell">
@@ -237,7 +237,21 @@
               <label class="field"><span>Cost alpha</span><input type="number" min="0" step="0.1" value="0" id="select_cost_alpha"><small>Higher values favour shorter chains.</small></label>
               <label class="field field-wide"><span>Additional budget sweep</span><input type="text" id="select_budgets" placeholder="100, 1000, 10000"><small>Comma-separated rule budgets; emits separate prefix files.</small></label>
             </div>
-            <div class="toggle-row compact-toggle"><div><b>Report exact recovery</b><small>Explicitly report distinct target-word recovery in greedy mode.</small></div><label class="switch"><input type="checkbox" id="exact_recovery"><span></span></label></div>
+            <div class="optional-copy" style="margin-top:0.85rem">
+              <div>
+                <b>CELF cost profile <span>OPTIONAL</span></b>
+                <small>Same <code>ruleops.pcfg-profile.v1</code> report used by Top-N. Passed as <code>--select-cost-profile</code> so greedy CELF multiplies each rule's cost by how common/rare its literal characters are in the corpus. Composes with Cost alpha (chain depth). Only applies when Selection mode is Greedy.</small>
+              </div>
+              <label class="secondary-upload" for="select-cost-profile-file">＋ Add profile JSON<input id="select-cost-profile-file" type="file" accept=".json,application/json"></label>
+            </div>
+            <div class="library-pick" style="margin-top:0.45rem">
+              <label for="select-cost-profile-select">Or use a saved profile from reports/</label>
+              <select id="select-cost-profile-select">
+                <option value="">Choose saved PCFG profile…</option>
+              </select>
+            </div>
+            <div class="seed-file-state" id="select-cost-profile-state">No cost profile attached</div>
+            <div class="toggle-row compact-toggle" style="margin-top:0.85rem"><div><b>Report exact recovery</b><small>Explicitly report distinct target-word recovery in greedy mode.</small></div><label class="switch"><input type="checkbox" id="exact_recovery"><span></span></label></div>
           </section>
 
           <section class="panel advanced-panel">
@@ -1050,6 +1064,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
 
-      <script src="/app.js?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b"></script>
+      <script src="/app.js?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b&select-cost-profile=20261121a"></script>
 </body>
 </html>

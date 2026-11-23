@@ -23,6 +23,10 @@
   numeric suffix to keep every output distinct.
 - Updated `docs/index.html` to feature Aether and describe the complete set of
   seven integrated tools.
+- Balanced Aether's performance categories using tie-preserving relative
+  tiers per rule file instead of fixed 10/100 µs cut-offs; the fastest-rules
+  chart now shows the delta from the fastest result and places the fastest rule
+  at the top.
 
 ## 2026-11-21
 

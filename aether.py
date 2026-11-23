@@ -790,6 +790,65 @@ class VisualizationEngine:
         plt.close()
         print(f"{Colors.GREEN}Heatmap saved: {filename}_heatmap.png{Colors.END}")
     
+    @staticmethod
+    def _relative_performance_tiers(times_us: List[float]):
+        """Build balanced, tie-preserving performance tiers for one rule file.
+
+        Absolute 10/100 µs cut-offs are not portable across GPUs and include
+        kernel-launch/measurement overhead. Relative tiers describe the rules
+        within the current benchmark while keeping identical timings together.
+        """
+        values = np.asarray(times_us, dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return [], [], []
+
+        unique_values, group_counts = np.unique(values, return_counts=True)
+        if unique_values.size == 1:
+            value = float(unique_values[0])
+            return [int(values.size)], [f'Comparable (≈{value:.3f} µs)'], ['#3498db']
+
+        cumulative = np.cumsum(group_counts)
+        total = int(values.size)
+
+        # Find boundaries near one-third and two-thirds of the sample. Cuts are
+        # made only between distinct timings, so equal measurements stay in
+        # the same tier even when that makes the buckets slightly uneven.
+        first_candidates = cumulative[:-2] if unique_values.size >= 3 else cumulative[:-1]
+        first_cut = int(np.argmin(np.abs(first_candidates - total / 3.0))) + 1
+        if unique_values.size >= 3:
+            remaining_cumulative = cumulative[first_cut:-1]
+            second_cut = first_cut + int(
+                np.argmin(np.abs(remaining_cumulative - (2.0 * total / 3.0)))
+            ) + 1
+            second_cut = min(max(second_cut, first_cut + 1), unique_values.size - 1)
+        else:
+            second_cut = unique_values.size
+
+        fast_count = int(cumulative[first_cut - 1])
+        if second_cut < unique_values.size:
+            medium_count = int(cumulative[second_cut - 1] - fast_count)
+            slow_count = total - fast_count - medium_count
+        else:
+            medium_count = 0
+            slow_count = total - fast_count
+
+        labels = [f'Fastest (≤{unique_values[first_cut - 1]:.3f} µs)']
+        counts = [fast_count]
+        colors = ['#2ecc71']
+        if medium_count:
+            labels.append(
+                f'Middle ({unique_values[first_cut]:.3f}–{unique_values[second_cut - 1]:.3f} µs)'
+            )
+            counts.append(medium_count)
+            colors.append('#f1c40f')
+        if slow_count:
+            lower_bound = unique_values[second_cut] if medium_count else unique_values[first_cut]
+            labels.append(f'Slowest (≥{lower_bound:.3f} µs)')
+            counts.append(slow_count)
+            colors.append('#e74c3c')
+        return counts, labels, colors
+
     def create_statistical_summary(self, rule_performance: List[Tuple[str, Dict]], filename: str):
         if not rule_performance:
             print(f"{Colors.YELLOW}No performance data available for statistical summary{Colors.END}")
@@ -823,41 +882,60 @@ class VisualizationEngine:
             else:
                 axes[0,1].text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=axes[0,1].transAxes)
                 axes[0,1].set_title('Performance vs Consistency (No Data)')
-            # 3. Top 10 fastest rules
+            # 3. Top 10 fastest rules. Show the delta from the fastest rule so
+            # the chart remains informative when all absolute times are close.
             if rule_performance:
                 top_10 = rule_performance[:min(10, len(rule_performance))]
                 top_rules = [f"{rule[:15]}..." if len(rule) > 15 else rule for rule, _ in top_10]
                 top_times = [data['execution_time'] * 1000000 for _, data in top_10]
-                bars = axes[1,0].barh(top_rules, top_times, color=plt.cm.Greens_r(np.linspace(0.2, 0.8, len(top_rules))))
-                axes[1,0].set_xlabel('Execution Time (μs)')
+                fastest_us = min(top_times)
+                slower_pct = [((value / fastest_us) - 1.0) * 100.0 if fastest_us > 0 else 0.0
+                              for value in top_times]
+                bars = axes[1,0].barh(
+                    top_rules, slower_pct,
+                    color=plt.cm.Greens_r(np.linspace(0.2, 0.8, len(top_rules)))
+                )
+                axes[1,0].set_xlabel('Slower than fastest rule (%)')
                 axes[1,0].set_title('Top 10 Fastest Rules')
                 axes[1,0].grid(True, alpha=0.3, axis='x')
-                for bar in bars:
+                axes[1,0].invert_yaxis()  # fastest rule at the top
+                max_delta = max(slower_pct, default=0.0)
+                x_max = max(max_delta * 1.35, 0.12)
+                axes[1,0].set_xlim(0, x_max)
+                label_pad = x_max * 0.015
+                for bar, absolute_us, delta_pct in zip(bars, top_times, slower_pct):
                     width = bar.get_width()
-                    axes[1,0].text(width, bar.get_y() + bar.get_height()/2, f'{width:.2f}μs', ha='left', va='center', fontsize=8)
+                    axes[1,0].text(
+                        width + label_pad, bar.get_y() + bar.get_height()/2,
+                        f'{absolute_us:.3f} µs  (+{delta_pct:.3f}%)',
+                        ha='left', va='center', fontsize=8
+                    )
             else:
                 axes[1,0].text(0.5, 0.5, 'No rule performance data', ha='center', va='center', transform=axes[1,0].transAxes)
                 axes[1,0].set_title('Top 10 Fastest Rules (No Data)')
-            # 4. Performance categories
+            # 4. Relative performance tiers. Absolute cut-offs such as 10/100 µs
+            # misclassify results when GPU launch and measurement overhead is
+            # larger than the differences between individual rules.
             if times:
-                fast = len([t for t in times if t < 10])
-                medium = len([t for t in times if 10 <= t < 100])
-                slow = len([t for t in times if t >= 100])
-                categories = ['Fast (<10μs)', 'Medium (10-100μs)', 'Slow (≥100μs)']
-                counts = [fast, medium, slow]
-                colors = ['#2ecc71', '#f39c12', '#e74c3c']
-                valid_categories = [cat for cat, cnt in zip(categories, counts) if cnt > 0]
-                valid_counts = [cnt for cnt in counts if cnt > 0]
-                valid_colors = [colors[i] for i, cnt in enumerate(counts) if cnt > 0]
-                if valid_counts:
-                    axes[1,1].pie(valid_counts, labels=valid_categories, colors=valid_colors, autopct='%1.1f%%', startangle=90)
-                    axes[1,1].set_title('Performance Categories Distribution')
+                counts, categories, category_colors = self._relative_performance_tiers(times)
+                if counts:
+                    axes[1,1].pie(
+                        counts, labels=categories, colors=category_colors,
+                        autopct='%1.1f%%', startangle=90,
+                        wedgeprops={'edgecolor': 'white', 'linewidth': 1}
+                    )
+                    axes[1,1].set_title('Relative Performance Tiers')
+                    axes[1,1].text(
+                        0.5, -0.08,
+                        'Within this file · lower execution time is faster · equal timings stay together',
+                        ha='center', va='top', fontsize=8, transform=axes[1,1].transAxes
+                    )
                 else:
                     axes[1,1].text(0.5, 0.5, 'No performance category data', ha='center', va='center', transform=axes[1,1].transAxes)
-                    axes[1,1].set_title('Performance Categories (No Data)')
+                    axes[1,1].set_title('Relative Performance Tiers (No Data)')
             else:
                 axes[1,1].text(0.5, 0.5, 'No execution time data', ha='center', va='center', transform=axes[1,1].transAxes)
-                axes[1,1].set_title('Performance Categories (No Data)')
+                axes[1,1].set_title('Relative Performance Tiers (No Data)')
             plt.suptitle('Comprehensive Statistical Summary', fontsize=16, y=0.98)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, f"{filename}_statistical.png"), dpi=300, bbox_inches='tight')

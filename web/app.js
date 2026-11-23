@@ -7,6 +7,14 @@ const uploadState = {
   concentrator_files: [],
   rulestripper_base: null, rulestripper_target: null,
   minimizer_rules: null, minimizer_probe: null,
+  aether_files: [],
+};
+// Multi-file upload fields (vs. single-file ones): one small table drives
+// every branch below (endpoint, limits, list rendering, removal, library-add,
+// pre-run validation) instead of a parallel hardcoded path per field.
+const MULTI_FILE_FIELDS = {
+  concentrator_files: { endpointBase: '/api/concentrator/upload', maxFiles: 32, label: 'Concentrator' },
+  aether_files: { endpointBase: '/api/aether/upload', maxFiles: 12, label: 'Aether' },
 };
 const uploadInProgress = Object.fromEntries(Object.keys(uploadState).map((key) => [key, false]));
 let activeTool = 'rulest';
@@ -44,6 +52,7 @@ const LIBRARY_FIELD_CATEGORIES = {
   seed: 'rules', ranker_rules: 'rules', ranker_source_rules: 'rules', concentrator_files: 'rules',
   rulestripper_base: 'wordlists', rulestripper_target: 'wordlists',
   minimizer_rules: 'rules', minimizer_probe: 'wordlists',
+  aether_files: 'rules',
 };
 try { completionSoundEnabled = localStorage.getItem('ruleops-completion-sound') !== 'off'; } catch {}
 
@@ -138,7 +147,7 @@ function handleTaskCompletionSound(data) {
 }
 
 function libraryPlaceholder(field) {
-  if (field === 'concentrator_files') return 'Add saved rule file…';
+  if (field in MULTI_FILE_FIELDS) return 'Add saved rule file…';
   return LIBRARY_FIELD_CATEGORIES[field] === 'wordlists' ? 'Choose saved wordlist…' : 'Choose saved rule file…';
 }
 let libraryRefreshPromise = null;
@@ -193,10 +202,10 @@ async function selectLibraryAsset(field, assetId, select) {
   if (!assetId) return;
   try {
     const result = await apiPost('/api/library/select', { field, asset_id: assetId });
-    const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category };
-    if (field === 'concentrator_files') {
+    const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count };
+    if (field in MULTI_FILE_FIELDS) {
       if (!result.already_selected) uploadState[field] = [...(uploadState[field] || []), meta];
-      renderConcentratorFileState();
+      renderMultiFileState(field);
     } else {
       uploadState[field] = meta;
       if (field === 'seed') $('seed-state').textContent = `✓ ${result.name} · ${humanSize(result.size)} · saved`;
@@ -346,12 +355,12 @@ function setUploadError(field, message) {
   el.classList.add('error'); el.textContent = message;
 }
 function clearUploadField(field) {
-  uploadState[field] = field === 'concentrator_files' ? [] : null;
+  uploadState[field] = field in MULTI_FILE_FIELDS ? [] : null;
   const stateEl = field === 'seed' ? $('seed-state') : $(`${field}-state`);
   stateEl.classList.remove('uploaded', 'error');
   if (field === 'seed') {
     stateEl.textContent = 'No custom seed rules uploaded';
-  } else if (field === 'concentrator_files') {
+  } else if (field in MULTI_FILE_FIELDS) {
     stateEl.innerHTML = '';
     const dot = document.createElement('span'); dot.className = 'file-state-dot';
     const text = document.createElement('span'); text.textContent = 'No rules files selected';
@@ -362,6 +371,7 @@ function clearUploadField(field) {
     const text = document.createElement('span'); text.textContent = 'No file selected';
     stateEl.append(dot, text);
   }
+  if (field === 'aether_files') updateAetherRuleCountHint();
   const progress = $(`${field}-progress`);
   if (progress) progress.style.width = '0%';
   const input = $(`${field}-file`);
@@ -378,7 +388,7 @@ function uploadFile(field, file) {
   } else stateEl.textContent = `Uploading ${file.name}…`;
   if (progress) progress.style.width = '0%';
   const xhr = new XMLHttpRequest();
-  const uploadEndpoint = field.startsWith('ranker_') ? `/api/ranker/upload/${field}` : ['rulestripper_base','rulestripper_target','minimizer_rules','minimizer_probe'].includes(field) ? `/api/tools/upload/${field}` : `/api/upload/${field}`;
+  const uploadEndpoint = field.startsWith('ranker_') ? `/api/ranker/upload/${field}` : ['rulestripper_base','rulestripper_target','minimizer_rules','minimizer_probe'].includes(field) ? `/api/tools/upload/${field}` : MULTI_FILE_FIELDS[field] ? `${MULTI_FILE_FIELDS[field].endpointBase}/${field}` : `/api/upload/${field}`;
   xhr.open('POST', `${uploadEndpoint}?filename=${encodeURIComponent(file.name)}`);
   xhr.setRequestHeader('Content-Type', 'application/octet-stream');
   xhr.setRequestHeader('X-CSRF-Token', csrfToken);
@@ -409,9 +419,10 @@ function uploadFile(field, file) {
   xhr.onerror = () => { uploadInProgress[field] = false; setUploadError(field, 'Network error during upload.'); toast('Upload failed due to a network error.', true); };
   xhr.send(file);
 }
-function renderConcentratorFileState() {
-  const stateEl = $('concentrator_files-state');
-  const files = uploadState.concentrator_files || [];
+function renderMultiFileState(field) {
+  const stateEl = $(`${field}-state`);
+  if (!stateEl) return;
+  const files = uploadState[field] || [];
   stateEl.innerHTML = '';
   stateEl.classList.toggle('uploaded', files.length > 0);
   stateEl.classList.remove('error');
@@ -424,66 +435,86 @@ function renderConcentratorFileState() {
     names.textContent = files.map((file) => file.name).join(' · ');
     stateEl.append(names);
   }
+  if (field === 'aether_files') updateAetherRuleCountHint();
 }
-function uploadConcentratorFile(file) {
+function updateAetherRuleCountHint() {
+  const hint = $('aether-max-test-rules-hint');
+  if (!hint) return;
+  const files = uploadState.aether_files || [];
+  if (!files.length) {
+    hint.textContent = 'Caps rules sampled per file. Select a rule file to show its rule count.';
+    return;
+  }
+  const counts = files.map((file) => {
+    const count = Number.isInteger(file.rule_count) && file.rule_count >= 0
+      ? `${file.rule_count.toLocaleString()} rules`
+      : 'rule count unavailable';
+    return `${file.name}: ${count}`;
+  });
+  hint.textContent = `${counts.join(' · ')}. Limit applies separately to each file.`;
+}
+// Kept as a thin alias: older call sites refer to this name directly.
+function renderConcentratorFileState() { renderMultiFileState('concentrator_files'); }
+function uploadMultiFile(field, file) {
   return new Promise((resolve, reject) => {
-    const field = 'concentrator_files';
-    const progress = $('concentrator_files-progress');
-    const stateEl = $('concentrator_files-state');
+    const { endpointBase, label } = MULTI_FILE_FIELDS[field] || { endpointBase: '/api/upload', label: field };
+    const progress = $(`${field}-progress`);
+    const stateEl = $(`${field}-state`);
     stateEl.classList.remove('error');
     const prior = (uploadState[field] || []).length;
     stateEl.textContent = `Uploading ${file.name} (${prior + 1} of selected files)…`;
-    progress.style.width = '0%';
+    if (progress) progress.style.width = '0%';
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `/api/concentrator/upload/${field}?filename=${encodeURIComponent(file.name)}`);
+    xhr.open('POST', `${endpointBase}/${field}?filename=${encodeURIComponent(file.name)}`);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-    xhr.upload.onprogress = (event) => { if (event.lengthComputable) progress.style.width = `${Math.round(event.loaded / event.total * 100)}%`; };
+    xhr.upload.onprogress = (event) => { if (event.lengthComputable && progress) progress.style.width = `${Math.round(event.loaded / event.total * 100)}%`; };
     xhr.onload = async () => {
       let result;
       try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
       if (xhr.status === 401) { window.location.replace('/'); reject(new Error('Authentication required.')); return; }
       if (xhr.status >= 200 && xhr.status < 300 && result.ok) {
-        uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category }];
-        progress.style.width = '100%';
-        renderConcentratorFileState();
+        uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count }];
+        if (progress) progress.style.width = '100%';
+        renderMultiFileState(field);
         if (result.library) await refreshLibraryMenus();
         resolve(result);
       } else {
-        stateEl.classList.add('error'); stateEl.textContent = result.error || 'Upload failed.'; progress.style.width = '0%';
-        reject(new Error(result.error || 'Upload failed.'));
+        stateEl.classList.add('error'); stateEl.textContent = result.error || 'Upload failed.'; if (progress) progress.style.width = '0%';
+        reject(new Error(result.error || `${label} upload failed.`));
       }
     };
     xhr.onerror = () => { stateEl.classList.add('error'); stateEl.textContent = `Network error uploading ${file.name}.`; reject(new Error('Network error during upload.')); };
     xhr.send(file);
   });
 }
-async function uploadConcentratorFiles(files) {
+async function uploadMultiFiles(field, files) {
   if (!files.length) return;
-  uploadInProgress.concentrator_files = true;
-  const input = $('concentrator_files-file');
+  const { maxFiles, label } = MULTI_FILE_FIELDS[field] || { maxFiles: 32, label: field };
+  uploadInProgress[field] = true;
+  const input = $(`${field}-file`);
   try {
-    if ((uploadState.concentrator_files || []).length + files.length > 32) throw new Error('Select no more than 32 Concentrator files.');
-    for (const file of files) await uploadConcentratorFile(file);
-    toast(`${files.length} Concentrator input file(s) uploaded.`);
+    if ((uploadState[field] || []).length + files.length > maxFiles) throw new Error(`Select no more than ${maxFiles} ${label} files.`);
+    for (const file of files) await uploadMultiFile(field, file);
+    toast(`${files.length} ${label} input file(s) uploaded.`);
   } catch (error) {
     toast(error.message, true);
   } finally {
-    uploadInProgress.concentrator_files = false;
+    uploadInProgress[field] = false;
     if (input) input.value = '';
-    renderConcentratorFileState();
+    renderMultiFileState(field);
   }
 }
 function configureFileInputs() {
   Object.keys(uploadState).forEach((field) => {
-    if (field === 'concentrator_files') {
-      const input = $('concentrator_files-file');
-      if (input) input.addEventListener('change', (event) => uploadConcentratorFiles(Array.from(event.target.files || [])));
-      const drop = document.querySelector('[data-upload="concentrator_files"] .drop-zone');
+    if (field in MULTI_FILE_FIELDS) {
+      const input = $(`${field}-file`);
+      if (input) input.addEventListener('change', (event) => uploadMultiFiles(field, Array.from(event.target.files || [])));
+      const drop = document.querySelector(`[data-upload="${field}"] .drop-zone`);
       if (drop) {
         ['dragenter','dragover'].forEach(type => drop.addEventListener(type, (event) => { event.preventDefault(); drop.classList.add('dragover'); }));
         ['dragleave','drop'].forEach(type => drop.addEventListener(type, (event) => { event.preventDefault(); drop.classList.remove('dragover'); }));
-        drop.addEventListener('drop', (event) => { const files = Array.from(event.dataTransfer.files || []); if (files.length) uploadConcentratorFiles(files); });
+        drop.addEventListener('drop', (event) => { const files = Array.from(event.dataTransfer.files || []); if (files.length) uploadMultiFiles(field, files); });
       }
       return;
     }
@@ -538,6 +569,7 @@ function renderOutputs(outputs = [], outputTool = 'rulest') {
     concentrator: { count: 'concentrator-output-count', list: 'concentrator-output-list' },
     rulestripper: { count: 'rulestripper-output-count', list: 'rulestripper-output-list' },
     minimizer: { count: 'minimizer-output-count', list: 'minimizer-output-list' },
+    aether: { count: 'aether-output-count', list: 'aether-output-list' },
   };
   Object.entries(outputViews).forEach(([tool, ids]) => {
     const ownedOutputs = tool === outputTool ? outputs : [];
@@ -551,7 +583,14 @@ function renderOutputs(outputs = [], outputTool = 'rulest') {
       empty.innerHTML = '<span>▤</span><b>No outputs yet</b><small>Generated files for this tool will appear here.</small>';
       root.append(empty); return;
     }
-    if (ownedOutputs.length > 3) {
+    // 2+ files is already worth one zip click instead of several individual
+    // downloads. The old threshold (>3) hid the bundle for exactly the kind
+    // of small-but-multi-file result set Aether commonly produces for a
+    // single rule file without --optimize (sorted rules + JSON report, or
+    // just a couple of charts if one chart type was skipped for that rule's
+    // data) -- this keeps the backend gate (download-outputs.zip) and this
+    // check in sync.
+    if (ownedOutputs.length > 1) {
       const bundle = document.createElement('a');
       bundle.className = 'download-output-bundle';
       bundle.href = '/api/run-storage/download-outputs.zip';
@@ -563,7 +602,7 @@ function renderOutputs(outputs = [], outputTool = 'rulest') {
     ownedOutputs.forEach((file) => {
       const row = document.createElement('div'); row.className = 'output-item';
       const icon = document.createElement('span'); icon.className = 'output-file-icon';
-      icon.textContent = file.name.toLowerCase().endsWith('.csv') ? 'CSV' : file.name.toLowerCase().endsWith('.log') ? 'LOG' : 'RULE';
+      icon.textContent = file.name.toLowerCase().endsWith('.csv') ? 'CSV' : file.name.toLowerCase().endsWith('.log') ? 'LOG' : file.name.toLowerCase().endsWith('.png') ? 'IMG' : file.name.toLowerCase().endsWith('.json') ? 'JSON' : 'RULE';
       const meta = document.createElement('div'); meta.className = 'output-meta';
       const name = document.createElement('b'); name.textContent = file.name;
       const size = document.createElement('small'); size.textContent = humanSize(file.size);
@@ -579,7 +618,65 @@ const TOOL_METRIC_WAITING_STAGES = {
   concentrator: 'Waiting for a Concentrator job',
   rulestripper: 'Waiting for Rulestripper',
   minimizer: 'Waiting for Rule Minimizer',
+  aether: 'Waiting for Aether',
 };
+
+// Aether names its 4 dashboard charts "<rule-file-basename>_<kind>.png".
+// Group the flat run-output list back into one card per rule file so the
+// gallery reads as "results for rule X", not an unordered pile of images.
+const AETHER_CHART_KINDS = [
+  { suffix: '_radar.png', label: 'Radar' },
+  { suffix: '_heatmap.png', label: 'Heatmap' },
+  { suffix: '_statistical.png', label: 'Statistical' },
+  { suffix: '_distribution.png', label: 'Distribution' },
+];
+
+function renderAetherGallery(outputs = []) {
+  const root = $('aether-gallery');
+  if (!root) return;
+  const pngs = outputs.filter((file) => file.name.toLowerCase().endsWith('.png'));
+  root.innerHTML = '';
+  if (!pngs.length) {
+    const empty = document.createElement('div'); empty.className = 'empty-output';
+    empty.innerHTML = outputs.length
+      ? '<span>✦</span><b>No charts in this run</b><small>Visualize was off (or no chart could be drawn for this data) — see Aether output files for the JSON report and sorted rules.</small>'
+      : '<span>✦</span><b>No charts yet</b><small>Run a benchmark with Visualize enabled to see per-rule dashboards here.</small>';
+    root.append(empty);
+    return;
+  }
+  const groups = new Map(); // baseName -> [{label, file}]
+  pngs.forEach((file) => {
+    const lower = file.name.toLowerCase();
+    const kind = AETHER_CHART_KINDS.find((k) => lower.endsWith(k.suffix));
+    const base = kind ? file.name.slice(0, file.name.length - kind.suffix.length) : file.name.replace(/\.png$/i, '');
+    const label = kind ? kind.label : 'Chart';
+    if (!groups.has(base)) groups.set(base, []);
+    groups.get(base).push({ label, file });
+  });
+  groups.forEach((charts, base) => {
+    const card = document.createElement('div'); card.className = 'aether-rule-card';
+    const heading = document.createElement('h4'); heading.textContent = base;
+    card.append(heading);
+    const grid = document.createElement('div'); grid.className = 'aether-chart-grid';
+    charts.forEach(({ label, file }) => {
+      const fig = document.createElement('a');
+      fig.className = 'aether-chart-thumb';
+      fig.href = `/api/preview/${encodeURIComponent(file.name)}`;
+      fig.target = '_blank';
+      fig.rel = 'noopener noreferrer';
+      fig.title = `Open ${file.name} full size`;
+      const img = document.createElement('img');
+      img.src = `/api/preview/${encodeURIComponent(file.name)}`;
+      img.alt = `${base} — ${label} chart`;
+      img.loading = 'lazy';
+      const cap = document.createElement('small'); cap.textContent = label;
+      fig.append(img, cap);
+      grid.append(fig);
+    });
+    card.append(grid);
+    root.append(card);
+  });
+}
 
 function renderToolMetrics(tool, data) {
   const panel = document.querySelector(`[data-tool-metrics="${tool}"]`);
@@ -643,7 +740,7 @@ function updateLocalEngineBadge(data) {
   })();
   card.dataset.engineState = badge.state;
   label.textContent = badge.label;
-  const toolNames = { rulest: 'RULEST', ranker: 'RULE RANKER', concentrator: 'CONCENTRATOR', rulestripper: 'RULESTRIPPER', minimizer: 'RULE MINIMIZER' };
+  const toolNames = { rulest: 'RULEST', ranker: 'RULE RANKER', concentrator: 'CONCENTRATOR', rulestripper: 'RULESTRIPPER', minimizer: 'RULE MINIMIZER', aether: 'AETHER' };
   const activeTool = toolNames[data.tool] || 'engine';
   card.setAttribute('aria-label', `Local engine status: ${badge.label.toLowerCase()}${badge.state === 'running' || badge.state === 'paused' || badge.state === 'stopping' ? ` · ${activeTool}` : ''}`);
   card.title = badge.state === 'running' ? `${activeTool} is processing.` : badge.state === 'paused' ? `${activeTool} is paused.` : badge.state === 'stopping' ? `${activeTool} is stopping.` : `Local engine ${badge.label.toLowerCase()}.`;
@@ -985,7 +1082,7 @@ function renderRunStorageScan(data) {
   if (duplicateGroups.length) {
     duplicateGroups.forEach((group, index) => {
       const copies = group.duplicates || [];
-      const toolNames = { rulest: 'RULEST', ranker: 'Rule Ranker', concentrator: 'Concentrator', rulestripper: 'Rulestripper', minimizer: 'Rule Minimizer' };
+      const toolNames = { rulest: 'RULEST', ranker: 'Rule Ranker', concentrator: 'Concentrator', rulestripper: 'Rulestripper', minimizer: 'Rule Minimizer', aether: 'Aether' };
       const inputNames = (group.inputs || []).map((item) => item.name).filter(Boolean);
       const inputSummary = inputNames.length ? inputNames.join(' + ') : 'Recorded input datasets';
       const sourceNote = group.manifest_source === 'inferred from saved command log' ? ' · inferred from saved command log' : '';
@@ -1395,6 +1492,7 @@ function renderStatus(data) {
   const utilityTools = {
     rulestripper: { label: 'Rulestripper', start: 'rulestripper-start', cancel: 'rulestripper-cancel', stage: 'rulestripper-current-stage', detail: 'rulestripper-stage-detail', runtime: 'rulestripper-runtime', pid: 'rulestripper-pid', pill: 'rulestripper-live-pill', waiting: 'Waiting for Rulestripper' },
     minimizer: { label: 'Rule Minimizer', start: 'minimizer-start', cancel: 'minimizer-cancel', stage: 'minimizer-current-stage', detail: 'minimizer-stage-detail', runtime: 'minimizer-runtime', pid: 'minimizer-pid', pill: 'minimizer-live-pill', waiting: 'Waiting for Rule Minimizer' },
+    aether: { label: 'Aether', start: 'aether-start', cancel: 'aether-cancel', stage: 'aether-current-stage', detail: 'aether-stage-detail', runtime: 'aether-runtime', pid: 'aether-pid', pill: 'aether-live-pill', waiting: 'Waiting for Aether' },
   };
   Object.entries(utilityTools).forEach(([tool, ids]) => {
     const active = data.tool === tool;
@@ -1416,11 +1514,14 @@ function renderStatus(data) {
     $('terminal-tool-label').textContent = 'rulestripper / stdout';
   } else if (data.tool === 'minimizer') {
     $('terminal-tool-label').textContent = 'rule-minimizer / stdout';
+  } else if (data.tool === 'aether') {
+    $('terminal-tool-label').textContent = 'aether / stdout';
   } else {
     $('terminal-tool-label').textContent = 'rulest-engine / stdout';
   }
-  ['rulest', 'ranker', 'concentrator', 'rulestripper', 'minimizer'].forEach((tool) => renderToolMetrics(tool, data));
+  ['rulest', 'ranker', 'concentrator', 'rulestripper', 'minimizer', 'aether'].forEach((tool) => renderToolMetrics(tool, data));
   renderOutputs(data.outputs || [], data.tool || 'rulest');
+  if (data.tool === 'aether') renderAetherGallery(data.outputs || []);
   const storageView = $('system-view');
   if (storageView && !storageView.hidden) {
     if (Date.now() - lastStorageSummaryAt > 5000) loadRunStorageSummary();
@@ -1462,11 +1563,11 @@ async function pollStatus() {
     if (data.log_seq > lastLogId) lastLogId = data.log_seq;
     if (data.uploads) {
       Object.keys(uploadState).forEach((field) => {
-        if (field === 'concentrator_files') {
+        if (field in MULTI_FILE_FIELDS) {
           const files = Array.isArray(data.uploads[field]) ? data.uploads[field] : [];
           if (!uploadInProgress[field]) {
             uploadState[field] = files;
-            renderConcentratorFileState();
+            renderMultiFileState(field);
           }
           return;
         }
@@ -1680,12 +1781,13 @@ async function clearLogHistoryFromUi() {
 }
 
 function setActiveTool(tool, scroll = false) {
-  activeTool = ['ranker', 'concentrator', 'rulestripper', 'minimizer'].includes(tool) ? tool : 'rulest';
+  activeTool = ['ranker', 'concentrator', 'rulestripper', 'minimizer', 'aether'].includes(tool) ? tool : 'rulest';
   $('rulest-view').hidden = activeTool !== 'rulest';
   $('ranker-view').hidden = activeTool !== 'ranker';
   $('concentrator-view').hidden = activeTool !== 'concentrator';
   $('rulestripper-view').hidden = activeTool !== 'rulestripper';
   $('minimizer-view').hidden = activeTool !== 'minimizer';
+  $('aether-view').hidden = activeTool !== 'aether';
   const systemView = $('system-view');
   if (systemView) systemView.hidden = true;
 
@@ -1695,6 +1797,7 @@ function setActiveTool(tool, scroll = false) {
     concentrator: 'Concentrator',
     rulestripper: 'Rulestripper',
     minimizer: 'Rule Minimizer',
+    aether: 'Aether',
   };
   const breadcrumb = document.querySelector('.breadcrumb strong');
   if (breadcrumb && !['#tuning', '#gpu-diagnostic', '#live-log'].includes(window.location.hash)) {
@@ -1719,7 +1822,8 @@ function setActiveTool(tool, scroll = false) {
     const target = activeTool === 'ranker' ? $('ranker-view')
       : activeTool === 'concentrator' ? $('concentrator-view')
       : activeTool === 'rulestripper' ? $('rulestripper-view')
-        : activeTool === 'minimizer' ? $('minimizer-view') : $('workspace');
+        : activeTool === 'minimizer' ? $('minimizer-view')
+          : activeTool === 'aether' ? $('aether-view') : $('workspace');
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
@@ -1730,6 +1834,7 @@ function setActiveSystemView(view = 'storage') {
   $('concentrator-view').hidden = true;
   $('rulestripper-view').hidden = true;
   $('minimizer-view').hidden = true;
+  $('aether-view').hidden = true;
   $('system-view').hidden = false;
   const aboutElements = new Set(['about', 'about-grid']);
   document.querySelectorAll('#system-view > section, #system-view > div').forEach((el) => {
@@ -1991,7 +2096,36 @@ function readUtilityNumber(id, label) {
   }
   return value;
 }
+function readUtilityFloat(id, label) {
+  const raw = $(id).value;
+  if (raw === '') return '';
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < Number($(id).min || 0)) {
+    throw new Error(`${label} must be a valid number in the displayed range.`);
+  }
+  return value;
+}
 function utilityOptions(tool) {
+  if (tool === 'aether') {
+    if (!(uploadState.aether_files || []).length) throw new Error('Upload at least one Hashcat rules file for Aether.');
+    const options = {
+      iterations: readUtilityNumber('aether-iterations', 'Iterations'),
+      test_runs: readUtilityNumber('aether-test-runs', 'Test runs'),
+      max_words: readUtilityNumber('aether-max-words', 'Max words'),
+      max_test_rules: readUtilityNumber('aether-max-test-rules', 'Max test rules'),
+      dpi: readUtilityNumber('aether-dpi', 'Chart DPI'),
+      platform: readUtilityNumber('aether-platform', 'GPU platform index'),
+      device: readUtilityNumber('aether-device', 'GPU device index'),
+      visualize: $('aether-visualize').checked,
+      identical_dicts: $('aether-identical-dicts').checked,
+      optimize: $('aether-optimize').checked,
+    };
+    if (options.optimize) {
+      options.max_optimize_rules = readUtilityNumber('aether-max-optimize-rules', 'Max rules to optimize');
+      options.max_time_us = readUtilityNumber('aether-max-time', 'Max optimize time (µs)');
+    }
+    return options;
+  }
   if (tool === 'rulestripper') {
     if (!uploadState.rulestripper_base || !uploadState.rulestripper_target) throw new Error('Upload or select both Rulestripper BASE and TARGET wordlists.');
     return {
@@ -2017,8 +2151,9 @@ function utilityOptions(tool) {
     output_name: $('minimizer-output-name').value,
   };
 }
+const UTILITY_TOOL_TITLES = { rulestripper: 'Rulestripper', minimizer: 'Rule Minimizer', aether: 'Aether' };
 async function startUtilityRun(tool) {
-  const title = tool === 'rulestripper' ? 'Rulestripper' : 'Rule Minimizer';
+  const title = UTILITY_TOOL_TITLES[tool] || tool;
   const startButton = $(`${tool}-start`);
   try {
     const options = utilityOptions(tool);
@@ -2036,7 +2171,7 @@ async function startUtilityRun(tool) {
   }
 }
 async function cancelUtilityRun(tool) {
-  const title = tool === 'rulestripper' ? 'Rulestripper' : 'Rule Minimizer';
+  const title = UTILITY_TOOL_TITLES[tool] || tool;
   if (!window.confirm(`Cancel the active ${title} process? Any output already written will be preserved.`)) return;
   $(`${tool}-cancel`).disabled = true;
   try { await apiPost('/api/tools/cancel', {}); toast(`${title} cancellation requested.`); await pollStatus(); }
@@ -2071,6 +2206,8 @@ function initializeApp() {
   $('rulestripper-cancel').addEventListener('click', () => cancelUtilityRun('rulestripper'));
   $('minimizer-start').addEventListener('click', () => startUtilityRun('minimizer'));
   $('minimizer-cancel').addEventListener('click', () => cancelUtilityRun('minimizer'));
+  $('aether-start').addEventListener('click', () => startUtilityRun('aether'));
+  $('aether-cancel').addEventListener('click', () => cancelUtilityRun('aether'));
   const navigateTo = (href) => {
     const target = href && href.startsWith('#') ? document.getElementById(href.slice(1)) : null;
     if (!target) return;
@@ -2080,12 +2217,13 @@ function initializeApp() {
     else if (href === '#concentrator') setActiveTool('concentrator');
     else if (href === '#rulestripper') setActiveTool('rulestripper');
     else if (href === '#minimizer') setActiveTool('minimizer');
+    else if (href === '#aether') setActiveTool('aether');
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(href)) setActiveTool('rulest');
 
     const breadcrumbLabels = {
       '#workspace': 'RULEST', '#tuning': 'Engine tuning',
       '#gpu-diagnostic': 'GPU diagnostics', '#ranker': 'Rule Ranker',
-      '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
+      '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#aether': 'Aether', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
     const breadcrumb = document.querySelector('.breadcrumb strong');
     if (breadcrumb) breadcrumb.textContent = breadcrumbLabels[href] || 'Workspace';
@@ -2121,7 +2259,7 @@ function initializeApp() {
   selectConcentratorMode('extract');
   let storedTool = 'rulest';
   try { storedTool = sessionStorage.getItem('ruleops-active-tool') || 'rulest'; } catch {}
-  const initialTool = window.location.hash === '#ranker' ? 'ranker' : window.location.hash === '#concentrator' ? 'concentrator' : window.location.hash === '#rulestripper' ? 'rulestripper' : window.location.hash === '#minimizer' ? 'minimizer' : ['#workspace', '#tuning', '#gpu-diagnostic'].includes(window.location.hash) ? 'rulest' : storedTool;
+  const initialTool = window.location.hash === '#ranker' ? 'ranker' : window.location.hash === '#concentrator' ? 'concentrator' : window.location.hash === '#rulestripper' ? 'rulestripper' : window.location.hash === '#minimizer' ? 'minimizer' : window.location.hash === '#aether' ? 'aether' : ['#workspace', '#tuning', '#gpu-diagnostic'].includes(window.location.hash) ? 'rulest' : storedTool;
   setActiveTool(initialTool);
   if (window.location.hash === '#run-storage') setActiveSystemView('storage');
   if (window.location.hash === '#about') setActiveSystemView('about');
@@ -2159,7 +2297,7 @@ function initializeApp() {
   });
   const navLinks = Array.from(document.querySelectorAll('[data-nav-tool], [data-nav-section]'));
   const setActiveNav = (hash) => {
-    const wanted = hash || (activeTool === 'ranker' ? '#ranker' : activeTool === 'concentrator' ? '#concentrator' : activeTool === 'rulestripper' ? '#rulestripper' : activeTool === 'minimizer' ? '#minimizer' : '#workspace');
+    const wanted = hash || (activeTool === 'ranker' ? '#ranker' : activeTool === 'concentrator' ? '#concentrator' : activeTool === 'rulestripper' ? '#rulestripper' : activeTool === 'minimizer' ? '#minimizer' : activeTool === 'aether' ? '#aether' : '#workspace');
     navLinks.forEach((link) => {
       const active = link.getAttribute('href') === wanted;
       link.classList.toggle('active', active);
@@ -2167,17 +2305,18 @@ function initializeApp() {
       else link.removeAttribute('aria-current');
     });
     const rulestSectionActive = ['#workspace', '#tuning', '#gpu-diagnostic'].includes(wanted);
-    if (rulestSectionActive) {
-      const button = $('nav-rulest');
-      button.classList.add('active');
-      button.setAttribute('aria-current', 'page');
+    const rulestButton = $('nav-rulest');
+    if (rulestButton) {
+      rulestButton.classList.toggle('active', rulestSectionActive);
+      if (rulestSectionActive) rulestButton.setAttribute('aria-current', 'page');
+      else rulestButton.removeAttribute('aria-current');
     }
     const labels = {
       '#workspace': 'RULEST', '#tuning': 'Engine tuning', '#gpu-diagnostic': 'GPU diagnostics',
-      '#ranker': 'Rule Ranker', '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
+      '#ranker': 'Rule Ranker', '#concentrator': 'Concentrator', '#rulestripper': 'Rulestripper', '#minimizer': 'Rule Minimizer', '#aether': 'Aether', '#live-log': 'Live activity', '#run-storage': 'Run storage', '#about': 'About',
     };
     const breadcrumb = document.querySelector('.breadcrumb strong');
-    if (breadcrumb) breadcrumb.textContent = labels[wanted] || (activeTool === 'ranker' ? 'Rule Ranker' : activeTool === 'concentrator' ? 'Concentrator' : activeTool === 'rulestripper' ? 'Rulestripper' : activeTool === 'minimizer' ? 'Rule Minimizer' : 'RULEST');
+    if (breadcrumb) breadcrumb.textContent = labels[wanted] || (activeTool === 'ranker' ? 'Rule Ranker' : activeTool === 'concentrator' ? 'Concentrator' : activeTool === 'rulestripper' ? 'Rulestripper' : activeTool === 'minimizer' ? 'Rule Minimizer' : activeTool === 'aether' ? 'Aether' : 'RULEST');
   };
   const handleNavigationState = () => {
     const hash = window.location.hash;
@@ -2187,6 +2326,7 @@ function initializeApp() {
     else if (hash === '#concentrator') setActiveTool('concentrator');
     else if (hash === '#rulestripper') setActiveTool('rulestripper');
     else if (hash === '#minimizer') setActiveTool('minimizer');
+    else if (hash === '#aether') setActiveTool('aether');
     else if (['#workspace', '#tuning', '#gpu-diagnostic'].includes(hash)) setActiveTool('rulest');
     setActiveNav(hash);
   };

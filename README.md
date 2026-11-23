@@ -4,9 +4,9 @@
     <img src="web/favicon.svg" alt="RULEOPS" width="120">
 </a>
 
-RULEOPS is a cybersecurity research workbench for building, scoring, and compressing
+RULEOPS is a cybersecurity research workbench for building, benchmarking, scoring, and compressing
 password-cracking rulesets used with [Hashcat](https://hashcat.net/hashcat/).
-It brings together six complementary tools behind one authenticated local
+It brings together seven complementary tools behind one authenticated local
 web UI (plus standalone CLIs for each), aimed at studying how rule-based
 password transformations can be generated and selected more efficiently than
 hand-tuned rule lists.
@@ -60,6 +60,7 @@ questions:
 | **Rule Ranker** | Scores a candidate `.rule` file against a wordlist + cracked-password list; supports an adaptive multi-armed-bandit (MAB) mode and a legacy exhaustive mode. |
 | **Ranker CELF optimizer** | Runs greedy/CELF max-coverage selection over ranked candidates (GPU coverage pass + CPU or GPU CELF) to produce a compact, high-coverage rule file. |
 | **Concentrator** | Extracts, generates, and cleans rule collections from existing material. |
+| **Aether** | Benchmarks Hashcat rule throughput on an OpenCL GPU, produces per-file dashboards, and can build a fastest-first ruleset under a cumulative execution-time budget. |
 | **Rulestripper** | Empirically derives rule chains by decomposing TARGET words into BASE-word stems and transformations (14 extraction modes). |
 | **PCFG Corpus Profiler** | Produces aggregate-only length and character-class statistics for password-security auditing; it does not emit candidate values or rules. |
 | **Rule Minimizer** | Removes functionally/behaviorally equivalent rules by comparing their output over a probe word set. |
@@ -78,9 +79,9 @@ standalone CLI.
 - **`rule_ranker/`** — installable package wrapping the ranking, CSV
   post-processing/handler, and CELF selection logic behind one dispatcher
   CLI (`run_ranker.py`).
-- **`minimizer.py`**, **`run_rulestripper.py`**, **`concentrator.py`** —
-  standalone engines for minimization, rule-chain extraction, and rule
-  collection management, each also reachable from the web UI.
+- **`minimizer.py`**, **`run_rulestripper.py`**, **`concentrator.py`**, **`aether.py`** —
+  standalone engines for minimization, rule-chain extraction, rule collection
+  management, and GPU rule-performance benchmarking, all reachable from the web UI.
 - **`web/`** — front-end assets for the Control Center and the browser-only
   Email Rule Extractor.
 - **`tests/`** — unit and integration tests for every engine, the GUI

@@ -3,3 +3,8 @@ pyopencl
 tqdm
 
 msgpack>=1.0
+
+# Aether (aether.py) rule-performance benchmark & dashboard visualizations
+matplotlib
+seaborn
+pandas

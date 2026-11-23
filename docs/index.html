@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#090d17">
-  <meta name="description" content="RULEOPS is an open-source, GPU-accelerated research workbench for generating, ranking and optimizing Hashcat rule sets.">
+  <meta name="description" content="RULEOPS is an open-source workbench with seven integrated tools for generating, benchmarking, ranking, optimizing and analyzing Hashcat rule sets.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="RULEOPS — Rule Generation, Ranking & Optimization">
-  <meta property="og:description" content="A unified toolchain for authorized password-security research: generate, rank, select and minimize Hashcat rule sets.">
+  <meta property="og:description" content="Seven integrated tools for authorized password-security research: generate, GPU-benchmark, extract, rank, select and minimize Hashcat rule sets.">
   <title>RULEOPS — Rule Generation, Ranking &amp; Optimization</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <style>
@@ -221,13 +221,13 @@
   </style>
 </head>
 <body>
-  <div class="announcement"><strong>RULEOPS v2.6.4</strong> &nbsp;·&nbsp; Open-source toolkit for authorized password-security research</div>
+  <div class="announcement"><strong>RULEOPS v2.6.5</strong> &nbsp;·&nbsp; Open-source toolkit for authorized password-security research</div>
 
   <header class="header">
     <div class="wrap nav">
       <a class="brand" href="#top" aria-label="RULEOPS home">
         <img class="brand-mark" src="favicon.svg" alt="" aria-hidden="true">
-        <span>RULEOPS <small>2.6.4</small></span>
+        <span>RULEOPS <small>2.6.5</small></span>
       </a>
       <nav class="nav-links" id="navLinks" aria-label="Main navigation">
         <a href="#tools">Tools</a>
@@ -249,7 +249,7 @@
         <div>
           <div class="eyebrow">A rule-engineering workbench</div>
           <h1>Build better<br><span class="gradient-text">rule sets.</span></h1>
-          <p class="hero-copy">RULEOPS brings rule generation, GPU-assisted ranking, coverage optimization and minimization into one research toolchain. Explore large Hashcat rule collections with a workflow designed for <strong>authorized password-security research and auditing.</strong></p>
+          <p class="hero-copy">RULEOPS brings rule generation, GPU rule-performance benchmarking, extraction, ranking, coverage optimization and minimization into one seven-tool research workbench. Explore large Hashcat rule collections with a workflow designed for <strong>authorized password-security research and auditing.</strong></p>
           <div class="hero-buttons">
             <a class="button button-primary" href="https://github.com/A113L/RULEOPS" target="_blank" rel="noopener">Explore the repository <span aria-hidden="true">↗</span></a>
             <a class="button button-ghost" href="https://github.com/A113L/RULEOPS/archive/refs/heads/main.zip">Download source ZIP ↓</a>
@@ -282,7 +282,7 @@
     <div class="trust-strip">
       <div class="wrap trust-grid">
         <div class="trust-item"><b>GPU-accelerated</b><span>OpenCL compute paths</span></div>
-        <div class="trust-item"><b>One workbench</b><span>Unified local web UI</span></div>
+        <div class="trust-item"><b>Seven integrated tools</b><span>One unified local web UI</span></div>
         <div class="trust-item"><b>Flexible workflow</b><span>Standalone command-line tools</span></div>
         <div class="trust-item"><b>MIT licensed</b><span>Open-source project</span></div>
       </div>
@@ -292,14 +292,19 @@
       <div class="wrap">
         <div class="section-head">
           <div class="kicker">The toolchain</div>
-          <h2>One workspace.<br><span class="gradient-text">Every stage.</span></h2>
-          <p>Use each engine on its own or connect the steps into a repeatable rule-analysis pipeline.</p>
+          <h2>One workspace.<br><span class="gradient-text">Seven integrated tools.</span></h2>
+          <p>Use each engine on its own or combine generation, GPU benchmarking, extraction, ranking and minimization in one repeatable workflow.</p>
         </div>
         <div class="tool-grid">
           <article class="tool-card">
             <div class="tool-top"><div class="tool-icon">R</div><span class="tool-tag">Generation</span></div>
             <h3>RULEST</h3>
             <p>Generate candidate Hashcat rules from paired BASE and TARGET wordlists, with optional Stage 0 processing and genetic-algorithm refinement.</p>
+          </article>
+          <article class="tool-card">
+            <div class="tool-top"><div class="tool-icon">✦</div><span class="tool-tag">GPU benchmarking</span></div>
+            <h3>Aether</h3>
+            <p>Benchmark Hashcat rule files on the GPU and generate per-file performance dashboards, with optional fastest-equivalent rule ordering.</p>
           </article>
           <article class="tool-card ranker-card">
             <div class="tool-top"><div class="tool-icon">↗</div><span class="tool-tag">Scoring &amp; selection</span></div>
@@ -454,7 +459,7 @@ python -m pip install -r requirements.txt</code><button class="copy" type="butto
 
   <footer>
     <div class="wrap footer-inner">
-      <div>© 2026 A1131 · RULEOPS 2.6.4 · Released under the MIT License.</div>
+      <div>© 2026 A1131 · RULEOPS 2.6.5 · Released under the MIT License.</div>
       <div class="footer-links"><a href="https://github.com/A113L/RULEOPS" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/A113L/RULEOPS/issues" target="_blank" rel="noopener">Issues</a><a href="https://github.com/A113L/RULEOPS/blob/main/LICENSE" target="_blank" rel="noopener">License</a></div>
     </div>
   </footer>

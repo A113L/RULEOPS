@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-23 — RULEOPS v2.6.5
+
+### Aether integration
+
+- Integrated Aether as the seventh tool in the authenticated RULEOPS web
+  interface, including rule-file uploads, benchmark controls, live stage and
+  run monitoring, per-file dashboard gallery, output downloads and run-history
+  handling.
+- Added GPU/OpenCL rule-throughput benchmarking, optional fastest-first rule
+  optimization, and per-file performance dashboards to the unified workflow.
+- Added Aether-specific navigation and active-stage reporting so its progress
+  is displayed independently from Concentrator and RULEST.
+- Exposed the cumulative optimization budget in microseconds in the web UI and
+  convert it to seconds at the Aether CLI boundary, preserving the engine
+  interface and report units.
+- Updated the About page, project tool count and visible version metadata to
+  reflect the seven-tool release.
+- Aether reports, sorted-rule files and dashboard images now use the original
+  uploaded rule-file names; internal upload IDs are no longer exposed in
+  downloadable artifact filenames. Duplicate basenames receive a short
+  numeric suffix to keep every output distinct.
+- Updated `docs/index.html` to feature Aether and describe the complete set of
+  seven integrated tools.
+
 ## 2026-11-21
 
 ### Optional functional minimization in RULEST

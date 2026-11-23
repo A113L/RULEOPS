@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RULEOPS: unified local web interface for RULEST, Rule Ranker and Concentrator."""
+"""RULEOPS: local web interface for RULEST, Ranker, Concentrator, Rulestripper, Minimizer and Aether."""
 from __future__ import annotations
 
 import json
@@ -80,6 +80,7 @@ UPLOADS_META = {
     "concentrator_files": [],
     "rulestripper_base": None, "rulestripper_target": None,
     "minimizer_rules": None, "minimizer_probe": None,
+    "aether_files": [],
 }
 RANKER_UPLOAD_FIELDS = {
     "ranker_wordlist", "ranker_cracked", "ranker_rules",
@@ -87,6 +88,7 @@ RANKER_UPLOAD_FIELDS = {
 }
 CONCENTRATOR_UPLOAD_FIELDS = {"concentrator_files"}
 UTILITY_UPLOAD_FIELDS = {"rulestripper_base", "rulestripper_target", "minimizer_rules", "minimizer_probe"}
+AETHER_UPLOAD_FIELDS = {"aether_files"}
 # Wordlists and rule files are retained in a reusable library. CSV uploads remain
 # temporary because they are workflow-specific and can be re-created cheaply.
 LIBRARY_FIELD_CATEGORIES = {
@@ -96,10 +98,21 @@ LIBRARY_FIELD_CATEGORIES = {
     "ranker_source_rules": "rules", "concentrator_files": "rules",
     "rulestripper_base": "wordlists", "rulestripper_target": "wordlists",
     "minimizer_rules": "rules", "minimizer_probe": "wordlists",
+    "aether_files": "rules",
 }
 LIBRARY_ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}_[A-Za-z0-9._ -]{1,180}$")
 MAX_CONCENTRATOR_FILES = 32
 MAX_CONCENTRATOR_TOTAL_BYTES = 40 * 1024 * 1024 * 1024
+# Aether benchmarks each rule file's chains individually on the GPU, so an
+# unbounded batch is far more time-costly per file than Concentrator's merge;
+# keep the cap modest. Rule files are also just text, so the aggregate byte
+# limit is generous without being as large as Concentrator's.
+MAX_AETHER_FILES = 12
+MAX_AETHER_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
+MULTI_FILE_UPLOAD_LIMITS = {
+    "concentrator_files": (MAX_CONCENTRATOR_FILES, MAX_CONCENTRATOR_TOTAL_BYTES, "Concentrator"),
+    "aether_files": (MAX_AETHER_FILES, MAX_AETHER_TOTAL_BYTES, "Aether"),
+}
 UPLOADS_ACTIVE = set()
 UPLOAD_RESERVATIONS = {}  # field -> declared bytes, reserved before reading body
 PROCESS = None
@@ -1502,7 +1515,7 @@ def cleanup_uploaded_files(log_message: bool = True):
         if UPLOADS_ACTIVE:
             return removed
         for field in UPLOADS_META:
-            UPLOADS_META[field] = [] if field == "concentrator_files" else None
+            UPLOADS_META[field] = [] if field in MULTI_FILE_UPLOAD_LIMITS else None
         try:
             for candidate in UPLOADS.iterdir():
                 # Uploaded files are always direct children of runs/uploads.
@@ -1651,13 +1664,15 @@ def _run_input_metadata(tool: str, mode: str) -> list[dict]:
         fields = ["rulestripper_base", "rulestripper_target"]
     elif tool == "minimizer":
         fields = ["minimizer_rules", "minimizer_probe"]
+    elif tool == "aether":
+        fields = ["aether_files"]
     else:
         return []
 
     selected = []
     for field in fields:
         value = UPLOADS_META.get(field)
-        if field == "concentrator_files":
+        if field in MULTI_FILE_UPLOAD_LIMITS:
             selected.extend(item for item in (value or []) if isinstance(item, dict))
         elif isinstance(value, dict):
             selected.append(value)
@@ -1745,11 +1760,12 @@ def _validated_run_dataset_manifest(manifest: object) -> dict | None:
     tool = manifest.get("tool")
     mode = manifest.get("mode")
     inputs = manifest.get("inputs")
-    if tool not in {"rulest", "ranker", "concentrator", "rulestripper", "minimizer"}:
+    if tool not in {"rulest", "ranker", "concentrator", "rulestripper", "minimizer", "aether"}:
         return None
     if not isinstance(mode, str) or not mode or len(mode) > 40:
         return None
-    if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_CONCENTRATOR_FILES:
+    max_inputs = MAX_AETHER_FILES if tool == "aether" else MAX_CONCENTRATOR_FILES
+    if not isinstance(inputs, list) or not 1 <= len(inputs) <= max_inputs:
         return None
     normalized = []
     for expected_slot, item in enumerate(inputs, start=1):
@@ -1824,6 +1840,8 @@ def _legacy_run_dataset_manifest(directory: Path) -> dict | None:
             tool, mode = "rulestripper", "extract"
         elif "Starting Rule Minimizer" in log_text or "minimizer.py" in log_text:
             tool, mode = "minimizer", "minimize"
+        elif "Starting Aether" in log_text or "aether.py" in log_text:
+            tool, mode = "aether", "benchmark"
     if not tool or not mode:
         return None
 
@@ -1842,6 +1860,8 @@ def _legacy_run_dataset_manifest(directory: Path) -> dict | None:
         elif tool == "rulestripper" and "run_rulestripper.py" in payload and "--output" in payload:
             command_lines.append(payload)
         elif tool == "minimizer" and "minimizer.py" in payload and "-o" in payload:
+            command_lines.append(payload)
+        elif tool == "aether" and "aether.py" in payload and "--rules" in payload:
             command_lines.append(payload)
     if not command_lines:
         return None
@@ -1890,6 +1910,7 @@ def _legacy_run_dataset_manifest(directory: Path) -> dict | None:
         ("ranker", "analyze"): (1, 1),
         ("rulestripper", "extract"): (2, 2),
         ("minimizer", "minimize"): (1, 2),
+        ("aether", "benchmark"): (1, MAX_AETHER_FILES),
         ("concentrator", mode): (1, MAX_CONCENTRATOR_FILES),
     }.get((tool, mode))
     if expected is None or not expected[0] <= len(hits) <= expected[1]:
@@ -2676,13 +2697,48 @@ def add_log(line: str):
                 pass
 
 
+def detect_aether_active_stage(line: str):
+    """Map Aether's console messages to Aether-only dashboard phases."""
+    upper = clean_terminal_text(line).upper()
+    if not upper:
+        return None
+    if "RULE PERFORMANCE TESTING COMPLETED" in upper:
+        return "Completed"
+    if any(marker in upper for marker in (
+        "USING DEVICE:", "DEVICE MEMORY:", "OPENCL KERNEL COMPILED",
+        "OPENCL INITIALIZATION", "KERNEL COMPILATION FAILED", "NO GPU DEVICES FOUND",
+    )):
+        return "Aether · GPU initialization"
+    if "FOUND" in upper and "RULE FILES TO TEST" in upper:
+        return "Aether · Preparing rule files"
+    if "TESTING RULE FILE:" in upper:
+        return "Aether · Benchmarking rule file"
+    if re.search(r"\bTESTING RULE\s+\d+\s*/\s*\d+", upper):
+        return "Aether · Benchmarking rules"
+    if any(marker in upper for marker in (
+        "GENERATING COMPREHENSIVE VISUALIZATION DASHBOARD", "DASHBOARD GENERATION COMPLETE",
+        "RADAR CHART SAVED:", "HEATMAP SAVED:", "STATISTICAL SUMMARY SAVED:",
+        "PERFORMANCE DISTRIBUTION SAVED:",
+    )):
+        return "Aether · Generating dashboards"
+    if "CREATING OPTIMIZED RULE SET" in upper:
+        return "Aether · Optimizing rule set"
+    if "OPTIMIZED RULE SET CREATED:" in upper or "OPTIMIZATION REPORT:" in upper:
+        return "Aether · Writing optimized rules"
+    if "SORTED RULES SAVED:" in upper or "PERFORMANCE REPORT SAVED:" in upper:
+        return "Aether · Saving benchmark results"
+    if "READ " in upper and " RULES FROM " in upper:
+        return "Aether · Loading rules"
+    return None
+
+
 def update_stage(line: str):
     clean = clean_terminal_text(line)
     if not clean:
         return
-    stage = detect_active_stage(clean)
     with LOCK:
         active_tool = STATE.get("tool", "rulest")
+    stage = detect_aether_active_stage(clean) if active_tool == "aether" else detect_active_stage(clean)
     if active_tool == "ranker" and stage is None:
         upper = clean.upper()
         if "CELF" in upper or "GREEDY" in upper or "POST-PROCESS" in upper:
@@ -3177,6 +3233,73 @@ def build_minimizer_command(options: dict, run_dir: Path):
     return cmd, output_name
 
 
+def build_aether_command(options: dict, run_dir: Path):
+    """Build the Aether GPU rule-performance benchmark + dashboard command.
+
+    Both --output and --visualization-output are pointed at run_dir itself
+    (not a subfolder): every PNG/JSON/sorted-rule file Aether produces then
+    lands flat alongside the run's other outputs. run_worker's output
+    scanner only lists run_dir's immediate children, and the existing
+    /api/run-storage/download-outputs.zip bundles exactly that list -- so
+    this is what makes both the in-browser result gallery and the "download
+    everything as a zip" button work without any changes to that shared,
+    tool-agnostic machinery.
+    """
+    uploaded = UPLOADS_META.get("aether_files") or []
+    if not uploaded:
+        raise ValueError("Upload at least one Hashcat rules file for Aether.")
+    paths = []
+    for item in uploaded:
+        path = Path(item["path"])
+        if not path.is_file():
+            raise ValueError(f"Aether input file is missing: {item.get('name', path.name)}")
+        paths.append(path)
+    if len(paths) > MAX_AETHER_FILES:
+        raise ValueError(f"Aether accepts at most {MAX_AETHER_FILES} input files.")
+
+    rule_labels = [str(item.get("name") or Path(item["path"]).name).lstrip("-") for item in uploaded]
+    cmd = [sys.executable, "-u", str(ROOT / "aether.py"), "--rules", *[str(p) for p in paths],
+           "--rule-labels", *rule_labels,
+           "--output", str(run_dir), "--visualization-output", str(run_dir)]
+
+    for key, flag, default, minimum, maximum in (
+        ("iterations", "--iterations", 50, 1, 100_000),
+        ("test_runs", "--test-runs", 3, 1, 50),
+        ("max_words", "--max-words", 1000, 1, 1_000_000),
+        ("max_test_rules", "--max-test-rules", 1000, 1, 2_000_000),
+        # Aether's own default is 300; 150 keeps per-chart PNGs lighter for
+        # in-browser viewing and the eventual zip download, while still
+        # staying legible -- overridable from the panel either way.
+        ("dpi", "--dpi", 150, 50, 600),
+        ("platform", "--platform", 0, 0, 64),
+        ("device", "--device", 0, 0, 64),
+    ):
+        value = _int_option(options, key, default, minimum, maximum)
+        cmd += [flag, str(value)]
+
+    # Visualize defaults ON here (unlike aether.py's own CLI default): the
+    # whole point of this panel is the per-rule PNG gallery, not just a
+    # console/JSON report.
+    if options.get("visualize", True):
+        cmd.append("--visualize")
+    if options.get("identical_dicts"):
+        cmd.append("--identical-dicts")
+    if options.get("optimize"):
+        cmd.append("--optimize")
+        cmd += ["--max-optimize-rules", str(_int_option(options, "max_optimize_rules", 500, 1, 2_000_000))]
+        # The web form accepts an integer microsecond budget; Aether's CLI and
+        # performance reports use seconds, so convert only at this boundary.
+        if "max_time_us" in options:
+            max_time_us = _int_option(options, "max_time_us", 30_000_000, 1, 86_400_000_000)
+            max_time_seconds = max_time_us / 1_000_000
+        else:
+            # Backward compatibility for older clients that still send seconds.
+            max_time_seconds = _float_option(options, "max_time", 30.0, 0.1, 86400.0)
+        cmd += ["--max-time", f"{max_time_seconds:.6f}"]
+
+    return cmd, "aether_benchmark_results"
+
+
 def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_baseline_bytes=None, env_overrides=None):
     global PROCESS, RUN_THREAD
     env = os.environ.copy()
@@ -3467,6 +3590,23 @@ def _validate_rulestripper_upload(field: str, filename: str, path: Path) -> None
         )
 
 
+def count_aether_rules(path: Path) -> int | None:
+    """Count active Hashcat rules using the same line handling as Aether."""
+    count = 0
+    try:
+        with Path(path).open("r", encoding="utf-8", errors="ignore") as stream:
+            for line in stream:
+                rule = line.strip()
+                if not rule or rule.startswith("#"):
+                    continue
+                if "#" in rule:
+                    rule = rule.split("#", 1)[0].strip()
+                if rule:
+                    count += 1
+    except OSError:
+        return None
+    return count
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "RULEOPS"
@@ -3669,8 +3809,8 @@ class Handler(BaseHTTPRequestHandler):
             if output_status in ("running", "stopping"):
                 self.send_json({"error": "Output files are available as a ZIP after the tool has finished."}, 409)
                 return
-            if len(outputs) <= 3 or not run_directory_value:
-                self.send_json({"error": "A ZIP download is available only when the completed run has more than three output files."}, 409)
+            if len(outputs) <= 1 or not run_directory_value:
+                self.send_json({"error": "A ZIP download is available only when the completed run has more than one output file."}, 409)
                 return
 
             run_directory = Path(run_directory_value)
@@ -3784,7 +3924,7 @@ class Handler(BaseHTTPRequestHandler):
                 def _upload_status(item):
                     if not item:
                         return None
-                    return {key: item[key] for key in ("name", "size", "library", "asset_id", "category") if key in item}
+                    return {key: item[key] for key in ("name", "size", "library", "asset_id", "category", "rule_count") if key in item}
                 data["uploads"] = {
                     k: ([_upload_status(item) for item in v] if isinstance(v, list)
                         else _upload_status(v))
@@ -3803,6 +3943,38 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(target.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.end_headers()
+            with target.open("rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+        elif path.startswith("/api/preview/"):
+            # Narrowly-scoped sibling of /api/download/: that endpoint always
+            # forces application/octet-stream + X-Content-Type-Options:
+            # nosniff, so browsers correctly refuse to render it inline as an
+            # <img> (by design, for every other tool's outputs). Aether's
+            # whole point is a browsable PNG gallery, so this serves the
+            # *same* allow-listed current-run output files with a real
+            # image/png Content-Type -- restricted to the current run
+            # actually being an Aether run and the filename ending in .png,
+            # so it can't be used to render arbitrary output content inline.
+            name = safe_name(urllib.parse.unquote(path.rsplit("/", 1)[-1]))
+            with LOCK:
+                run_dir = Path(STATE["run_dir"]) if STATE.get("run_dir") else None
+                allowed = {x["name"] for x in STATE.get("outputs", [])}
+                current_tool = STATE.get("tool")
+            if current_tool != "aether" or not name.lower().endswith(".png"):
+                self.send_error(404, "Preview not available")
+                return
+            target = run_dir / name if run_dir else None
+            if not target or name not in allowed or not target.is_file():
+                self.send_error(404, "Output not found")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Disposition", f'inline; filename="{name}"')
             self.send_header("Content-Length", str(target.stat().st_size))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -3861,6 +4033,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_upload(parsed, concentrator=True)
         elif parsed.path.startswith("/api/tools/upload/"):
             self.handle_upload(parsed, tools=True)
+        elif parsed.path.startswith("/api/aether/upload/"):
+            self.handle_upload(parsed, aether=True)
         elif parsed.path == "/api/run":
             self.handle_run()
         elif parsed.path == "/api/ranker/run":
@@ -4188,11 +4362,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": not bool(result.get("failures")), **result}, 207 if result.get("failures") else 200)
 
-    def handle_upload(self, parsed, ranker=False, concentrator=False, tools=False):
+    def handle_upload(self, parsed, ranker=False, concentrator=False, tools=False, aether=False):
         field = parsed.path.rsplit("/", 1)[-1]
         allowed_fields = (CONCENTRATOR_UPLOAD_FIELDS if concentrator else
                           RANKER_UPLOAD_FIELDS if ranker else
-                          UTILITY_UPLOAD_FIELDS if tools else {"base", "target", "seed"})
+                          UTILITY_UPLOAD_FIELDS if tools else
+                          AETHER_UPLOAD_FIELDS if aether else {"base", "target", "seed"})
         if field not in allowed_fields:
             self.send_error(404)
             return
@@ -4203,6 +4378,11 @@ class Handler(BaseHTTPRequestHandler):
             extension = Path(requested_filename).suffix.lower()
             if extension not in {".rule", ".rules", ".hr", ".hashcat", ".txt", ".lst"}:
                 self.send_json({"error": "Concentrator accepts .rule, .rules, .hr, .hashcat, .txt and .lst files."}, 415)
+                return
+        if aether and field == "aether_files":
+            extension = Path(requested_filename).suffix.lower()
+            if extension not in {".rule", ".rules", ".hr", ".hashcat", ".txt"}:
+                self.send_json({"error": "Aether accepts .rule, .rules, .hr, .hashcat and .txt files."}, 415)
                 return
         if tools and field not in {"rulestripper_base", "rulestripper_target"}:
             # Rulestripper wordlists are validated by their contents after the
@@ -4277,14 +4457,16 @@ class Handler(BaseHTTPRequestHandler):
                     "error": f"Upload would violate the {MIN_FREE_DISK_BYTES:,}-byte free-disk reserve."
                 }, 507)
                 return
-            if concentrator and field == "concentrator_files":
+            multi_file_limits = MULTI_FILE_UPLOAD_LIMITS.get(field)
+            if multi_file_limits:
+                max_files, max_total_bytes, label = multi_file_limits
                 current_files = UPLOADS_META.get(field) or []
                 current_total = sum(int(item.get("size", 0)) for item in current_files)
-                if len(current_files) >= MAX_CONCENTRATOR_FILES:
-                    self.send_json({"error": f"Concentrator accepts at most {MAX_CONCENTRATOR_FILES} input files."}, 413)
+                if len(current_files) >= max_files:
+                    self.send_json({"error": f"{label} accepts at most {max_files} input files."}, 413)
                     return
-                if current_total + length > MAX_CONCENTRATOR_TOTAL_BYTES:
-                    self.send_json({"error": "Combined Concentrator uploads exceed the 40 GiB limit."}, 413)
+                if current_total + length > max_total_bytes:
+                    self.send_json({"error": f"Combined {label} uploads exceed the {max_total_bytes // (1024 ** 3)} GiB limit."}, 413)
                     return
             UPLOADS_ACTIVE.add(field)
             UPLOAD_RESERVATIONS[field] = length
@@ -4339,15 +4521,19 @@ class Handler(BaseHTTPRequestHandler):
                     "path": stored, "name": filename, "size": length, "library": False,
                     "sha256": upload_digest, "file_signature": _library_file_signature(stored_stat),
                 }
+            if aether and field == "aether_files":
+                meta["rule_count"] = count_aether_rules(stored)
             replaced = []
             with LOCK:
-                if concentrator and field == "concentrator_files":
+                multi_file_limits = MULTI_FILE_UPLOAD_LIMITS.get(field)
+                if multi_file_limits:
+                    max_files, max_total_bytes, label = multi_file_limits
                     current = UPLOADS_META.get(field) or []
                     # Re-check aggregate/count after the body arrives in case another
                     # workflow changed metadata while this request was streaming.
                     current_total = sum(int(item.get("size", 0)) for item in current)
-                    if len(current) >= MAX_CONCENTRATOR_FILES or current_total + length > MAX_CONCENTRATOR_TOTAL_BYTES:
-                        raise ValueError("Concentrator upload count or aggregate size limit was reached.")
+                    if len(current) >= max_files or current_total + length > max_total_bytes:
+                        raise ValueError(f"{label} upload count or aggregate size limit was reached.")
                     current.append(meta)
                     UPLOADS_META[field] = current
                 else:
@@ -4361,8 +4547,11 @@ class Handler(BaseHTTPRequestHandler):
                 UPLOAD_RESERVATIONS.pop(field, None)
             for previous in replaced:
                 remove_temporary_upload(previous)
-            self.send_json({"ok": True, "field": field, "name": filename, "size": length,
-                            "library": bool(category), "asset_id": asset_id, "category": category})
+            response = {"ok": True, "field": field, "name": filename, "size": length,
+                        "library": bool(category), "asset_id": asset_id, "category": category}
+            if "rule_count" in meta:
+                response["rule_count"] = meta["rule_count"]
+            self.send_json(response)
         except Exception as exc:
             with LOCK:
                 UPLOADS_ACTIVE.discard(field)
@@ -4423,6 +4612,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             meta = upload_meta_for_library_asset(category, data.get("asset_id"))
+            if field == "aether_files":
+                meta["rule_count"] = count_aether_rules(meta["path"])
         except ValueError as exc:
             self.send_json({"error": str(exc)}, 404)
             return
@@ -4435,18 +4626,21 @@ class Handler(BaseHTTPRequestHandler):
             if UPLOADS_ACTIVE:
                 self.send_json({"error": "Wait for active uploads to finish before selecting saved inputs."}, 409)
                 return
-            if field == "concentrator_files":
+            multi_file_limits = MULTI_FILE_UPLOAD_LIMITS.get(field)
+            if multi_file_limits:
+                max_files, max_total_bytes, label = multi_file_limits
                 current = UPLOADS_META.get(field) or []
                 if any(item.get("asset_id") == meta["asset_id"] for item in current):
                     self.send_json({"ok": True, "field": field, "name": meta["name"],
-                                    "size": meta["size"], "asset_id": meta["asset_id"], "already_selected": True})
+                                    "size": meta["size"], "asset_id": meta["asset_id"],
+                                    "rule_count": meta.get("rule_count"), "already_selected": True})
                     return
                 current_total = sum(int(item.get("size", 0)) for item in current)
-                if len(current) >= MAX_CONCENTRATOR_FILES:
-                    self.send_json({"error": f"Concentrator accepts at most {MAX_CONCENTRATOR_FILES} input files."}, 413)
+                if len(current) >= max_files:
+                    self.send_json({"error": f"{label} accepts at most {max_files} input files."}, 413)
                     return
-                if current_total + meta["size"] > MAX_CONCENTRATOR_TOTAL_BYTES:
-                    self.send_json({"error": "Combined Concentrator inputs exceed the 40 GiB limit."}, 413)
+                if current_total + meta["size"] > max_total_bytes:
+                    self.send_json({"error": f"Combined {label} inputs exceed the {max_total_bytes // (1024 ** 3)} GiB limit."}, 413)
                     return
                 current.append(meta)
                 UPLOADS_META[field] = current
@@ -4463,8 +4657,11 @@ class Handler(BaseHTTPRequestHandler):
         for previous in replaced:
             remove_temporary_upload(previous)
         add_log(f"[WEB] Selected saved {category[:-1] if category.endswith('s') else category}: {meta['name']}.")
-        self.send_json({"ok": True, "field": field, "name": meta["name"],
-                        "size": meta["size"], "asset_id": meta["asset_id"], "category": category})
+        response = {"ok": True, "field": field, "name": meta["name"],
+                    "size": meta["size"], "asset_id": meta["asset_id"], "category": category}
+        if "rule_count" in meta:
+            response["rule_count"] = meta["rule_count"]
+        self.send_json(response)
 
     def handle_run(self):
         global PROCESS, RUN_THREAD
@@ -4529,7 +4726,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": storage_message}, 507)
                 return
             if STATE["status"] in ("running", "stopping"):
-                self.send_json({"error": "Another RULEST or Ranker job is already running."}, 409)
+                self.send_json({"error": "Another RULEOPS job is already running."}, 409)
                 return
             if UPLOADS_ACTIVE:
                 self.send_json({"error": "Wait for all active file uploads to finish before starting."}, 409)
@@ -4582,7 +4779,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": storage_message}, 507)
                 return
             if STATE["status"] in ("running", "stopping"):
-                self.send_json({"error": "Another RULEST, Ranker or Concentrator job is already running."}, 409)
+                self.send_json({"error": "Another RULEOPS job is already running."}, 409)
                 return
             if UPLOADS_ACTIVE:
                 self.send_json({"error": "Wait for all active file uploads to finish before starting."}, 409)
@@ -4617,7 +4814,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "job_id": run_id, "output": output_name, "tool": "concentrator", "mode": mode})
 
     def handle_tools_run(self):
-        """Launch the standalone Rulestripper or Hashcat-rule Minimizer utility."""
+        """Launch the standalone Rulestripper, Rule Minimizer or Aether utility."""
         global RUN_THREAD
         data = self.read_json_body(1024 * 1024)
         if not isinstance(data, dict):
@@ -4625,10 +4822,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         tool = str(data.get("tool", ""))
         options = data.get("options") if isinstance(data.get("options"), dict) else {}
-        builders = {"rulestripper": build_rulestripper_command, "minimizer": build_minimizer_command}
+        builders = {
+            "rulestripper": build_rulestripper_command,
+            "minimizer": build_minimizer_command,
+            "aether": build_aether_command,
+        }
         builder = builders.get(tool)
         if builder is None:
-            self.send_json({"error": "Choose Rulestripper or Rule Minimizer."}, 400)
+            self.send_json({"error": "Choose Rulestripper, Rule Minimizer or Aether."}, 400)
             return
         with LOCK:
             storage_ok, storage_message, storage_baseline_bytes = storage_preflight()
@@ -4646,13 +4847,13 @@ class Handler(BaseHTTPRequestHandler):
             run_dir.mkdir(parents=True, exist_ok=True)
             try:
                 cmd, output_name = builder(options, run_dir)
-                workflow_mode = "extract" if tool == "rulestripper" else "minimize"
+                workflow_mode = {"rulestripper": "extract", "minimizer": "minimize"}.get(tool, "benchmark")
                 run_manifest = _write_run_dataset_manifest(run_dir, tool, workflow_mode)
             except Exception as exc:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 self.send_json({"error": str(exc)}, 400)
                 return
-            friendly = "Rulestripper" if tool == "rulestripper" else "Rule Minimizer"
+            friendly = {"rulestripper": "Rulestripper", "minimizer": "Rule Minimizer", "aether": "Aether"}.get(tool, tool)
             STATE.update({
                 "status": "running", "tool": tool, "paused": False, "pause_requested": False,
                 "job_id": run_id, "started_at": time.time(), "finished_at": None, "pid": None,
@@ -4675,7 +4876,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_tools_cancel(self):
         with LOCK:
             tool = STATE.get("tool")
-            if STATE["status"] not in ("running", "stopping") or tool not in {"rulestripper", "minimizer"}:
+            if STATE["status"] not in ("running", "stopping") or tool not in {"rulestripper", "minimizer", "aether"}:
                 self.send_json({"error": "There is no active utility job to cancel."}, 409)
                 return
             proc = PROCESS
@@ -5038,7 +5239,7 @@ def main():
     server = RulestHTTPServer((args.host, args.port), Handler)
     actual_port = server.server_address[1]
     print()
-    print("  RULEOPS v2.6.4  /  HASHCAT RULE TOOLCHAIN")
+    print("  RULEOPS v2.6.5  /  HASHCAT RULE TOOLCHAIN")
     print(f"  Listening on: {args.host}:{actual_port}")
     print(f"  Connection limit: {MAX_CONCURRENT_CONNECTIONS} concurrent clients")
     print(f"  Upload limits: {MAX_UPLOAD_BYTES / 1024**3:.1f} GiB/file, {MAX_TOTAL_UPLOAD_BYTES / 1024**3:.1f} GiB total")

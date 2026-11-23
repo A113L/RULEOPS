@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b&topn-pcfg-ui=20261120a&select-cost-profile=20261121a">
+  <link rel="stylesheet" href="/styles.css?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&topn-pcfg-ui=20261120a&select-cost-profile=20261121a">
 </head>
 <body>
   <div class="app-shell">
@@ -42,6 +42,9 @@
         <a class="nav-item nav-program-link" href="/email-rule-extractor.html" title="Email Rule Extractor — generate Hashcat rules from email patterns">
           <span class="nav-icon">＠</span><span class="nav-main-copy"><b>Email Extractor</b><small>Generate rules from emails</small></span>
         </a>
+        <a class="nav-item nav-program-link" href="#aether" data-nav-tool="aether" title="Aether — GPU rule-performance benchmark &amp; dashboards">
+          <span class="nav-icon">✦</span><span class="nav-main-copy"><b>Aether</b><small>Benchmark &amp; visualize rules</small></span>
+        </a>
       </nav>
       <div class="sidebar-utility">
         <div class="side-label">MONITORING</div>
@@ -58,11 +61,7 @@
           <p>Runs on your machine</p>
           <small>OpenCL · GPU accelerated</small>
         </div>
-        <div class="sidebar-about-card">
-          <span>FREE TOOLCHAIN</span>
-          <p>All features available. Donations are optional and support ongoing development.</p>
-        </div>
-        <div class="side-foot"><span class="version-dot"></span> RULEOPS <b>v2.6.4</b><br><span>Password protected · LAN access</span></div>
+        <div class="side-foot"><span class="version-dot"></span> RULEOPS <b>v2.6.5</b><br><span>Password protected · LAN access</span></div>
       </div>
     </aside>
 
@@ -682,12 +681,75 @@
         </div>
       </div><!-- /minimizer-view -->
 
+      <div id="aether-view" hidden>
+        <section class="page-heading" id="aether">
+          <div><div class="eyebrow">HASHCAT RULE PERFORMANCE <span class="eyebrow-line"></span> GPU · OPENCL</div><h1>Aether<span class="title-period">.</span></h1><p>Benchmark Hashcat rule files on the GPU and generate per-rule dashboards: throughput radar, opcode heatmap, statistical spread and candidate-length distribution.</p></div>
+          <div class="heading-badge"><span class="badge-orbit">✦</span><div><b>Dashboard benchmarks</b><small>4 charts per rule file</small></div></div>
+        </section>
+        <section class="metrics-grid tool-metrics-grid" aria-label="Aether run metrics" data-tool-metrics="aether">
+          <article class="metric-card"><div class="metric-label">ENGINE STATUS <span class="metric-icon">◉</span></div><div class="metric-value" data-metric="status">Idle</div><div class="metric-note"><span class="status-dot" data-metric-dot></span><span data-metric="note">Ready to configure</span></div></article>
+          <article class="metric-card"><div class="metric-label">ACTIVE STAGE <span class="metric-icon">⌁</span></div><div class="metric-value metric-stage" data-metric="stage">Waiting for Aether</div><div class="metric-note">Live pipeline phase</div></article>
+          <article class="metric-card"><div class="metric-label">ELAPSED TIME <span class="metric-icon">◷</span></div><div class="metric-value" data-metric="elapsed">00:00</div><div class="metric-note">Wall-clock runtime</div></article>
+          <article class="metric-card"><div class="metric-label">OUTPUT FILES <span class="metric-icon">▤</span></div><div class="metric-value" data-metric="outputs">0</div><div class="metric-note">Generated in this run</div></article>
+        <article class="metric-card metric-eta-card"><div class="metric-label">ETA <span class="metric-icon">◴</span></div><div class="metric-value metric-eta-value" data-metric="eta">—</div><div class="metric-note metric-eta-note" data-metric="eta-note">Current stage estimate</div></article>
+        </section>
+
+        <div class="content-grid utility-tool-grid">
+          <div class="primary-column">
+            <section class="panel">
+              <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">01</span><h2>Rule files to benchmark</h2></div><p>Each file gets its own throughput run and, with Visualize on, its own 4-chart dashboard.</p></div><span class="required-pill">1–12 FILES</span></div>
+              <div class="upload-card" data-upload="aether_files">
+                <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Hashcat rule files</h3><small>.rule, .rules, .txt, .hr, .hashcat</small></div><span class="required-star">*</span></div>
+                <label class="drop-zone" for="aether_files-file"><span class="upload-cloud">↑</span><strong>Choose files <em>or drop them here</em></strong><small>Select one or more rule files · benchmarked and visualized individually</small><input id="aether_files-file" type="file" multiple accept=".rule,.rules,.hr,.hashcat,.txt,text/plain"></label>
+                <div class="file-state" id="aether_files-state"><span class="file-state-dot"></span><span>No rules files selected</span></div>
+                <div class="upload-progress"><span id="aether_files-progress"></span></div>
+                <div class="library-pick"><label for="library-aether_files">Reuse saved rules</label><select id="library-aether_files" data-library-field="aether_files"><option value="">Add saved rule file…</option></select></div>
+              </div>
+              <div class="ranker-input-note">Uploaded rule files are saved in the reusable rules library. Results (charts + reports) are named after each rule file.</div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">02</span><h2>Benchmark settings</h2></div><p>Controls the synthetic word corpus and GPU device used for timing.</p></div></div>
+              <div class="form-grid three-col">
+                <label class="field"><span>Iterations</span><input id="aether-iterations" type="number" min="1" max="100000" value="50"></label>
+                <label class="field"><span>Test runs</span><input id="aether-test-runs" type="number" min="1" max="50" value="3"><small>Repeats per rule, for stable timing.</small></label>
+                <label class="field"><span>Max words</span><input id="aether-max-words" type="number" min="1" max="1000000" value="1000"></label>
+                <label class="field"><span>Max test rules</span><input id="aether-max-test-rules" type="number" min="1" max="2000000" value="1000"><small id="aether-max-test-rules-hint">Caps rules sampled per file. Select a rule file to show its rule count.</small></label>
+                <label class="field"><span>Chart DPI</span><input id="aether-dpi" type="number" min="50" max="600" value="150"><small>Lower = lighter PNGs for the gallery/zip.</small></label>
+                <label class="field"><span>GPU platform index</span><input id="aether-platform" type="number" min="0" max="64" value="0"></label>
+                <label class="field"><span>GPU device index</span><input id="aether-device" type="number" min="0" max="64" value="0"></label>
+              </div>
+              <div class="toggle-row"><div><b>Visualize</b><small>Generate the radar, heatmap, statistical and distribution dashboard per rule file.</small></div><label class="switch"><input id="aether-visualize" type="checkbox" checked><span></span></label></div>
+              <div class="toggle-row"><div><b>Identical-dicts precision mode</b><small>Tile the same word list every cycle, removing word-variance noise from precision-rule timings.</small></div><label class="switch"><input id="aether-identical-dicts" type="checkbox"><span></span></label></div>
+              <div class="toggle-row"><div><b>Optimize search</b><small>Search for the fastest-equivalent rule ordering within a time budget.</small></div><label class="switch"><input id="aether-optimize" type="checkbox"><span></span></label></div>
+              <div class="form-grid two-col" style="margin-top:10px">
+                <label class="field"><span>Max rules to optimize</span><input id="aether-max-optimize-rules" type="number" min="1" max="2000000" value="500"><small>Used only when Optimize search is on.</small></label>
+                <label class="field"><span>Max optimize time (µs)</span><input id="aether-max-time" type="number" min="1" max="86400000000" step="1" value="30000000"><small>Cumulative rule execution-time limit: 30,000,000 µs = 30 s. Used only when Optimize search is on.</small></label>
+              </div>
+            </section>
+            <section class="concentrator-launch-bar">
+              <div><b id="aether-launch-title">Aether ready</b><small id="aether-launch-hint">Upload one or more rule files, then start the benchmark.</small></div>
+              <div class="launch-actions"><button id="aether-cancel" class="secondary-button" type="button" disabled>Cancel</button><button id="aether-start" class="primary-button" type="button"><span>Run benchmark</span><b>→</b></button></div>
+            </section>
+            <section class="panel aether-gallery-panel">
+              <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">RESULTS</span><h2>Benchmark gallery</h2></div></div>
+              <p class="aether-gallery-hint">Charts are grouped by rule file name. Click a thumbnail to open it full size; use "Download all files" below the output list to get everything (charts, JSON reports, sorted rules) as one ZIP.</p>
+              <div id="aether-gallery" class="aether-gallery-scroll"><div class="empty-output"><span>✦</span><b>No charts yet</b><small>Run a benchmark with Visualize enabled to see per-rule dashboards here.</small></div></div>
+            </section>
+          </div>
+          <aside class="secondary-column">
+            <section class="panel stage-monitor-panel"><div class="panel-heading"><div class="utility-monitor-heading"><span class="side-panel-kicker">LIVE MONITOR</span><h2>Aether status</h2></div><span class="live-pill" id="aether-live-pill"><i></i> STANDBY</span></div><div class="stage-monitor-copy"><b id="aether-current-stage">Waiting for Aether</b><p id="aether-stage-detail">Upload rule files to begin.</p></div><div class="monitor-meta"><span class="monitor-meta-item"><small>RUNTIME</small><b id="aether-runtime">00:00</b></span><span class="monitor-meta-item"><small>PID</small><b id="aether-pid">—</b></span></div></section>
+            <section class="panel"><div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ARTIFACTS</span><h2>Aether output files</h2></div><span class="output-count" id="aether-output-count">0</span></div><div id="aether-output-list" class="output-list"><div class="empty-output"><span>▤</span><b>No outputs yet</b><small>Charts, JSON reports and sorted rules will appear here.</small></div></div></section>
+            <section class="panel notes-panel"><div class="notes-icon">✦</div><h3>How benchmarking works</h3><div class="note-row"><span>01</span><p>Each rule file is applied to a synthetic word corpus on the GPU and timed over several iterations.</p></div><div class="note-row"><span>02</span><p>With Visualize on, four charts summarize throughput, opcode cost, spread and output-length distribution.</p></div><div class="note-row"><span>03</span><p>Charts, JSON reports and (with Optimize) a reordered rule file are all named after the source rule file.</p></div></section>
+          </aside>
+        </div>
+      </div><!-- /aether-view -->
+
       <div id="system-view" hidden>
         <section class="page-heading storage-page-heading" id="run-storage">
           <div class="storage-heading-copy">
             <span class="side-panel-kicker">SYSTEM MANAGEMENT <span aria-hidden="true">/</span> STORAGE</span>
             <h1>Run storage<span class="title-period">.</span></h1>
-            <p>Review and remove saved run folders created by RULEST, Rule Ranker and Concentrator.</p>
+            <p>Review and remove saved run folders created by RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Aether.</p>
           </div>
           <div class="heading-badge storage-heading-badge"><span class="badge-orbit">▤</span><div><b>Local run archive</b><small>Uploads are stored separately</small></div></div>
         </section>
@@ -845,15 +907,15 @@
         <div>
           <div class="eyebrow">RULEOPS <span class="eyebrow-line"></span> ABOUT</div>
           <h1>About<span class="title-period">.</span></h1>
-          <p>A free, local-first Hashcat rule toolchain for generating, ranking and refining rulesets.</p>
+          <p>A free, local-first Hashcat rule toolchain for generating, benchmarking, ranking and refining rulesets.</p>
         </div>
         <div class="heading-badge"><span class="badge-orbit">✳</span><div><b>Local-first</b><small>GPU-accelerated toolchain</small></div></div>
       </section>
       <section class="content-grid system-page about-grid" id="about-grid" hidden>
         <div class="primary-column">
           <section class="panel about-intro-panel">
-            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">THE PROJECT</span><h2>One toolchain, six integrated tools</h2></div></div>
-            <p class="about-copy">RULEOPS brings six rule-generation, extraction, ranking and cleanup utilities together in one authenticated local interface. Processing runs on your machine and uses your available CPU and GPU resources, with reusable inputs and a focus on efficient local workflows.</p>
+            <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">THE PROJECT</span><h2>One toolchain, seven integrated tools</h2></div></div>
+            <p class="about-copy">RULEOPS brings seven integrated tools for rule generation, performance benchmarking, extraction, ranking, minimization and email-pattern rule creation into one authenticated local interface. Processing runs on your machine and uses your available CPU and GPU resources, with reusable inputs and a focus on efficient local workflows.</p>
             <div class="about-feature-tags"><span>GPU accelerated</span><span>Local processing</span><span>MIT License</span></div>
           </section>
           <section class="panel usecases-panel" id="about-usecases-panel">
@@ -908,6 +970,16 @@
                   <li>Optional Unicode-aware multibyte processing</li>
                 </ul>
                 <a class="about-tool-link" href="#minimizer" data-nav-tool="minimizer">Open Rule Minimizer →</a>
+              </article>
+              <article class="usecase-card" data-tool="aether">
+                <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">✦</span><div><b>Aether</b><small>GPU rule-performance benchmark &amp; dashboards</small></div></div>
+                <ul class="usecase-list">
+                  <li>Benchmark Hashcat rule execution throughput on an OpenCL GPU</li>
+                  <li>Compare rule timing across files and sort rules from fastest to slowest</li>
+                  <li>Generate per-file radar, opcode heatmap, statistical and length-distribution charts</li>
+                  <li>Build an optimized ruleset using a cumulative execution-time budget</li>
+                </ul>
+                <a class="about-tool-link" href="#aether" data-nav-tool="aether">Open Aether →</a>
               </article>
               <article class="usecase-card" data-tool="email-extractor">
                 <div class="usecase-head"><span class="usecase-icon" aria-hidden="true">＠</span><div><b>Email Rule Extractor</b><small>Generate rules from email patterns</small></div></div>
@@ -1037,7 +1109,7 @@
       </div><!-- /system-view -->
 
       <section class="panel log-panel" id="live-log" tabindex="-1" aria-label="Live tool log">
-        <div class="panel-heading log-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ENGINE OUTPUT</span><h2>Live log</h2><p>Live output from the active RULEST, Ranker, Concentrator, Rulestripper or Minimizer job.</p></div><div class="log-actions"><span class="log-live"><i></i> LIVE STREAM</span><button id="wrap-log" class="small-ghost" type="button" aria-pressed="true">Wrap: ON</button><button id="expand-log" class="small-ghost" type="button" aria-expanded="false">Expand</button><button id="download-log" class="small-ghost" type="button">↓ Export log</button></div></div>
+        <div class="panel-heading log-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ENGINE OUTPUT</span><h2>Live log</h2><p>Live output from the active RULEST, Ranker, Concentrator, Rulestripper, Rule Minimizer or Aether job.</p></div><div class="log-actions"><span class="log-live"><i></i> LIVE STREAM</span><button id="wrap-log" class="small-ghost" type="button" aria-pressed="true">Wrap: ON</button><button id="expand-log" class="small-ghost" type="button" aria-expanded="false">Expand</button><button id="download-log" class="small-ghost" type="button">↓ Export log</button></div></div>
         <div class="log-clear-row">
           <div class="log-clear-copy"><b>Log history</b><small>Clear the visible stream and truncate the server-side <code>engine.log</code> file. New events will continue to appear.</small></div>
           <button id="clear-log" class="clear-logs-action" type="button" title="Clear visible logs and truncate the saved engine.log" aria-label="Clear log history">
@@ -1065,6 +1137,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
 
-      <script src="/app.js?v=2.6.4-ranker-celf-profile&ui-polish=20261116a&build=2.6.4-ranker-celf-profile&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261115b&storage-intel=20261115b&select-cost-profile=20261121a"></script>
+      <script src="/app.js?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&select-cost-profile=20261121a&aether-nav-units=20261123a"></script>
 </body>
 </html>

@@ -2438,9 +2438,9 @@ function utilityOptions(tool) {
       visualize: $('aether-visualize').checked,
       identical_dicts: $('aether-identical-dicts').checked,
       optimize: $('aether-optimize').checked,
+      max_optimize_rules: readUtilityNumber('aether-max-optimize-rules', 'Max rules to optimize'),
     };
     if (options.optimize) {
-      options.max_optimize_rules = readUtilityNumber('aether-max-optimize-rules', 'Max rules to optimize');
       options.max_time_us = readUtilityNumber('aether-max-time', 'Max optimize time (µs)');
     }
     return options;

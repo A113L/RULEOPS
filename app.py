@@ -3492,9 +3492,12 @@ def build_aether_command(options: dict, run_dir: Path):
         cmd.append("--visualize")
     if options.get("identical_dicts"):
         cmd.append("--identical-dicts")
+    # Pass the manually configured rule count even when the optimizer is off:
+    # the interactive HTML report uses it as the default count for its
+    # standalone "download fastest N rules" export control.
+    cmd += ["--max-optimize-rules", str(_int_option(options, "max_optimize_rules", 500, 1, 2_000_000))]
     if options.get("optimize"):
         cmd.append("--optimize")
-        cmd += ["--max-optimize-rules", str(_int_option(options, "max_optimize_rules", 500, 1, 2_000_000))]
         # The web form accepts an integer microsecond budget; Aether's CLI and
         # performance reports use seconds, so convert only at this boundary.
         if "max_time_us" in options:

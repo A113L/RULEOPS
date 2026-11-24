@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.6.5 - Aether Hashcat 8 rule-chain support
+## [Unreleased] - Aether Hashcat 8 rule-chain support
 
 - Replaced Aether's one-operation-only kernel dispatch with a sequential OpenCL rule interpreter, allowing supported multi-command Hashcat `-r` lines to execute as complete chains.
 - Enabled Aether benchmarking for Hashcat 8.0 `h`, `H`, `S`, `vNX`, and `BNX` operators, including their use inside supported rule chains.

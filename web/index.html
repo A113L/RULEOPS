@@ -731,7 +731,7 @@
               <div class="toggle-row"><div><b>Repeat identical dictionary</b><small>ON: repeat the same 16 seed words. OFF: use deterministic varied word content with the same word lengths and character classes. Both modes run exactly Max words per rule.</small><small id="aether-corpus-mode-hint" class="aether-corpus-mode-hint" aria-live="polite">Diverse corpus selected: 1,000 words per rule. GPU workload size is identical in both modes.</small></div><label class="switch"><input id="aether-identical-dicts" type="checkbox"><span></span></label></div>
               <div class="toggle-row"><div><b>Optimize search</b><small>Search for the fastest-equivalent rule ordering within a time budget.</small></div><label class="switch"><input id="aether-optimize" type="checkbox"><span></span></label></div>
               <div class="form-grid two-col" style="margin-top:10px">
-                <label class="field"><span>Max rules to optimize</span><input id="aether-max-optimize-rules" type="number" min="1" max="2000000" value="500"><small>Used only when Optimize search is on.</small></label>
+                <label class="field"><span>Max rules to optimize</span><input id="aether-max-optimize-rules" type="number" min="1" max="2000000" value="500"><small>Sets the default fastest-rule export count in the HTML report; also limits Optimize search when enabled.</small></label>
                 <label class="field"><span>Max optimize time (µs)</span><input id="aether-max-time" type="number" min="1" max="86400000000" step="1" value="30000000"><small>Cumulative GPU kernel-time budget: 30,000,000 µs = 30 s. Uses OpenCL event timings; used only when Optimize search is on.</small></label>
               </div>
             </section>
@@ -741,7 +741,7 @@
             </section>
             <section class="panel aether-gallery-panel">
               <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">RESULTS</span><h2>Benchmark gallery</h2></div></div>
-              <p class="aether-gallery-hint">Current-run results are grouped by rule file. PNG thumbnails open as static charts; open the interactive HTML report to select Fastest / Middle / Slowest, inspect full Hashcat commands and export a category as a .rule file. Previous Aether runs are stored with every other tool in <a href="#run-storage">Run storage</a>.</p>
+              <p class="aether-gallery-hint">Current-run results are grouped by rule file. PNG thumbnails open as static charts; open the interactive HTML report to select Fastest / Middle / Slowest, inspect full Hashcat commands, export a category, or download a manually specified number of the fastest rules as a .rule file. Previous Aether runs are stored with every other tool in <a href="#run-storage">Run storage</a>.</p>
               <div id="aether-gallery" class="aether-gallery-scroll"><div class="empty-output"><span>✦</span><b>No charts yet</b><small>Run a benchmark with Visualize enabled to see per-rule dashboards here.</small></div></div>
             </section>
           </div>
@@ -1166,6 +1166,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
 
-      <script src="/app.js?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&select-cost-profile=20261121a&aether-nav-units=20261123a&unified-run-history=20261124c&history-compat=20261124a"></script>
+      <script src="/app.js?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&select-cost-profile=20261121a&aether-nav-units=20261123a&unified-run-history=20261124c&history-compat=20261124a&aether-export-count=20261124a"></script>
 </body>
 </html>

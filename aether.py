@@ -614,7 +614,8 @@ class VisualizationEngine:
         return counts, [spec['label'] for spec in specs], [spec['color'] for spec in specs]
 
     def create_interactive_report(self, rule_performance: List[Tuple[str, Dict]], filename: str,
-                                  corpus_description: str = "", validation_summary: Dict[str, Any] | None = None):
+                                  corpus_description: str = "", validation_summary: Dict[str, Any] | None = None,
+                                  default_export_rule_count: int = 500):
         """Write a self-contained HTML report with interactive tier filtering/export."""
         valid_rows = []
         for rule, data in rule_performance:
@@ -690,6 +691,7 @@ class VisualizationEngine:
                 'profiling_enabled': bool(getattr(self, 'profiling_enabled', True)),
                 'primary_metric': 'GPU Kernel Time · OpenCL Event Profiling',
                 'validation_summary': dict(validation_summary or {}),
+                'default_export_rule_count': max(1, int(default_export_rule_count or 1)),
             },
             'tiers': tiers,
         }
@@ -713,7 +715,7 @@ h1{font-size:clamp(25px,3vw,38px);line-height:1.15;margin:8px 0}p{color:var(--mu
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0}.stat,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px}.stat{padding:15px}.stat small{display:block;color:var(--muted);font-size:11px}.stat b{display:block;font:600 22px ui-monospace,monospace;margin-top:7px}
 .layout{display:grid;grid-template-columns:minmax(280px,390px) minmax(0,1fr);gap:16px;align-items:start}.panel{padding:18px;min-width:0}.panel h2{font-size:17px;margin:0 0 4px}.chart-wrap{display:grid;place-items:center;padding:10px 0 0}.chart{width:min(100%,330px);height:auto;overflow:visible}.slice{fill:none;stroke-width:38;cursor:pointer;pointer-events:stroke;transition:opacity .15s,stroke-width .15s}.slice:hover,.slice.active{stroke-width:46}.slice:focus{outline:none;stroke-width:48}.chart-center{font:700 24px ui-monospace,monospace;fill:var(--text);text-anchor:middle}.chart-center-label{font:11px system-ui,sans-serif;fill:var(--muted);text-anchor:middle}
 .legend{display:grid;gap:8px;margin-top:12px}.tier-button{width:100%;display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;padding:10px 11px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);cursor:pointer}.tier-button:hover,.tier-button.active{border-color:#91b66d;background:#1c2a25}.swatch{width:10px;height:10px;border-radius:50%}.tier-button strong{font-size:12px}.tier-button small{display:block;color:var(--muted);font-size:11px}.tier-count{font:12px ui-monospace,monospace;color:#dbe7d0}
-.toolbar{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.toolbar input{flex:1;min-width:190px;background:#0c131c;border:1px solid var(--line);border-radius:7px;color:var(--text);padding:10px 12px}.button{border:1px solid #547342;background:#21301f;color:#d8edc9;border-radius:7px;padding:10px 13px;font-weight:650;cursor:pointer}.button:hover{background:#2d4328}.selection-note{font-size:12px;margin:0 0 10px}
+.toolbar{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.toolbar input{flex:1;min-width:190px;background:#0c131c;border:1px solid var(--line);border-radius:7px;color:var(--text);padding:10px 12px}.export-count-control{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--muted);font-size:12px}.toolbar .export-count-control input{flex:0 0 112px;width:112px;min-width:112px}.export-fastest-toolbar{margin-top:8px;margin-bottom:4px}.button{border:1px solid #547342;background:#21301f;color:#d8edc9;border-radius:7px;padding:10px 13px;font-weight:650;cursor:pointer}.button:hover{background:#2d4328}.button:disabled{opacity:.4;cursor:not-allowed}.selection-note{font-size:12px;margin:0 0 10px}
 .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}table{border-collapse:collapse;width:100%;min-width:780px}th,td{padding:10px 11px;border-bottom:1px solid #293542;text-align:left;vertical-align:top}th{position:sticky;top:0;background:#202b38;color:#aab9c9;font-size:10px;letter-spacing:.06em;text-transform:uppercase}td{font-size:12px}td.rule{width:48%;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:#e2eaf2}td.num{font:11px ui-monospace,monospace;white-space:nowrap}.pagination{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px;color:var(--muted);font-size:11px}.pagination button{border:1px solid var(--line);background:#111a24;color:var(--text);padding:7px 10px;border-radius:6px}.pagination button:disabled{opacity:.35;cursor:not-allowed}.footnote{font-size:11px;margin-top:16px}
 @media(max-width:900px){main{padding:20px 14px}.layout{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:430px){.stats{grid-template-columns:1fr 1fr}.stat{padding:11px}.stat b{font-size:17px}.panel{padding:13px}}
@@ -729,6 +731,7 @@ h1{font-size:clamp(25px,3vw,38px);line-height:1.15;margin:8px 0}p{color:var(--mu
  <div class="chart-wrap"><svg class="chart" id="tier-chart" viewBox="0 0 220 220" role="img" aria-label="Interactive pie chart of relative GPU performance tiers"><circle cx="110" cy="110" r="76" fill="none" stroke="#273342" stroke-width="38"></circle><text x="110" y="106" class="chart-center" id="chart-total">—</text><text x="110" y="126" class="chart-center-label">rules</text></svg></div>
  <div class="legend" id="tier-legend"></div></section>
  <section class="panel"><h2 id="table-title">Rules</h2><p class="selection-note" id="selection-note"></p><div class="toolbar"><input id="rule-search" type="search" placeholder="Filter exact rule commands…" aria-label="Filter rule commands"><button class="button" id="export-tier" type="button">↓ Download category .rule</button></div>
+ <div class="toolbar export-fastest-toolbar"><label class="export-count-control" for="export-count"><span>Fastest rules to download</span><input id="export-count" type="number" min="1" step="1" value="500"></label><button class="button" id="export-fastest" type="button">↓ Download fastest rules .rule</button></div><p class="selection-note" id="export-count-note"></p>
  <div class="table-wrap"><table><thead><tr><th>Exact Hashcat rule command</th><th>GPU Kernel Time</th><th>GPU ops/sec</th><th>End-to-End Time</th><th>CV</th></tr></thead><tbody id="rule-rows"></tbody></table></div>
  <div class="pagination"><span id="page-status">—</span><div><button id="previous-page" type="button">Previous</button> <button id="next-page" type="button">Next</button></div></div>
  </section></div>
@@ -739,6 +742,7 @@ h1{font-size:clamp(25px,3vw,38px);line-height:1.15;margin:8px 0}p{color:var(--mu
 'use strict';
 const report=JSON.parse(document.getElementById('report-data').textContent);
 const $=id=>document.getElementById(id);let activeTier=report.tiers[0]||null;let page=0;const pageSize=100;
+const rankedRules=report.tiers.flatMap(tier=>tier.rules).sort((a,b)=>a.gpu_kernel_time_us-b.gpu_kernel_time_us);
 const fmt=(v,d=3)=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const fmtRate=v=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{maximumFractionDigits:0}):'—';
 $('report-title').textContent=report.meta.file_name+' · GPU Rule Performance';
@@ -748,7 +752,11 @@ const svgNS='http://www.w3.org/2000/svg';function renderPie(){const svg=$('tier-
 function renderLegend(){const root=$('tier-legend');root.replaceChildren();report.tiers.forEach(tier=>{const b=document.createElement('button');b.type='button';b.className='tier-button'+(activeTier&&activeTier.id===tier.id?' active':'');const sw=document.createElement('span');sw.className='swatch';sw.style.background=tier.color;const copy=document.createElement('span');const strong=document.createElement('strong');strong.textContent=tier.label;const small=document.createElement('small');small.textContent=`${fmt(tier.percent,1)}% of tested rules`;copy.append(strong,small);const count=document.createElement('span');count.className='tier-count';count.textContent=tier.count.toLocaleString();b.append(sw,copy,count);b.addEventListener('click',()=>selectTier(tier.id));root.append(b);});}
 function selectTier(id){activeTier=report.tiers.find(t=>t.id===id)||report.tiers[0]||null;page=0;$('rule-search').value='';renderPie();renderLegend();renderTable();}
 function renderTable(){const body=$('rule-rows');body.replaceChildren();if(!activeTier){$('table-title').textContent='No rules';$('selection-note').textContent='No valid GPU timing data was recorded.';$('page-status').textContent='0 rules';$('export-tier').disabled=true;return;}const query=$('rule-search').value.trim().toLowerCase();const filtered=activeTier.rules.filter(r=>!query||r.command.toLowerCase().includes(query));const pageCount=Math.max(1,Math.ceil(filtered.length/pageSize));page=Math.max(0,Math.min(page,pageCount-1));const start=page*pageSize;filtered.slice(start,start+pageSize).forEach(rule=>{const tr=document.createElement('tr');const cmd=document.createElement('td');cmd.className='rule';cmd.textContent=rule.command;const gpu=document.createElement('td');gpu.className='num';gpu.textContent=fmt(rule.gpu_kernel_time_us)+' µs';const rate=document.createElement('td');rate.className='num';rate.textContent=fmtRate(rule.gpu_ops_per_sec);const e2e=document.createElement('td');e2e.className='num';e2e.textContent=rule.end_to_end_time_us===null?'—':fmt(rule.end_to_end_time_us)+' µs';const cv=document.createElement('td');cv.className='num';cv.textContent=rule.cv_percent===null?'—':fmt(rule.cv_percent,2)+'%';tr.append(cmd,gpu,rate,e2e,cv);body.append(tr);});$('table-title').textContent=activeTier.label+' · rules';$('selection-note').textContent=`${activeTier.count.toLocaleString()} rules in this category. Search filters the table; download exports the entire category.`;$('page-status').textContent=filtered.length?`Showing ${start+1}–${Math.min(start+pageSize,filtered.length)} of ${filtered.length.toLocaleString()} matching rules`:'No matching rules';$('previous-page').disabled=page===0;$('next-page').disabled=page>=pageCount-1;$('export-tier').disabled=!activeTier.rules.length;}
-$('rule-search').addEventListener('input',()=>{page=0;renderTable()});$('previous-page').addEventListener('click',()=>{page--;renderTable()});$('next-page').addEventListener('click',()=>{page++;renderTable()});$('export-tier').addEventListener('click',()=>{if(!activeTier)return;const contents=activeTier.rules.map(r=>r.command).join('\n')+'\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;const safeBase=report.meta.file_name.replace(/[^A-Za-z0-9._-]+/g,'_')||'aether_rules';a.download=safeBase+'_'+activeTier.id+'.rule';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+function downloadRuleFile(rules,suffix){if(!rules.length)return;const contents=rules.map(r=>r.command).join('\n')+'\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;const safeBase=report.meta.file_name.replace(/[^A-Za-z0-9._-]+/g,'_')||'aether_rules';a.download=safeBase+'_'+suffix+'.rule';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('rule-search').addEventListener('input',()=>{page=0;renderTable()});$('previous-page').addEventListener('click',()=>{page--;renderTable()});$('next-page').addEventListener('click',()=>{page++;renderTable()});$('export-tier').addEventListener('click',()=>{if(activeTier)downloadRuleFile(activeTier.rules,activeTier.id);});
+const exportCountInput=$('export-count');const configuredExportCount=Math.max(1,Math.floor(Number(report.meta.default_export_rule_count)||500));const availableExportCount=rankedRules.length;exportCountInput.max=String(availableExportCount);exportCountInput.value=String(Math.min(configuredExportCount,availableExportCount));$('export-fastest').disabled=availableExportCount===0;
+$('export-count-note').textContent=availableExportCount?`Default from Aether settings: ${configuredExportCount.toLocaleString()} rules. ${availableExportCount.toLocaleString()} benchmarked rules are available in this report; export is limited to the available count.`:'No benchmarked rules are available to export.';
+$('export-fastest').addEventListener('click',()=>{const requested=Number(exportCountInput.value);if(!Number.isSafeInteger(requested)||requested<1){$('export-count-note').textContent='Enter a whole number greater than zero.';return;}const count=Math.min(requested,availableExportCount);if(!count)return;downloadRuleFile(rankedRules.slice(0,count),`fastest_${count}_rules`);$('export-count-note').textContent=`Downloaded the ${count.toLocaleString()} fastest rules from ${availableExportCount.toLocaleString()} benchmarked rules.`;});
 renderPie();renderLegend();renderTable();
 </script></body></html>'''
         html = html.replace('__AETHER_REPORT_JSON__', data_json)
@@ -983,7 +991,8 @@ Q3: {np.percentile(times, 75):.2f}μs"""
             self.create_statistical_summary(rp, filename, corpus_description=corpus_description)
             self.create_interactive_report(
                 rp, filename, corpus_description=corpus_description,
-                validation_summary=validation_summary
+                validation_summary=validation_summary,
+                default_export_rule_count=getattr(self, 'default_export_rule_count', 500)
             )
             self.create_performance_distribution(rp, filename)
         print(f"{Colors.GREEN}Dashboard generation complete!{Colors.END}")
@@ -1672,6 +1681,7 @@ def main():
         tester = RulePerformanceTester(platform_index=args.platform, device_index=args.device)
         tester.output_dir = args.output
         tester.iterations = args.iterations
+        tester.default_export_rule_count = args.max_optimize_rules
         if args.visualize: tester.setup_visualization(viz_output)
         tester.setup_test_data(
             max_words=args.max_words,

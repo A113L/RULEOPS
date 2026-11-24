@@ -17,6 +17,10 @@ const MULTI_FILE_FIELDS = {
   aether_files: { endpointBase: '/api/aether/upload', maxFiles: 12, label: 'Aether' },
 };
 const uploadInProgress = Object.fromEntries(Object.keys(uploadState).map((key) => [key, false]));
+// Incremented whenever this tab accepts a user upload/library selection. A
+// status poll that began before that change must not overwrite the newer UI
+// state with its older uploads snapshot.
+const uploadStateRevision = Object.fromEntries(Object.keys(uploadState).map((key) => [key, 0]));
 let activeTool = 'rulest';
 let activeRankerWorkflow = 'rank';
 let activeRankingMode = 'mab';
@@ -205,7 +209,8 @@ async function selectLibraryAsset(field, assetId, select) {
   if (!assetId) return;
   try {
     const result = await apiPost('/api/library/select', { field, asset_id: assetId });
-    const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count, rule_validation: result.rule_validation };
+    const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count };
+    uploadStateRevision[field] += 1;
     if (field in MULTI_FILE_FIELDS) {
       if (!result.already_selected) uploadState[field] = [...(uploadState[field] || []), meta];
       renderMultiFileState(field);
@@ -404,6 +409,7 @@ function uploadFile(field, file) {
     try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
     if (xhr.status === 401) { window.location.replace('/'); return; }
     if (xhr.status >= 200 && xhr.status < 300 && result.ok) {
+      uploadStateRevision[field] += 1;
       uploadState[field] = { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category };
       if (field === 'seed') {
         stateEl.classList.remove('error'); stateEl.textContent = `✓ ${result.name} · ${humanSize(result.size)}`;
@@ -445,29 +451,19 @@ function updateAetherRuleCountHint() {
   const summaryEl = $('aether-validation-summary');
   const files = uploadState.aether_files || [];
   if (!files.length) {
-    if (hint) hint.textContent = 'Caps the number of benchmarkable rules sampled per file. Validation counts appear after selecting a rule file.';
-    if (summaryEl) summaryEl.textContent = 'Hashcat 8 preflight validation runs before benchmarking. Invalid, CLI-only and unsupported rules are skipped and reported with source line numbers.';
+    if (hint) hint.textContent = 'Caps the number of active rules sampled per file. Select a rule file to show its line count.';
+    if (summaryEl) summaryEl.textContent = 'Aether checks rule syntax and kernel compatibility before benchmarking, then validates the optimized ruleset again before saving it.';
     return;
   }
   const counts = files.map((file) => {
-    const validation = file.rule_validation || {};
-    const benchmarkable = Number.isInteger(validation.benchmarkable_rules) ? validation.benchmarkable_rules : file.rule_count;
-    const countText = Number.isInteger(benchmarkable) && benchmarkable >= 0
-      ? `${benchmarkable.toLocaleString()} benchmarkable`
-      : 'benchmarkable count unavailable';
-    const invalid = Number(validation.invalid_rules || 0);
-    const cliOnly = Number(validation.cli_only_rules || 0);
-    const unsupported = Number(validation.unsupported_rules || 0);
-    return `${file.name}: ${countText}, ${invalid.toLocaleString()} invalid, ${cliOnly.toLocaleString()} CLI-only, ${unsupported.toLocaleString()} unsupported by Aether`;
+    const ruleCount = Number.isInteger(file.rule_count) && file.rule_count >= 0
+      ? `${file.rule_count.toLocaleString()} active rules`
+      : 'rule count unavailable';
+    return `${file.name}: ${ruleCount}`;
   });
-  if (hint) hint.textContent = `${counts.join(' · ')}. Max test rules limits benchmarkable rules per file.`;
+  if (hint) hint.textContent = `${counts.join(' · ')}. Max test rules limits rules benchmarked per file.`;
   if (summaryEl) {
-    const totals = files.reduce((acc, file) => {
-      const v = file.rule_validation || {};
-      for (const key of ['benchmarkable_rules', 'invalid_rules', 'cli_only_rules', 'unsupported_rules']) acc[key] += Number(v[key] || 0);
-      return acc;
-    }, { benchmarkable_rules: 0, invalid_rules: 0, cli_only_rules: 0, unsupported_rules: 0 });
-    summaryEl.textContent = `Preflight totals · ${totals.benchmarkable_rules.toLocaleString()} benchmarkable · ${totals.invalid_rules.toLocaleString()} invalid · ${totals.cli_only_rules.toLocaleString()} CLI-only · ${totals.unsupported_rules.toLocaleString()} valid Hashcat rules not supported by the current Aether kernel. Line-numbered reports are saved with benchmark outputs.`;
+    summaryEl.textContent = 'Aether checks rule syntax and kernel compatibility before benchmarking. The optimized output is validated again before it is saved; rejected rules are listed in the optimization report.';
   }
 }
 // Kept as a thin alias: older call sites refer to this name directly.
@@ -491,7 +487,13 @@ function uploadMultiFile(field, file) {
       try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
       if (xhr.status === 401) { window.location.replace('/'); reject(new Error('Authentication required.')); return; }
       if (xhr.status >= 200 && xhr.status < 300 && result.ok) {
-        uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count, rule_validation: result.rule_validation }];
+        uploadStateRevision[field] += 1;
+        const uploadedMeta = { name: result.name || file.name, size: Number(result.size) || file.size, library: !!result.library, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count };
+        const uploadedKey = uploadedMeta.asset_id ? `asset:${uploadedMeta.asset_id}` : `file:${uploadedMeta.name}:${uploadedMeta.size}`;
+        const existing = uploadState[field] || [];
+        if (!existing.some((item) => (item.asset_id ? `asset:${item.asset_id}` : `file:${item.name || ''}:${Number(item.size) || 0}`) === uploadedKey)) {
+          uploadState[field] = [...existing, uploadedMeta];
+        }
         if (progress) progress.style.width = '100%';
         renderMultiFileState(field);
         if (result.library) await refreshLibraryMenus();
@@ -1811,6 +1813,10 @@ function resetLogView(title = 'Log history cleared', subtitle = 'New engine even
 }
 async function pollStatus() {
   try {
+    // Snapshot local upload revisions before starting the request. If a user
+    // upload/library selection completes while this poll is in flight, its
+    // stale uploads snapshot must not clear that newly selected file.
+    const uploadRevisionsAtRequest = { ...uploadStateRevision };
     const generationParam = logGeneration === null ? -1 : logGeneration;
     const response = await fetch(`/api/status?since=${lastLogId}&generation=${generationParam}`, { cache: 'no-store' });
     if (response.status === 401) { window.location.replace('/'); return; }
@@ -1830,10 +1836,26 @@ async function pollStatus() {
     if (data.log_seq > lastLogId) lastLogId = data.log_seq;
     if (data.uploads) {
       Object.keys(uploadState).forEach((field) => {
+        if (uploadStateRevision[field] !== uploadRevisionsAtRequest[field]) return;
         if (field in MULTI_FILE_FIELDS) {
-          const files = Array.isArray(data.uploads[field]) ? data.uploads[field] : [];
+          const serverFiles = Array.isArray(data.uploads[field]) ? data.uploads[field] : [];
           if (!uploadInProgress[field]) {
-            uploadState[field] = files;
+            // The upload/select response is the immediate confirmation of a
+            // user action. A status snapshot can be empty or older (for
+            // example when it was produced by another request path); never
+            // let that snapshot erase files already accepted in this tab.
+            // Merge by stable library asset ID, falling back to name + size
+            // for temporary inputs, and retain richer local validation data.
+            const keyFor = (file) => file.asset_id
+              ? `asset:${file.asset_id}`
+              : `file:${file.name || ''}:${Number(file.size) || 0}`;
+            const merged = new Map();
+            serverFiles.forEach((file) => merged.set(keyFor(file), { ...file }));
+            (uploadState[field] || []).forEach((file) => {
+              const key = keyFor(file);
+              merged.set(key, { ...(merged.get(key) || {}), ...file });
+            });
+            uploadState[field] = Array.from(merged.values());
             renderMultiFileState(field);
           }
           return;

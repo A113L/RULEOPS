@@ -125,5 +125,9 @@ def test_all_gpu_rule_engines_contain_hashcat_8_kernel_branches() -> None:
     for label, source in (("Aether", aether), ("RULEST", rulest)):
         for marker in ("case 'h':", "case 'H':", "case 'S':"):
             assert marker in source, f"{label} is missing {marker}"
-        for marker in ("cmd == 'v'", "cmd == 'B'"):
-            assert marker in source, f"{label} is missing {marker}"
+        if label == "Aether":
+            for marker in ("case 'v':", "case 'B':", "apply_hashcat_rule"):
+                assert marker in source, f"{label} is missing {marker}"
+        else:
+            for marker in ("cmd == 'v'", "cmd == 'B'"):
+                assert marker in source, f"{label} is missing {marker}"

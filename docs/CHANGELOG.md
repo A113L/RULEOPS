@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] - Aether Hashcat 8 rule-chain support
+
+- Replaced Aether's one-operation-only kernel dispatch with a sequential OpenCL rule interpreter, allowing supported multi-command Hashcat `-r` lines to execute as complete chains.
+- Enabled Aether benchmarking for Hashcat 8.0 `h`, `H`, `S`, `vNX`, and `BNX` operators, including their use inside supported rule chains.
+- Expanded the packed rule buffer to 256 bytes so up to 31 three-byte operations are not silently truncated.
+- Aligned CLI and directory discovery with the web uploader: `.rule`, `.rules`, `.hr`, `.hashcat`, and `.txt` files are now accepted case-insensitively.
+- Updated Aether preflight validation and UI copy to distinguish malformed rules, CLI-only rules, and valid commands not yet implemented by the Aether interpreter.
+- Kept unsupported commands out of benchmark results rather than timing them as identity/no-op transformations.
+
+
 ## v2.6.5 — Hashcat 8 rule operators across CPU and GPU engines
 
 - Added byte-exact support for Hashcat 8 operators `h` (lowercase hexadecimal),

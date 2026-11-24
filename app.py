@@ -31,7 +31,6 @@ from pathlib import Path, PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from gpu_diagnostics import collect_gpu_diagnostics
-from aether_validation import validate_rule_file
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 DATA = ROOT / "runs"
@@ -4086,20 +4085,19 @@ def _validate_rulestripper_upload(field: str, filename: str, path: Path) -> None
         )
 
 
-def summarize_aether_rules(path: Path) -> dict | None:
-    """Return Aether's preflight validation summary for an uploaded rule file."""
-    try:
-        return validate_rule_file(path).get("summary", {})
-    except (OSError, UnicodeError, ValueError):
-        return None
-
-
 def count_aether_rules(path: Path) -> int | None:
-    """Count rules that pass Hashcat -r syntax and the current Aether kernel preflight."""
-    summary = summarize_aether_rules(path)
-    if summary is None:
+    """Count active rule lines without validating or filtering the uploaded file."""
+    count = 0
+    try:
+        with Path(path).open("r", encoding="utf-8", errors="surrogateescape", newline="") as stream:
+            for line in stream:
+                rule = line.rstrip("\r\n")
+                if not rule.strip() or rule.lstrip().startswith("#"):
+                    continue
+                count += 1
+    except (OSError, UnicodeError):
         return None
-    return int(summary.get("benchmarkable_rules", 0))
+    return count
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -5039,8 +5037,7 @@ class Handler(BaseHTTPRequestHandler):
                     "sha256": upload_digest, "file_signature": _library_file_signature(stored_stat),
                 }
             if aether and field == "aether_files":
-                meta["rule_validation"] = summarize_aether_rules(stored)
-                meta["rule_count"] = int((meta["rule_validation"] or {}).get("benchmarkable_rules", 0))
+                meta["rule_count"] = count_aether_rules(stored)
             replaced = []
             with LOCK:
                 multi_file_limits = MULTI_FILE_UPLOAD_LIMITS.get(field)
@@ -5069,8 +5066,6 @@ class Handler(BaseHTTPRequestHandler):
                         "library": bool(category), "asset_id": asset_id, "category": category}
             if "rule_count" in meta:
                 response["rule_count"] = meta["rule_count"]
-            if "rule_validation" in meta:
-                response["rule_validation"] = meta["rule_validation"]
             self.send_json(response)
         except Exception as exc:
             with LOCK:
@@ -5133,8 +5128,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             meta = upload_meta_for_library_asset(category, data.get("asset_id"))
             if field == "aether_files":
-                meta["rule_validation"] = summarize_aether_rules(meta["path"])
-                meta["rule_count"] = int((meta["rule_validation"] or {}).get("benchmarkable_rules", 0))
+                meta["rule_count"] = count_aether_rules(meta["path"])
         except ValueError as exc:
             self.send_json({"error": str(exc)}, 404)
             return
@@ -5154,7 +5148,7 @@ class Handler(BaseHTTPRequestHandler):
                 if any(item.get("asset_id") == meta["asset_id"] for item in current):
                     self.send_json({"ok": True, "field": field, "name": meta["name"],
                                     "size": meta["size"], "asset_id": meta["asset_id"],
-                                    "rule_count": meta.get("rule_count"), "rule_validation": meta.get("rule_validation"), "already_selected": True})
+                                    "rule_count": meta.get("rule_count"), "already_selected": True})
                     return
                 current_total = sum(int(item.get("size", 0)) for item in current)
                 if len(current) >= max_files:
@@ -5182,8 +5176,6 @@ class Handler(BaseHTTPRequestHandler):
                     "size": meta["size"], "asset_id": meta["asset_id"], "category": category}
         if "rule_count" in meta:
             response["rule_count"] = meta["rule_count"]
-        if "rule_validation" in meta:
-            response["rule_validation"] = meta["rule_validation"]
         self.send_json(response)
 
     def handle_run(self):

@@ -702,11 +702,11 @@
                 <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Hashcat rule files</h3><small>.rule, .rules, .txt, .hr, .hashcat</small></div><span class="required-star">*</span></div>
                 <label class="drop-zone" for="aether_files-file"><span class="upload-cloud">↑</span><strong>Choose files <em>or drop them here</em></strong><small>Select one or more rule files · benchmarked and visualized individually</small><input id="aether_files-file" type="file" multiple accept=".rule,.rules,.hr,.hashcat,.txt,text/plain"></label>
                 <div class="file-state" id="aether_files-state"><span class="file-state-dot"></span><span>No rules files selected</span></div>
-                <div class="aether-validation-summary" id="aether-validation-summary" aria-live="polite">Hashcat 8 preflight validation runs before benchmarking. Invalid, CLI-only and unsupported rules are skipped and reported with source line numbers.</div>
+                <div class="aether-validation-summary" id="aether-validation-summary" aria-live="polite">Aether checks rule syntax and kernel compatibility before benchmarking, then validates the optimized ruleset again before saving it.</div>
                 <div class="upload-progress"><span id="aether_files-progress"></span></div>
                 <div class="library-pick"><label for="library-aether_files">Reuse saved rules</label><select id="library-aether_files" data-library-field="aether_files"><option value="">Add saved rule file…</option></select></div>
               </div>
-              <div class="ranker-input-note">Uploaded rule files are saved in the reusable rules library. Before GPU timing, Aether validates Hashcat 8 rule-file syntax and checks the current kernel's supported operations. The current kernel benchmarks one operation per line; valid chains and unimplemented operators are reported separately, not timed. Invalid, CLI-only and unsupported entries are saved with source line numbers.</div>
+              <div class="ranker-input-note">Uploaded rule files are saved in the reusable rules library. Before GPU timing, Aether validates Hashcat 8 rule-file syntax and checks every command in each rule chain against its sequential OpenCL interpreter. Supported chains, including h/H/S/v/B, are benchmarked; invalid, CLI-only and not-yet-implemented operators are reported separately with source line numbers.</div>
             </section>
             <section class="panel">
               <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">02</span><h2>Benchmark settings</h2></div><p>Controls the synthetic word corpus and GPU device used for timing.</p></div></div>
@@ -722,7 +722,7 @@
                 <label class="field"><span>Iterations</span><input id="aether-iterations" type="number" min="1" max="100000" value="50"></label>
                 <label class="field"><span>Test runs</span><input id="aether-test-runs" type="number" min="1" max="50" value="3"><small>Repeats per rule, for stable timing.</small></label>
                 <label class="field"><span>Max words</span><input id="aether-max-words" type="number" min="1" max="1000000" value="1000"><small>Exact number of GPU work-items per rule in both dictionary modes.</small></label>
-                <label class="field"><span>Max test rules</span><input id="aether-max-test-rules" type="number" min="1" max="2000000" value="1000"><small id="aether-max-test-rules-hint">Caps rules sampled per file. Select a rule file to show its rule count.</small></label>
+                <label class="field"><span>Max test rules</span><input id="aether-max-test-rules" type="number" min="1" max="2000000" value="1000"><small id="aether-max-test-rules-hint">Caps rules sampled per file. Select a rule file to show its active rule count.</small></label>
                 <label class="field"><span>Chart DPI</span><input id="aether-dpi" type="number" min="50" max="600" value="150"><small>Lower = lighter PNGs for the gallery/zip.</small></label>
                 <label class="field"><span>GPU platform index</span><input id="aether-platform" type="number" min="0" max="64" value="0"></label>
                 <label class="field"><span>GPU device index</span><input id="aether-device" type="number" min="0" max="64" value="0"></label>

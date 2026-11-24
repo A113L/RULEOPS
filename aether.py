@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Aether Hashcat Rule Performance Benchmark Tool.
-The preflight validator admits only Hashcat -r rules that the current
-OpenCL kernel implements faithfully as a single operation.
+The preflight validator admits Hashcat -r rules that the OpenCL interpreter
+implements faithfully, including supported multi-command chains and Hashcat 8.0 operators.
 """
+from __future__ import annotations
 
 import pyopencl as cl
 import numpy as np
@@ -21,7 +22,7 @@ import seaborn as sns
 import pandas as pd
 from datetime import datetime
 
-from aether_validation import validate_rule_file, write_validation_artifacts
+from aether_validation import validate_rule_file, validate_rule_records, write_validation_artifacts
 
 # Color codes for terminal output
 class Colors:
@@ -41,11 +42,11 @@ plt.style.use('seaborn-v0_8')
 sns.set_palette("husl")
 
 # ============================================================================
-# AETHER OPENCL RULE BENCHMARK KERNEL (validated single-operation subset)
+# AETHER OPENCL RULE BENCHMARK KERNEL (sequential Hashcat rule interpreter)
 # ============================================================================
-OPENCL_KERNEL_SOURCE = """
+OPENCL_KERNEL_SOURCE = r"""
 #define MAX_WORD_LEN 256
-#define MAX_RULE_LEN 32
+#define MAX_RULE_LEN 256
 #define MAX_OUTPUT_LEN 512
 
 int is_lower(uchar c) {
@@ -106,6 +107,226 @@ int count_char(const uchar* str, int len, uchar x) {
     return cnt;
 }
 
+unsigned int char_to_pos(unsigned char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+    return 0xFFFFFFFF;
+}
+// Return 0 on success, -2 on output-length overflow.
+static int duplicate_front(const unsigned char* in, int in_len,
+                           unsigned char* out, int* out_len, int* changed, int n) {
+    if (n > in_len) n = in_len;
+    int new_len = in_len + n;
+    if (new_len > MAX_OUTPUT_LEN) return -2;
+    for (int i = 0; i < n; i++) out[i] = in[i];
+    for (int i = 0; i < in_len; i++) out[n + i] = in[i];
+    *out_len = new_len; *changed = 1;
+    return 0;
+}
+static int duplicate_back(const unsigned char* in, int in_len,
+                          unsigned char* out, int* out_len, int* changed, int n) {
+    if (n > in_len) n = in_len;
+    int new_len = in_len + n;
+    if (new_len > MAX_OUTPUT_LEN) return -2;
+    for (int i = 0; i < in_len; i++) out[i] = in[i];
+    for (int i = 0; i < n; i++) out[in_len + i] = in[in_len - n + i];
+    *out_len = new_len; *changed = 1;
+    return 0;
+}
+static int duplicate_word(const unsigned char* in, int in_len,
+                          unsigned char* out, int* out_len, int* changed, int times) {
+    int new_len = in_len * (times + 1);
+    if (new_len > MAX_OUTPUT_LEN) return -2;
+    for (int rep = 0; rep <= times; rep++)
+        for (int i = 0; i < in_len; i++) out[rep * in_len + i] = in[i];
+    *out_len = new_len; *changed = 1;
+    return 0;
+}
+static void rotate_left(const unsigned char* in, int in_len,
+                        unsigned char* out, int* out_len, int* changed, int n) {
+    if (in_len <= 0) { *out_len = 0; *changed = 0; return; }
+    if (n <= 0) n = 1;
+    n %= in_len;
+    *out_len = in_len;
+    if (n == 0) { for (int i = 0; i < in_len; i++) out[i] = in[i]; *changed = 0; return; }
+    for (int i = 0; i < in_len; i++) out[i] = in[(i + n) % in_len];
+    *changed = 1;
+}
+static void rotate_right(const unsigned char* in, int in_len,
+                         unsigned char* out, int* out_len, int* changed, int n) {
+    if (in_len <= 0) { *out_len = 0; *changed = 0; return; }
+    if (n <= 0) n = 1;
+    n %= in_len;
+    *out_len = in_len;
+    if (n == 0) { for (int i = 0; i < in_len; i++) out[i] = in[i]; *changed = 0; return; }
+    for (int i = 0; i < in_len; i++) out[i] = in[(i - n + in_len) % in_len];
+    *changed = 1;
+}
+static int apply_single_command(const unsigned char* in, int in_len,
+                                unsigned char* out, int* out_len,
+                                const unsigned char* cmd, int cmd_len) {
+    int changed = 0;
+    *out_len = 0;
+    if (cmd_len == 1) {
+        switch (cmd[0]) {
+            case 'l': *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=to_lower(in[i]); changed=1; break;
+            case 'u': *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=to_upper(in[i]); changed=1; break;
+            case 'c': *out_len = in_len; if (in_len>0) out[0]=to_upper(in[0]); for (int i=1;i<in_len;i++) out[i]=to_lower(in[i]); changed=1; break;
+            case 'C': *out_len = in_len; if (in_len>0) out[0]=to_lower(in[0]); for (int i=1;i<in_len;i++) out[i]=to_upper(in[i]); changed=1; break;
+            case 't': *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=toggle_case(in[i]); changed=1; break;
+            case 'h':
+            case 'H': {
+                const unsigned char hex_lower[16] = {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+                const unsigned char hex_upper[16] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
+                if (in_len * 2 > MAX_OUTPUT_LEN) return -2;
+                *out_len = in_len * 2;
+                for (int i = 0; i < in_len; i++) {
+                    out[i * 2] = (cmd[0] == 'h') ? hex_lower[in[i] >> 4] : hex_upper[in[i] >> 4];
+                    out[i * 2 + 1] = (cmd[0] == 'h') ? hex_lower[in[i] & 15] : hex_upper[in[i] & 15];
+                }
+                changed = 1;
+                break;
+            }
+            case 'S': *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=shift_case(in[i]); changed=1; break;
+            case 'r': *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=in[in_len-1-i]; changed=1; break;
+            case 'd': if (in_len*2>MAX_OUTPUT_LEN) return -2; *out_len=in_len*2; for(int i=0;i<in_len;i++){out[i]=in[i];out[in_len+i]=in[i];} changed=1; break;
+            case 'f': if (in_len*2>MAX_OUTPUT_LEN) return -2; *out_len=in_len*2; for(int i=0;i<in_len;i++){out[i]=in[i];out[in_len+i]=in[in_len-1-i];} changed=1; break;
+            case 'k': *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; if(in_len>=2){out[0]=in[1];out[1]=in[0];changed=1;} break;
+            case 'K': *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; if(in_len>=2){out[in_len-2]=in[in_len-1];out[in_len-1]=in[in_len-2];changed=1;} break;
+            case ':': *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; changed=0; break;
+            case 'q': if (in_len*2>MAX_OUTPUT_LEN) return -2; int idx=0; for(int i=0;i<in_len;i++){out[idx++]=in[i];out[idx++]=in[i];} *out_len=in_len*2; changed=1; break;
+            case 'E': { *out_len=in_len; int cap=1; for(int i=0;i<in_len;i++){ if(cap&&is_lower(in[i])) out[i]=to_upper(in[i]); else out[i]=to_lower(in[i]); cap=(in[i]==' '||in[i]=='-'||in[i]=='_'); } changed=1; } break;
+            case '{': rotate_left(in,in_len,out,out_len,&changed,1); break;
+            case '}': rotate_right(in,in_len,out,out_len,&changed,1); break;
+            case '[': if (in_len>1) { *out_len=in_len-1; for(int i=1;i<in_len;i++) out[i-1]=in[i]; changed=1; } break;
+            case ']': if (in_len>1) { *out_len=in_len-1; for(int i=0;i<in_len-1;i++) out[i]=in[i]; changed=1; } break;
+            default: *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; changed=0; break;
+        }
+        return changed;
+    }
+    if (cmd_len == 2) {
+        unsigned char cmd_char = cmd[0];
+        unsigned char arg = cmd[1];
+        int n = (int)char_to_pos(arg);
+        if (n == 0xFFFFFFFF) n = -1;
+        switch (cmd_char) {
+            case 'T': if (n>=0&&n<in_len){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; out[n]=toggle_case(in[n]); changed=1; } break;
+            case 'D': if (n>=0&&n<in_len){ *out_len=in_len-1; for(int i=0;i<n;i++) out[i]=in[i]; for(int i=n+1;i<in_len;i++) out[i-1]=in[i]; changed=1; } break;
+            case 'L': if (n>=0&&n<in_len){ *out_len=in_len-n; for(int i=n;i<in_len;i++) out[i-n]=in[i]; changed=1; } break;
+            case 'R': if (n>=0&&n<in_len){ *out_len=n+1; for(int i=0;i<=n;i++) out[i]=in[i]; changed=1; } break;
+            case '+': if (n>=0&&n<in_len){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; out[n]=in[n]+1; changed=1; } break;
+            case '-': if (n>=0&&n<in_len){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; out[n]=in[n]-1; changed=1; } break;
+            case '.': if (n>=0&&n<in_len){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; out[n]=in[n]+1; changed=1; } break;
+            case ',': if (n>=0&&n<in_len){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; out[n]=in[n]-1; changed=1; } break;
+            case '\'': if (n>=0&&n<in_len){ *out_len=n; for(int i=0;i<n;i++) out[i]=in[i]; changed=1; } break;
+            case '^': if (in_len+1>MAX_OUTPUT_LEN) return -2; out[0]=arg; for(int i=0;i<in_len;i++) out[i+1]=in[i]; *out_len=in_len+1; changed=1; break;
+            case '$': if (in_len+1>MAX_OUTPUT_LEN) return -2; for(int i=0;i<in_len;i++) out[i]=in[i]; out[in_len]=arg; *out_len=in_len+1; changed=1; break;
+            case '@': *out_len=0; for(int i=0;i<in_len;i++){ if(in[i]!=arg) out[(*out_len)++]=in[i]; else changed=1; } break;
+            case '!': for(int i=0;i<in_len;i++) if(in[i]==arg) return -1; *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; return 0;
+            case '/': for(int i=0;i<in_len;i++) if(in[i]==arg){ *out_len=in_len; for(int j=0;j<in_len;j++) out[j]=in[j]; return 0; } return -1;
+            case '(': if (in_len>0&&in[0]==arg){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; return 0; } return -1;
+            case ')': if (in_len>0&&in[in_len-1]==arg){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; return 0; } return -1;
+            case 'y': if (n>=0) return duplicate_front(in,in_len,out,out_len,&changed,n); break;
+            case 'Y': if (n>=0) return duplicate_back(in,in_len,out,out_len,&changed,n); break;
+            case 'z': if (n>0) { if (in_len+n>MAX_OUTPUT_LEN) return -2; out[0]=in[0]; for(int i=0;i<n;i++) out[i+1]=in[0]; for(int i=1;i<in_len;i++) out[n+i]=in[i]; *out_len=in_len+n; changed=1; } break;
+            case 'Z': if (n>0) { if (in_len+n>MAX_OUTPUT_LEN) return -2; for(int i=0;i<in_len;i++) out[i]=in[i]; for(int i=0;i<n;i++) out[in_len+i]=in[in_len-1]; *out_len=in_len+n; changed=1; } break;
+            case 'p': if (n>=0) return duplicate_word(in,in_len,out,out_len,&changed,n); break;
+            case '{': if (n>=0) rotate_left(in,in_len,out,out_len,&changed,n); break;
+            case '}': if (n>=0) rotate_right(in,in_len,out,out_len,&changed,n); break;
+            case '[': if (n>=0&&n<in_len){ *out_len=in_len-n; for(int i=n;i<in_len;i++) out[i-n]=in[i]; changed=1; } break;
+            case ']': if (n>=0&&n<in_len){ *out_len=in_len-n; for(int i=0;i<*out_len;i++) out[i]=in[i]; changed=1; } break;
+            default: *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; changed=0; break;
+        }
+        return changed;
+    }
+    if (cmd_len == 3) {
+        unsigned char cmd_char = cmd[0];
+        unsigned char a1 = cmd[1];
+        unsigned char a2 = cmd[2];
+        int n1 = (int)char_to_pos(a1);
+        int n2 = (int)char_to_pos(a2);
+        if (n1 == (int)0xFFFFFFFF) n1 = -1;
+        if (n2 == (int)0xFFFFFFFF) n2 = -1;
+        switch (cmd_char) {
+            case 'x': if (n1>=0&&n2>0&&n1<in_len){ int end=n1+n2; if(end>in_len) end=in_len; *out_len=end-n1; for(int i=0;i<*out_len;i++) out[i]=in[n1+i]; changed=1; } break;
+            case 'O': if (n1>=0&&n2>0&&n1<in_len){ int end=n1+n2; if(end>in_len) end=in_len; int rm=end-n1; *out_len=in_len-rm; for(int i=0;i<n1;i++) out[i]=in[i]; for(int i=end;i<in_len;i++) out[i-rm]=in[i]; changed=1; } break;
+            case 'i': if (n1>=0) { if (in_len+1>MAX_OUTPUT_LEN) return -2; int p=n1; if(p>in_len) p=in_len; for(int i=0;i<p;i++) out[i]=in[i]; out[p]=a2; for(int i=p;i<in_len;i++) out[i+1]=in[i]; *out_len=in_len+1; changed=1; } break;
+            case 's': *out_len=in_len; for(int i=0;i<in_len;i++){ out[i]=(in[i]==a1)?a2:in[i]; if(in[i]==a1) changed=1; } break;
+            case 'o': if (n1>=0&&n1<in_len){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; out[n1]=a2; changed=1; } break;
+            case '*': if (n1>=0&&n2>=0&&n1<in_len&&n2<in_len&&n1!=n2){ *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; unsigned char tmp=out[n1]; out[n1]=out[n2]; out[n2]=tmp; changed=1; } break;
+            case '3': if (n1>=0){ int count=0; *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; for(int i=0;i<in_len;i++){ if(in[i]==a2) count++; if(count==n1+1 && i+1<in_len){ out[i+1]=toggle_case(in[i+1]); changed=1; break; } } } break;
+            case 'v': {
+                if (n1 > 0 && n1 < in_len + 1) {
+                    int required_len = in_len + (in_len / n1);
+                    if (required_len > MAX_OUTPUT_LEN) return -2;
+                    *out_len = 0;
+                    for (int i = 0; i < in_len; i++) {
+                        out[(*out_len)++] = in[i];
+                        if ((i + 1) % n1 == 0) out[(*out_len)++] = a2;
+                    }
+                    changed = 1;
+                } else {
+                    *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=in[i];
+                }
+                break;
+            }
+            case 'B':
+                *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=in[i];
+                if (n1 >= 0 && n1 < in_len) { out[n1] = (unsigned char)(in[n1] + a2); changed = 1; }
+                break;
+            case '%': if (n1>=0){ int cnt=0; for(int i=0;i<in_len;i++) if(in[i]==a2) cnt++; if(cnt<n1) return -1; } *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; return 0;
+            case '=': if (n1>=0&&n1<in_len&&in[n1]!=a2) return -1; *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; return 0;
+            default: *out_len=in_len; for(int i=0;i<in_len;i++) out[i]=in[i]; changed=0; break;
+        }
+        return changed;
+    }
+    *out_len = in_len; for (int i=0;i<in_len;i++) out[i]=in[i]; return 0;
+}
+void apply_hashcat_rule(const unsigned char* word, int word_len,
+                        const unsigned char* rule, int rule_len,
+                        unsigned char* output, int* out_len, int* changed) {
+    unsigned char buf0[MAX_OUTPUT_LEN];
+    unsigned char buf1[MAX_OUTPUT_LEN];
+    unsigned char* in_buf = (unsigned char*)word;
+    int in_len = word_len;
+    int final_changed = 0;
+    int pos = 0;
+    while (pos < rule_len) {
+        unsigned char cmd_char = rule[pos];
+        // Hashcat rule files commonly separate commands with whitespace.
+        // Skip separators only at command boundaries: a space consumed as
+        // an argument (for example, the operand in "$ ") remains intact.
+        if (cmd_char == ' ' || cmd_char == '\t' || cmd_char == '\r' || cmd_char == '\n') {
+            pos++;
+            continue;
+        }
+        int cmd_len = 1;
+        if (cmd_char=='s'||cmd_char=='x'||cmd_char=='O'||cmd_char=='i'||cmd_char=='o'||
+            cmd_char=='*'||cmd_char=='3'||cmd_char=='v'||cmd_char=='B'||cmd_char=='%'||cmd_char=='=') {
+            cmd_len = 3;
+        } else if (pos+1 < rule_len && (cmd_char=='T'||cmd_char=='D'||cmd_char=='L'||cmd_char=='R'||
+                    cmd_char=='+'||cmd_char=='-'||cmd_char=='.'||cmd_char==','||cmd_char=='\''||
+                    cmd_char=='^'||cmd_char=='$'||cmd_char=='@'||cmd_char=='!'||cmd_char=='/'||
+                    cmd_char=='('||cmd_char==')'||cmd_char=='y'||cmd_char=='Y'||cmd_char=='z'||
+                    cmd_char=='Z'||cmd_char=='p'||cmd_char=='_'||cmd_char=='e')) {
+            cmd_len = 2;
+        }
+        if (pos + cmd_len > rule_len) break;
+        int out_len_local = 0;
+        int result = apply_single_command(in_buf, in_len, buf0, &out_len_local, rule+pos, cmd_len);
+        if (result < 0) { *out_len = 0; *changed = result; return; }
+        if (result == 1) final_changed = 1;
+        in_len = out_len_local;
+        for (int i=0;i<in_len;i++) buf1[i]=buf0[i];
+        in_buf = buf1;
+        pos += cmd_len;
+    }
+    *out_len = in_len;
+    for (int i=0;i<in_len;i++) output[i]=in_buf[i];
+    *changed = final_changed;
+}
+
 __kernel void rule_processor(
     __global const uchar* words,
     __global const uchar* rules,
@@ -148,584 +369,13 @@ __kernel void rule_processor(
     int out_len = 0;
     int changed = 0;
 
-    for (int i = 0; i < max_result_len; i++) results[result_offset + i] = 0;
+    // Apply every command in the rule line in sequence. This supports normal
+    // Hashcat -r rule chains as well as Hashcat 8.0 h/H/S/v/B operators.
+    apply_hashcat_rule(word, word_len, rule, rule_len, output, &out_len, &changed);
 
-    if (rule_len == 0 || word_len == 0) return;
-
-    // ======================= SIMPLE RULES (1 char) =======================
-    if (rule_len == 1) {
-        switch (rule[0]) {
-            case 'l':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = to_lower(word[i]);
-                changed = 1;
-                break;
-            case 'u':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = to_upper(word[i]);
-                changed = 1;
-                break;
-            case 'c':
-                out_len = word_len;
-                if (word_len > 0) {
-                    output[0] = to_upper(word[0]);
-                    for (int i = 1; i < word_len; i++) output[i] = to_lower(word[i]);
-                }
-                changed = 1;
-                break;
-            case 'C':
-                out_len = word_len;
-                if (word_len > 0) {
-                    output[0] = to_lower(word[0]);
-                    for (int i = 1; i < word_len; i++) output[i] = to_upper(word[i]);
-                }
-                changed = 1;
-                break;
-            case 't':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = toggle_case(word[i]);
-                changed = 1;
-                break;
-            case 'h':
-            case 'H': {
-                const uchar hex_lower[16] = {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
-                const uchar hex_upper[16] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
-                if (word_len * 2 >= max_result_len || word_len * 2 > MAX_OUTPUT_LEN) break;
-                out_len = word_len * 2;
-                for (int i = 0; i < word_len; i++) {
-                    const uchar value = word[i];
-                    output[i * 2] = (rule[0] == 'h') ? hex_lower[value >> 4] : hex_upper[value >> 4];
-                    output[i * 2 + 1] = (rule[0] == 'h') ? hex_lower[value & 15] : hex_upper[value & 15];
-                }
-                changed = 1;
-                break;
-            }
-            case 'S':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = shift_case(word[i]);
-                changed = 1;
-                break;
-            case 'r':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[word_len - 1 - i];
-                changed = 1;
-                break;
-            case 'k':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                if (word_len >= 2) {
-                    output[0] = word[1];
-                    output[1] = word[0];
-                    changed = 1;
-                }
-                break;
-            case 'K':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                if (word_len >= 2) {
-                    output[word_len-2] = word[word_len-1];
-                    output[word_len-1] = word[word_len-2];
-                    changed = 1;
-                }
-                break;
-            case ':':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                changed = 0;
-                break;
-            case 'd':
-                if (word_len * 2 <= MAX_OUTPUT_LEN) {
-                    out_len = word_len * 2;
-                    for (int i = 0; i < word_len; i++) {
-                        output[i] = word[i];
-                        output[word_len + i] = word[i];
-                    }
-                    changed = 1;
-                }
-                break;
-            case 'f':
-                if (word_len * 2 <= MAX_OUTPUT_LEN) {
-                    out_len = word_len * 2;
-                    for (int i = 0; i < word_len; i++) {
-                        output[i] = word[i];
-                        output[word_len + i] = word[word_len - 1 - i];
-                    }
-                    changed = 1;
-                }
-                break;
-            case 'p':
-                if (word_len + 1 <= MAX_OUTPUT_LEN) {
-                    out_len = word_len;
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    output[out_len++] = 's';
-                    changed = 1;
-                }
-                break;
-            case 'z':
-                if (word_len + 1 <= MAX_OUTPUT_LEN) {
-                    output[0] = word[0];
-                    for (int i = 0; i < word_len; i++) output[i+1] = word[i];
-                    out_len = word_len + 1;
-                    changed = 1;
-                }
-                break;
-            case 'Z':
-                if (word_len + 1 <= MAX_OUTPUT_LEN) {
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    output[word_len] = word[word_len-1];
-                    out_len = word_len + 1;
-                    changed = 1;
-                }
-                break;
-            case 'q':
-                if (word_len * 2 <= MAX_OUTPUT_LEN) {
-                    int idx = 0;
-                    for (int i = 0; i < word_len; i++) {
-                        output[idx++] = word[i];
-                        output[idx++] = word[i];
-                    }
-                    out_len = word_len * 2;
-                    changed = 1;
-                }
-                break;
-            case 'E':
-                // Hashcat E: lowercase the word, then uppercase the first
-                // letter and the first letter following each literal space.
-                out_len = word_len;
-                int cap = 1;
-                for (int i = 0; i < word_len; i++) {
-                    if (cap && is_lower(word[i])) output[i] = word[i] - 32;
-                    else output[i] = to_lower(word[i]);
-                    cap = (word[i] == ' ');
-                }
-                changed = 1;
-                break;
-            // Memory placeholders – no effect
-            case 'M': case '4': case '6': case '_':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                changed = 0;
-                break;
-            case 'Q':
-                changed = -1;
-                break;
-            default:
-                changed = 0;
-                break;
-        }
-    }
-
-    // ======================= TWO‑CHAR RULES =======================
-    else if (rule_len == 2) {
-        uchar cmd = rule[0];
-        uchar arg = rule[1];
-        int n = parse_position(arg);
-
-        switch (cmd) {
-            case 'T':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                if (n < word_len) { output[n] = toggle_case(word[n]); changed = 1; }
-                break;
-            case 'D':
-                out_len = 0;
-                for (int i = 0; i < word_len; i++) {
-                    if (i != n) output[out_len++] = word[i];
-                    else changed = 1;
-                }
-                break;
-            case 'L':
-                out_len = 0;
-                for (int i = n; i < word_len; i++) output[out_len++] = word[i];
-                changed = (n > 0);
-                break;
-            case 'R':
-                out_len = (n + 1 < word_len) ? n + 1 : word_len;
-                for (int i = 0; i < out_len; i++) output[i] = word[i];
-                changed = (out_len != word_len);
-                break;
-            case '+':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                if (n < word_len && word[n] < 255) { output[n] = word[n] + 1; changed = 1; }
-                break;
-            case '-':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                if (n < word_len && word[n] > 0) { output[n] = word[n] - 1; changed = 1; }
-                break;
-            case '.':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                if (n < word_len && word[n] < 255) { output[n] = word[n] + 1; changed = 1; }
-                break;
-            case ',':
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                if (n < word_len && word[n] > 0) { output[n] = word[n] - 1; changed = 1; }
-                break;
-            case '^':
-                if (word_len + 1 <= MAX_OUTPUT_LEN) {
-                    output[0] = arg;
-                    for (int i = 0; i < word_len; i++) output[i+1] = word[i];
-                    out_len = word_len + 1;
-                    changed = 1;
-                }
-                break;
-            case '$':
-                if (word_len + 1 <= MAX_OUTPUT_LEN) {
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    output[word_len] = arg;
-                    out_len = word_len + 1;
-                    changed = 1;
-                }
-                break;
-            case '@':
-                out_len = 0;
-                for (int i = 0; i < word_len; i++) {
-                    if (word[i] != arg) output[out_len++] = word[i];
-                    else changed = 1;
-                }
-                break;
-            case '!':
-                {
-                    int reject = 0;
-                    for (int i = 0; i < word_len; i++) {
-                        if (word[i] == arg) { reject = 1; break; }
-                    }
-                    if (reject) changed = -1;
-                    else {
-                        out_len = word_len;
-                        for (int i = 0; i < word_len; i++) output[i] = word[i];
-                        changed = 0;
-                    }
-                }
-                break;
-            case '/':
-                {
-                    int found = 0;
-                    for (int i = 0; i < word_len; i++) if (word[i] == arg) { found = 1; break; }
-                    if (!found) changed = -1;
-                    else {
-                        out_len = word_len;
-                        for (int i = 0; i < word_len; i++) output[i] = word[i];
-                        changed = 0;
-                    }
-                }
-                break;
-            case 'p':
-                {
-                    int mult = n <= 0 ? 1 : n;
-                    int total_len = word_len * mult;
-                    if (total_len <= MAX_OUTPUT_LEN) {
-                        out_len = total_len;
-                        for (int i = 0; i < mult; i++)
-                            for (int j = 0; j < word_len; j++)
-                                output[i*word_len + j] = word[j];
-                        changed = 1;
-                    }
-                }
-                break;
-            case '(':
-                if (word_len == 0 || word[0] != arg) changed = -1;
-                else {
-                    out_len = word_len;
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    changed = 0;
-                }
-                break;
-            case ')':
-                if (word_len == 0 || word[word_len-1] != arg) changed = -1;
-                else {
-                    out_len = word_len;
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    changed = 0;
-                }
-                break;
-            case '<':
-                if (word_len > n) changed = -1;
-                else {
-                    out_len = word_len;
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    changed = 0;
-                }
-                break;
-            case '>':
-                if (word_len < n) changed = -1;
-                else {
-                    out_len = word_len;
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    changed = 0;
-                }
-                break;
-            case '_':
-                if (word_len != n) changed = -1;
-                else {
-                    out_len = word_len;
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    changed = 0;
-                }
-                break;
-            case '=':
-                if (n >= word_len || word[n] != arg) changed = -1;
-                else {
-                    out_len = word_len;
-                    for (int i = 0; i < word_len; i++) output[i] = word[i];
-                    changed = 0;
-                }
-                break;
-            case '%':
-                {
-                    int cnt = count_char(word, word_len, arg);
-                    if (cnt < n) changed = -1;
-                    else {
-                        out_len = word_len;
-                        for (int i = 0; i < word_len; i++) output[i] = word[i];
-                        changed = 0;
-                    }
-                }
-                break;
-            case 'y':
-                {
-                    int nn = n;
-                    if (nn > word_len) nn = word_len;
-                    if (word_len + nn <= MAX_OUTPUT_LEN) {
-                        out_len = word_len + nn;
-                        for (int i = 0; i < word_len; i++) output[i] = word[i];
-                        for (int i = 0; i < nn; i++) output[word_len + i] = word[i];
-                        changed = 1;
-                    }
-                }
-                break;
-            case 'Y':
-                {
-                    int nn = n;
-                    if (nn > word_len) nn = word_len;
-                    if (word_len + nn <= MAX_OUTPUT_LEN) {
-                        out_len = word_len + nn;
-                        for (int i = 0; i < word_len; i++) output[i] = word[i];
-                        for (int i = 0; i < nn; i++) output[word_len + i] = word[word_len - nn + i];
-                        changed = 1;
-                    }
-                }
-                break;
-            case 39: // apostrophe rule: truncate at N
-                {
-                    int nn = n;
-                    if (nn > word_len) nn = word_len;
-                    out_len = nn;
-                    for (int i = 0; i < nn; i++) output[i] = word[i];
-                    changed = (nn != word_len);
-                }
-                break;
-            default:
-                changed = 0;
-                break;
-        }
-    }
-
-    // ======================= THREE‑CHAR RULES =======================
-    else if (rule_len == 3) {
-        uchar cmd = rule[0];
-        uchar arg1 = rule[1];
-        uchar arg2 = rule[2];
-
-        if (cmd == 's') {
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) {
-                output[i] = (word[i] == arg1) ? arg2 : word[i];
-            }
-            changed = 1;
-        }
-        else if (cmd == '*') {
-            int n = parse_position(arg1);
-            int m = parse_position(arg2);
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) output[i] = word[i];
-            if (n < word_len && m < word_len && n != m) {
-                uchar temp = output[n];
-                output[n] = output[m];
-                output[m] = temp;
-                changed = 1;
-            }
-        }
-        else if (cmd == 'x') {
-            int n = parse_position(arg1);
-            int m = parse_position(arg2);
-            if (n < word_len) {
-                out_len = 0;
-                for (int i = n; i < word_len && out_len < m; i++) {
-                    output[out_len++] = word[i];
-                }
-                changed = 1;
-            }
-        }
-        else if (cmd == 'O') {
-            int n = parse_position(arg1);
-            int m = parse_position(arg2);
-            out_len = 0;
-            for (int i = 0; i < word_len; i++) {
-                if (i >= n && i < n + m) continue;
-                output[out_len++] = word[i];
-            }
-            changed = (out_len != word_len);
-        }
-        else if (cmd == 'i') {
-            int n = parse_position(arg1);
-            if (word_len + 1 <= MAX_OUTPUT_LEN) {
-                out_len = 0;
-                for (int i = 0; i < word_len; i++) {
-                    if (i == n) output[out_len++] = arg2;
-                    output[out_len++] = word[i];
-                }
-                if (n >= word_len) output[out_len++] = arg2;
-                changed = 1;
-            }
-        }
-        else if (cmd == 'o') {
-            int n = parse_position(arg1);
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) output[i] = word[i];
-            if (n < word_len) {
-                output[n] = arg2;
-                changed = 1;
-            }
-        }
-        else if (cmd == 'T') {
-            int n = parse_position(arg1);
-            int m = parse_position(arg2);
-            if (n > m) { int t = n; n = m; m = t; }
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) output[i] = word[i];
-            for (int i = n; i <= m && i < word_len; i++) {
-                output[i] = toggle_case(word[i]);
-            }
-            changed = 1;
-        }
-        else if (cmd == '?') {
-            int n = parse_position(arg1);
-            if (n >= word_len || word[n] != arg2) changed = -1;
-            else {
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                changed = 0;
-            }
-        }
-        else if (cmd == '=') {
-            int n = parse_position(arg1);
-            if (n < word_len && word[n] == arg2) changed = -1;
-            else {
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                changed = 0;
-            }
-        }
-        else if (cmd == 'e') {
-            uchar sep = arg1;
-            out_len = word_len;
-            int cap = 1;
-            for (int i = 0; i < word_len; i++) {
-                if (cap && is_lower(word[i])) output[i] = word[i] - 32;
-                else output[i] = word[i];
-                if (word[i] == sep) cap = 1;
-                else cap = 0;
-            }
-            changed = 1;
-        }
-        else if (cmd == '3') {
-            int n = parse_position(arg1);
-            uchar sep = arg2;
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) output[i] = word[i];
-            int count = 0;
-            for (int i = 0; i < word_len; i++) {
-                if (word[i] == sep) {
-                    count++;
-                    if (count == n && i+1 < word_len) {
-                        output[i+1] = toggle_case(word[i+1]);
-                        changed = 1;
-                        break;
-                    }
-                }
-            }
-        }
-        else if (cmd == '{') {
-            int n = parse_position(arg1);
-            if (n <= 0) n = 1;
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) {
-                int src = (i + n) % word_len;
-                output[i] = word[src];
-            }
-            changed = 1;
-        }
-        else if (cmd == '}') {
-            int n = parse_position(arg1);
-            if (n <= 0) n = 1;
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) {
-                int src = (i - n + word_len) % word_len;
-                output[i] = word[src];
-            }
-            changed = 1;
-        }
-        else if (cmd == '[') {
-            int n = parse_position(arg1);
-            if (n > word_len) n = word_len;
-            out_len = word_len - n;
-            for (int i = n; i < word_len; i++) output[i-n] = word[i];
-            changed = 1;
-        }
-        else if (cmd == ']') {
-            int n = parse_position(arg1);
-            if (n > word_len) n = word_len;
-            out_len = word_len - n;
-            for (int i = 0; i < out_len; i++) output[i] = word[i];
-            changed = 1;
-        }
-        else if (cmd == 'v') {
-            int n = parse_position(arg1);
-            if (n > 0 && n < word_len + 1) {
-                int required_len = word_len + (word_len / n);
-                if (required_len < max_result_len && required_len <= MAX_OUTPUT_LEN) {
-                    out_len = 0;
-                    for (int i = 0; i < word_len; i++) {
-                        output[out_len++] = word[i];
-                        if ((i + 1) % n == 0) output[out_len++] = arg2;
-                    }
-                    changed = 1;
-                }
-            } else {
-                out_len = word_len;
-                for (int i = 0; i < word_len; i++) output[i] = word[i];
-                changed = 1;
-            }
-        }
-        else if (cmd == 'B') {
-            int n = parse_position(arg1);
-            out_len = word_len;
-            for (int i = 0; i < word_len; i++) output[i] = word[i];
-            if (n >= 0 && n < word_len) output[n] = (uchar)(word[n] + arg2);
-            changed = 1;
-        }
-        else {
-            changed = 0;
-        }
-    }
-
-    // ======================= FOUR‑CHAR RULES (memory placeholders) =======================
-    else if (rule_len == 4) {
-        // Memory operations not implemented – treat as no-op
-        out_len = word_len;
-        for (int i = 0; i < word_len; i++) output[i] = word[i];
-        changed = 0;
-    }
-
-    // ======================= OUTPUT =======================
-    if (changed <= 0) out_len = 0;
-
-    if (out_len > 0 && changed > 0) {
-        for (int i = 0; i < out_len && i < max_result_len - 1; i++) {
+    // Reserve one byte for the NUL terminator in the fixed-size result slot.
+    if (changed > 0 && out_len > 0 && out_len < max_result_len && out_len <= MAX_OUTPUT_LEN) {
+        for (int i = 0; i < out_len; i++) {
             results[result_offset + i] = output[i];
         }
         results[result_offset + out_len] = 0;
@@ -1471,7 +1121,7 @@ class RulePerformanceTester:
         print(f"{Colors.CYAN}GPU work-items per rule: exactly {len(self.test_words):,} in either mode{Colors.END}")
         print(f"{Colors.CYAN}Word-length profile: {self.word_length_distribution}{Colors.END}")
         self.max_word_len = 64
-        self.max_rule_len = 32
+        self.max_rule_len = 256
         self.max_result_len = 512
         print(f"{Colors.CYAN}Max word length: {self.max_word_len}{Colors.END}")
         print(f"{Colors.CYAN}Max rule length: {self.max_rule_len}{Colors.END}")
@@ -1522,8 +1172,12 @@ class RulePerformanceTester:
         rule_buffer_size = len(rules) * self.max_rule_len
         rule_data = np.zeros(rule_buffer_size, dtype=np.uint8)
         for i, rule in enumerate(rules):
+            if len(rule) >= self.max_rule_len:
+                raise ValueError(
+                    f"Rule at batch index {i} is {len(rule)} bytes; maximum supported is {self.max_rule_len - 1}"
+                )
             rule_start = i * self.max_rule_len
-            for j, char in enumerate(rule[:self.max_rule_len - 1]):
+            for j, char in enumerate(rule):
                 rule_data[rule_start + j] = char
         rules_buf = cl.Buffer(self.context, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=rule_data)
         return rules_buf, len(rules)
@@ -1650,9 +1304,9 @@ class RulePerformanceTester:
         print(f"{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.END}")
         rules = self.read_rules_from_file(rule_file_path)
         base_name = output_basename or os.path.splitext(os.path.basename(rule_file_path))[0]
-        if self.output_dir:
+        if self.output_dir and self.last_validation_report:
             try:
-                for path in write_validation_artifacts(self.last_validation_report or {}, self.output_dir, base_name):
+                for path in write_validation_artifacts(self.last_validation_report, self.output_dir, base_name):
                     print(f"{Colors.CYAN}Validation artifact saved: {path}{Colors.END}")
             except Exception as exc:
                 print(f"{Colors.YELLOW}Could not save validation artifacts: {exc}{Colors.END}")
@@ -1782,7 +1436,7 @@ class RulePerformanceTester:
                     "opencl_command_queue_property": "PROFILING_ENABLE",
                     "primary_time_metric": "gpu_kernel_time_seconds",
                     "rule_validation": (self.last_validation_report or {}).get("summary", {}),
-                    "rule_validation_policy": "Hashcat 8 -r syntax plus current Aether single-operation kernel compatibility; unsupported rules are reported and not benchmarked.",
+                    "rule_validation_policy": "Hashcat 8 -r syntax plus sequential Aether OpenCL interpreter compatibility; supported command chains and h/H/S/v/B are benchmarked, unsupported commands are reported and not benchmarked.",
                     "end_to_end_time_definition": "Host enqueue loop plus queue completion wait; excludes buffer allocation and kernel argument setup.",
                     "device_name": str(getattr(getattr(self, 'device', None), 'name', 'unknown')),
                     "device_type": "GPU",
@@ -1835,6 +1489,19 @@ class RuleSetOptimizer:
         if not all_rules:
             print(f"{Colors.RED}No performance data found!{Colors.END}")
             return
+
+        # Validate again at the final write boundary. Input preflight protects the
+        # GPU benchmark; this check protects the optimized .rule artifact itself.
+        validation = validate_rule_records(all_rules)
+        all_rules = validation["valid_rules"]
+        validation_summary = validation["summary"]
+        validation_issues = validation["issues"]
+        if validation_issues:
+            print(
+                f"{Colors.YELLOW}Optimized output validation rejected "
+                f"{len(validation_issues):,} rule(s); details are included in the optimization report.{Colors.END}"
+            )
+
         def gpu_time(rule):
             return rule.get('gpu_kernel_time_seconds', rule.get('execution_time_seconds', float('inf')))
 
@@ -1849,6 +1516,12 @@ class RuleSetOptimizer:
         with open(output_file, 'w') as f:
             f.write("# Optimized rule set - fastest GPU-kernel-time rules\n")
             f.write(f"# Total rules: {len(selected_rules)}\n")
+            f.write(
+                f"# Candidate validation: {validation_summary['benchmarkable_rules']} valid; "
+                f"{validation_summary['invalid_rules']} invalid; "
+                f"{validation_summary['cli_only_rules']} CLI-only; "
+                f"{validation_summary['unsupported_rules']} unsupported by Aether\n"
+            )
             f.write(f"# Estimated cumulative GPU kernel time: {total_time:.9f}s\n")
             f.write(f"# Max rules constraint: {self.max_rules}\n")
             f.write(f"# Max cumulative GPU kernel time constraint: {self.max_total_time}s\n")
@@ -1864,32 +1537,49 @@ class RuleSetOptimizer:
                 "actual_total_gpu_kernel_time_seconds": total_time,
                 "timing_metric": "gpu_kernel_time_seconds"
             },
+            "rule_validation": {
+                "summary": validation_summary,
+                "rejected_rules": validation_issues,
+            },
             "selected_rules": selected_rules
         }
         with open(report_file, 'w') as f:
             json.dump(optimization_report, f, indent=2)
         print(f"\n{Colors.GREEN}Optimized rule set created: {output_file}{Colors.END}")
+        print(
+            f"{Colors.CYAN}Final validation: {validation_summary['benchmarkable_rules']:,} valid, "
+            f"{len(validation_issues):,} rejected.{Colors.END}"
+        )
         print(f"{Colors.CYAN}Selected {len(selected_rules)} rules with cumulative GPU kernel time {total_time:.9f}s{Colors.END}")
         print(f"{Colors.CYAN}Optimization report: {report_file}{Colors.END}")
 
+RULE_FILE_EXTENSIONS = frozenset({'.rule', '.rules', '.hr', '.hashcat', '.txt'})
+
+
 def find_rule_files(rule_paths: List[str]) -> List[str]:
+    """Resolve rule files using the same extensions accepted by the web UI."""
     rule_files = []
     for path in rule_paths:
-        if os.path.isfile(path):
-            if path.endswith('.rule'):
-                rule_files.append(path)
+        candidate = Path(path)
+        if candidate.is_file():
+            if candidate.suffix.lower() in RULE_FILE_EXTENSIONS:
+                rule_files.append(str(candidate))
             else:
-                print(f"{Colors.YELLOW}Warning: {path} is not a .rule file, skipping{Colors.END}")
-        elif os.path.isdir(path):
-            rule_files_found = list(Path(path).rglob('*.rule'))
+                accepted = ', '.join(sorted(RULE_FILE_EXTENSIONS))
+                print(f"{Colors.YELLOW}Warning: {path} has an unsupported extension (accepted: {accepted}); skipping{Colors.END}")
+        elif candidate.is_dir():
+            rule_files_found = sorted(
+                file_path for file_path in candidate.rglob('*')
+                if file_path.is_file() and file_path.suffix.lower() in RULE_FILE_EXTENSIONS
+            )
             if rule_files_found:
-                rule_files.extend([str(f) for f in rule_files_found])
+                rule_files.extend(str(file_path) for file_path in rule_files_found)
                 print(f"{Colors.GREEN}Found {len(rule_files_found)} rule files in {path}{Colors.END}")
             else:
-                print(f"{Colors.YELLOW}Warning: No .rule files found in directory {path}{Colors.END}")
+                print(f"{Colors.YELLOW}Warning: No supported rule files found in directory {path}{Colors.END}")
         else:
             print(f"{Colors.YELLOW}Warning: Path not found: {path}{Colors.END}")
-    return sorted(list(set(rule_files)))
+    return sorted(set(rule_files))
 
 
 def build_rule_output_names(rule_files: List[str], labels_by_path: Dict[str, str]) -> Dict[str, str]:
@@ -1934,7 +1624,7 @@ def main():
   python3 rule_benchmark.py -r best64.rule --identical-dicts --max-words 5000 --iterations 100
         '''
     )
-    parser.add_argument('--rules', '-r', nargs='+', required=True, help='Rule files or directories containing .rule files')
+    parser.add_argument('--rules', '-r', nargs='+', required=True, help='Rule files (.rule, .rules, .hr, .hashcat, .txt) or directories containing them')
     parser.add_argument('--rule-labels', nargs='+', default=None, help='Optional display/output names aligned with --rules (used by the RULEOPS web UI to hide internal upload IDs)')
     parser.add_argument('--output', '-o', default='./benchmark_results', help='Output directory for results')
     parser.add_argument('--iterations', '-i', type=int, default=50, help='Number of test iterations per rule')

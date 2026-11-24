@@ -4,11 +4,11 @@
 The validator deliberately separates three questions:
 1. Is the line syntactically valid Hashcat 8 rule syntax?
 2. Is it legal in a rule file passed with ``-r`` (rather than CLI ``-j/-k``)?
-3. Can the current Aether OpenCL kernel benchmark that single operation faithfully?
+3. Can the current Aether OpenCL interpreter benchmark every operation in the rule chain faithfully?
 
-Only lines passing all three checks are sent to the current Aether kernel. This
-prevents malformed/CLI-only rules and valid-but-unimplemented chained rules
-from being silently treated as timings for an operation Aether does not run.
+Only lines passing all three checks are sent to the Aether kernel. Supported
+Hashcat -r command chains are executed sequentially; valid commands not yet
+implemented by the kernel are reported separately.
 """
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ from typing import Any, Iterable
 import json
 
 HASHCAT_MAX_RULE_OPERATIONS = 31
-BASE36 = frozenset("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+AETHER_MAX_RULE_BYTES = 255  # one byte is reserved for the packed-buffer terminator
+BASE36 = frozenset("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
 CLASS_CODES = frozenset("ludshHab")
 
 # Operations accepted in ordinary Hashcat rule files.
@@ -41,15 +42,16 @@ CLI_ONLY_OPS = (
     CLI_ONLY_NUM_CHAR | CLI_ONLY_THREE_BASE36
 )
 
-# The current Aether OpenCL kernel is a one-operation microbenchmark. It has
-# dedicated branches for these command shapes; it does not implement rule
-# chaining, Hashcat 8 class commands, memory ops, or escaped/non-ASCII args.
-AETHER_NO_ARG = frozenset(":lucCtrdfqkKEhHS")
-AETHER_ONE_BASE36 = frozenset("TD+-yY'")
+# Aether executes supported Hashcat -r command chains sequentially in its
+# OpenCL kernel. These sets describe the commands implemented by that kernel;
+# syntactically valid Hashcat commands outside the sets remain reportable as
+# unsupported rather than being silently benchmarked as identity operations.
+AETHER_NO_ARG = frozenset(":lucCSt rdf{}[]qkKhHE".replace(" ", ""))
+AETHER_ONE_BASE36 = frozenset("TDLR+-. ,'pzyZY".replace(" ", ""))
 AETHER_TWO_BASE36 = frozenset("xO*")
-AETHER_ONE_CHAR = frozenset("$^@")
+AETHER_ONE_CHAR = frozenset("$^@e")
 AETHER_TWO_CHAR = frozenset("s")
-AETHER_NUM_CHAR = frozenset("io3vB")
+AETHER_NUM_CHAR = frozenset("iovB3")
 
 
 @dataclass
@@ -276,26 +278,17 @@ def _parse_rule(rule: str) -> tuple[str, str, int, list[tuple[str, str]]]:
     if non_ascii_or_escape:
         return "unsupported", "Valid Hashcat rule, but Aether's current OpenCL kernel only supports literal ASCII operands (not \\xHH escapes or UTF-8 multi-byte operands).", op_count, signatures
 
-    if len(signatures) != 1:
-        return "unsupported", "Valid Hashcat rule chain, but the current Aether kernel benchmarks one operation per line and does not implement chained commands yet.", op_count, signatures
-
-    op, args = signatures[0]
-    supported = False
-    if op in AETHER_NO_ARG and not args:
-        supported = True
-    elif op in AETHER_ONE_BASE36 and len(args) == 1:
-        supported = True
-    elif op in AETHER_TWO_BASE36 and len(args) == 2:
-        supported = True
-    elif op in AETHER_ONE_CHAR and len(args) == 1:
-        supported = True
-    elif op in AETHER_TWO_CHAR and len(args) == 2:
-        supported = True
-    elif op in AETHER_NUM_CHAR and len(args) == 2:
-        supported = True
-
-    if not supported:
-        return "unsupported", f"Valid Hashcat rule, but operator '{op}' is not implemented by the current Aether OpenCL kernel.", op_count, signatures
+    for op, args in signatures:
+        supported = (
+            (op in AETHER_NO_ARG and not args)
+            or (op in AETHER_ONE_BASE36 and len(args) == 1)
+            or (op in AETHER_TWO_BASE36 and len(args) == 2)
+            or (op in AETHER_ONE_CHAR and len(args) == 1)
+            or (op in AETHER_TWO_CHAR and len(args) == 2)
+            or (op in AETHER_NUM_CHAR and len(args) == 2)
+        )
+        if not supported:
+            return "unsupported", f"Valid Hashcat rule, but operator '{op}' is not implemented by the current Aether OpenCL interpreter.", op_count, signatures
     return "valid", "", op_count, signatures
 
 
@@ -309,8 +302,10 @@ def validate_rule_lines(lines: Iterable[str]) -> dict[str, Any]:
         # Drop line terminators only. Do not strip trailing spaces: a literal
         # space may be an operator argument (for example, ``$ ``).
         line = raw_line.rstrip("\r\n")
-        if line_number == 1:
-            line = line.removeprefix("\ufeff")
+        if line_number == 1 and line.startswith("\ufeff"):
+            # str.removeprefix() was added in Python 3.9; Aether also runs in
+            # Python 3.8 environments, so remove the UTF-8 BOM compatibly.
+            line = line[1:]
         if not line or line.isspace():
             blank += 1
             continue
@@ -320,6 +315,13 @@ def validate_rule_lines(lines: Iterable[str]) -> dict[str, Any]:
 
         candidate = line.lstrip()
         status, reason, operations, _signatures = _parse_rule(candidate)
+        encoded_length = len(candidate.encode("utf-8", "surrogateescape"))
+        if status == "valid" and encoded_length > AETHER_MAX_RULE_BYTES:
+            status = "unsupported"
+            reason = (
+                f"Valid Hashcat rule, but its {encoded_length}-byte source line exceeds "
+                f"Aether's {AETHER_MAX_RULE_BYTES}-byte packed rule limit."
+            )
         result = RuleLineResult(line_number, candidate, status, reason, operations)
         results.append(result)
         if status == "valid":
@@ -351,6 +353,54 @@ def validate_rule_file(path: str | Path) -> dict[str, Any]:
         report = validate_rule_lines(stream)
     report["source_name"] = source.name
     return report
+
+
+def validate_rule_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Validate optimizer report records before writing the optimized rule file.
+
+    Each report record represents exactly one rule. Embedded line breaks and
+    non-string rule values are rejected rather than being interpreted as
+    multiple commands or merged rules.
+    """
+    source_records = list(records)
+    raw_rules: list[str] = []
+    malformed_records: set[int] = set()
+    for index, record in enumerate(source_records):
+        value = record.get("rule") if isinstance(record, dict) else None
+        if not isinstance(value, str) or "\n" in value or "\r" in value:
+            malformed_records.add(index)
+            raw_rules.append("\x00")
+        else:
+            raw_rules.append(value)
+
+    report = validate_rule_lines(raw_rules)
+    valid_rules: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    for index, (record, result) in enumerate(zip(source_records, report["results"])):
+        if index in malformed_records:
+            status = "invalid"
+            reason = "Optimizer report entry must contain exactly one rule line as a string."
+            rule_text = repr(record.get("rule") if isinstance(record, dict) else record)
+        else:
+            status = result["status"]
+            reason = result["reason"]
+            rule_text = result["rule"]
+
+        if status == "valid":
+            accepted = dict(record)
+            accepted["rule"] = rule_text
+            valid_rules.append(accepted)
+        else:
+            issues.append({
+                "record_number": index + 1,
+                "rule": rule_text,
+                "status": status,
+                "reason": reason,
+                "operation_count": result.get("operation_count", 0),
+            })
+
+    summary = dict(report["summary"])
+    return {"valid_rules": valid_rules, "summary": summary, "issues": issues}
 
 
 def _display_rule_text(rule: str) -> str:

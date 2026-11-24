@@ -835,29 +835,25 @@ class VisualizationEngine:
         print(f"{Colors.GREEN}Heatmap saved: {filename}_heatmap.png{Colors.END}")
     
     @staticmethod
-    def _relative_performance_tiers(times_us: List[float]):
-        """Build balanced, tie-preserving performance tiers for one rule file.
-
-        Absolute 10/100 µs cut-offs are not portable across GPUs. Relative
-        tiers describe the rules within the current benchmark while keeping
-        identical timings together.
-        """
+    def _relative_tier_specs(times_us: List[float]):
+        """Return tie-preserving relative tier definitions for one rule file."""
         values = np.asarray(times_us, dtype=float)
         values = values[np.isfinite(values)]
         if values.size == 0:
-            return [], [], []
+            return []
 
         unique_values, group_counts = np.unique(values, return_counts=True)
         if unique_values.size == 1:
             value = float(unique_values[0])
-            return [int(values.size)], [f'Comparable (≈{value:.3f} µs)'], ['#3498db']
+            return [{
+                'id': 'comparable', 'label': f'Comparable (≈{value:.3f} µs)',
+                'color': '#3498db', 'min_us': value, 'max_us': value,
+            }]
 
         cumulative = np.cumsum(group_counts)
         total = int(values.size)
-
-        # Find boundaries near one-third and two-thirds of the sample. Cuts are
-        # made only between distinct timings, so equal measurements stay in
-        # the same tier even when that makes the buckets slightly uneven.
+        # Boundaries are placed near one-third and two-thirds of the sample,
+        # but only between distinct timings so equal measurements never split.
         first_candidates = cumulative[:-2] if unique_values.size >= 3 else cumulative[:-1]
         first_cut = int(np.argmin(np.abs(first_candidates - total / 3.0))) + 1
         if unique_values.size >= 3:
@@ -869,39 +865,203 @@ class VisualizationEngine:
         else:
             second_cut = unique_values.size
 
-        fast_count = int(cumulative[first_cut - 1])
+        specs = [{
+            'id': 'fastest',
+            'label': f'Fastest (≤{unique_values[first_cut - 1]:.3f} µs)',
+            'color': '#2ecc71',
+            'min_us': None,
+            'max_us': float(unique_values[first_cut - 1]),
+        }]
         if second_cut < unique_values.size:
-            medium_count = int(cumulative[second_cut - 1] - fast_count)
-            slow_count = total - fast_count - medium_count
+            specs.append({
+                'id': 'middle',
+                'label': f'Middle ({unique_values[first_cut]:.3f}–{unique_values[second_cut - 1]:.3f} µs)',
+                'color': '#f1c40f',
+                'min_us': float(unique_values[first_cut]),
+                'max_us': float(unique_values[second_cut - 1]),
+            })
+            slow_min = float(unique_values[second_cut])
         else:
-            medium_count = 0
-            slow_count = total - fast_count
+            slow_min = float(unique_values[first_cut])
+        specs.append({
+            'id': 'slowest', 'label': f'Slowest (≥{slow_min:.3f} µs)',
+            'color': '#e74c3c', 'min_us': slow_min, 'max_us': None,
+        })
+        return specs
 
-        labels = [f'Fastest (≤{unique_values[first_cut - 1]:.3f} µs)']
-        counts = [fast_count]
-        colors = ['#2ecc71']
-        if medium_count:
-            labels.append(
-                f'Middle ({unique_values[first_cut]:.3f}–{unique_values[second_cut - 1]:.3f} µs)'
-            )
-            counts.append(medium_count)
-            colors.append('#f1c40f')
-        if slow_count:
-            lower_bound = unique_values[second_cut] if medium_count else unique_values[first_cut]
-            labels.append(f'Slowest (≥{lower_bound:.3f} µs)')
-            counts.append(slow_count)
-            colors.append('#e74c3c')
-        return counts, labels, colors
+    @classmethod
+    def _relative_performance_tiers(cls, times_us: List[float]):
+        """Build balanced, tie-preserving counts/labels/colors for the PNG pie."""
+        specs = cls._relative_tier_specs(times_us)
+        values = np.asarray(times_us, dtype=float)
+        values = values[np.isfinite(values)]
+        counts = []
+        for spec in specs:
+            if spec['id'] == 'comparable':
+                count = int(values.size)
+            elif spec['id'] == 'fastest':
+                count = int(np.count_nonzero(values <= spec['max_us']))
+            elif spec['id'] == 'middle':
+                count = int(np.count_nonzero((values >= spec['min_us']) & (values <= spec['max_us'])))
+            else:
+                count = int(np.count_nonzero(values >= spec['min_us']))
+            counts.append(count)
+        return counts, [spec['label'] for spec in specs], [spec['color'] for spec in specs]
 
+    def create_interactive_report(self, rule_performance: List[Tuple[str, Dict]], filename: str,
+                                  corpus_description: str = ""):
+        """Write a self-contained HTML report with interactive tier filtering/export."""
+        valid_rows = []
+        for rule, data in rule_performance:
+            kernel_seconds = data.get('gpu_kernel_time_seconds', data.get('execution_time'))
+            try:
+                kernel_seconds = float(kernel_seconds)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(kernel_seconds) or kernel_seconds < 0:
+                continue
+            metrics = data.get('gpu_kernel_metrics') or data.get('metrics') or {}
+            e2e_seconds = data.get('end_to_end_time_seconds')
+            try:
+                e2e_us = float(e2e_seconds) * 1_000_000 if e2e_seconds is not None else None
+                if e2e_us is not None and not np.isfinite(e2e_us):
+                    e2e_us = None
+            except (TypeError, ValueError):
+                e2e_us = None
+            ops_sec = data.get('gpu_operations_per_sec', data.get('operations_per_sec', 0.0))
+            try:
+                ops_sec = float(ops_sec)
+                if not np.isfinite(ops_sec):
+                    ops_sec = 0.0
+            except (TypeError, ValueError):
+                ops_sec = 0.0
+            cv = metrics.get('cv_percent')
+            try:
+                cv = float(cv) if cv is not None and np.isfinite(float(cv)) else None
+            except (TypeError, ValueError):
+                cv = None
+            valid_rows.append({
+                'command': str(rule),
+                'gpu_kernel_time_us': kernel_seconds * 1_000_000,
+                'end_to_end_time_us': e2e_us,
+                'gpu_ops_per_sec': ops_sec,
+                'cv_percent': cv,
+            })
+
+        if not valid_rows:
+            print(f"{Colors.YELLOW}No valid GPU timing data available for interactive report{Colors.END}")
+            return
+
+        valid_rows.sort(key=lambda row: row['gpu_kernel_time_us'])
+        specs = self._relative_tier_specs([row['gpu_kernel_time_us'] for row in valid_rows])
+        tiers = []
+        for spec in specs:
+            if spec['id'] == 'comparable':
+                selected = list(valid_rows)
+            elif spec['id'] == 'fastest':
+                selected = [row for row in valid_rows if row['gpu_kernel_time_us'] <= spec['max_us']]
+            elif spec['id'] == 'middle':
+                selected = [row for row in valid_rows if spec['min_us'] <= row['gpu_kernel_time_us'] <= spec['max_us']]
+            else:
+                selected = [row for row in valid_rows if row['gpu_kernel_time_us'] >= spec['min_us']]
+            tiers.append({
+                **spec,
+                'count': len(selected),
+                'percent': (len(selected) / len(valid_rows)) * 100.0,
+                'rules': selected,
+            })
+
+        kernel_times = [row['gpu_kernel_time_us'] for row in valid_rows]
+        all_ops = [row['gpu_ops_per_sec'] for row in valid_rows]
+        payload = {
+            'meta': {
+                'file_name': str(filename),
+                'generated_at': datetime.now().astimezone().isoformat(timespec='seconds'),
+                'corpus_description': str(corpus_description or ''),
+                'total_rules': len(valid_rows),
+                'mean_gpu_kernel_time_us': float(np.mean(kernel_times)),
+                'median_gpu_kernel_time_us': float(np.median(kernel_times)),
+                'mean_gpu_ops_per_sec': float(np.mean(all_ops)) if all_ops else 0.0,
+                'profiling_enabled': bool(getattr(self, 'profiling_enabled', True)),
+                'primary_metric': 'GPU Kernel Time · OpenCL Event Profiling',
+            },
+            'tiers': tiers,
+        }
+        # Escape HTML-significant characters even though the data is inside a
+        # non-executable JSON script element; this prevents a rule containing
+        # </script> from terminating the data block.
+        data_json = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        data_json = (data_json.replace('&', r'\u0026').replace('<', r'\u003c')
+                              .replace('>', r'\u003e').replace('\u2028', r'\u2028')
+                              .replace('\u2029', r'\u2029'))
+        html = r'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aether · Interactive GPU Rule Performance</title>
+<style>
+:root{color-scheme:dark;--bg:#0d131b;--panel:#151e29;--panel2:#101720;--line:#2b3948;--text:#e8eef5;--muted:#93a1b2;--green:#2ecc71;--yellow:#f1c40f;--red:#e74c3c;--blue:#3498db}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1440px;margin:0 auto;padding:30px 28px 48px}.eyebrow{font:11px ui-monospace,monospace;letter-spacing:.13em;color:#9fbd83;text-transform:uppercase}
+h1{font-size:clamp(25px,3vw,38px);line-height:1.15;margin:8px 0}p{color:var(--muted);margin:7px 0}.subline{font-size:13px;margin-bottom:22px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0}.stat,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px}.stat{padding:15px}.stat small{display:block;color:var(--muted);font-size:11px}.stat b{display:block;font:600 22px ui-monospace,monospace;margin-top:7px}
+.layout{display:grid;grid-template-columns:minmax(280px,390px) minmax(0,1fr);gap:16px;align-items:start}.panel{padding:18px;min-width:0}.panel h2{font-size:17px;margin:0 0 4px}.chart-wrap{display:grid;place-items:center;padding:10px 0 0}.chart{width:min(100%,330px);height:auto;overflow:visible}.slice{fill:none;stroke-width:38;cursor:pointer;pointer-events:stroke;transition:opacity .15s,stroke-width .15s}.slice:hover,.slice.active{stroke-width:46}.slice:focus{outline:none;stroke-width:48}.chart-center{font:700 24px ui-monospace,monospace;fill:var(--text);text-anchor:middle}.chart-center-label{font:11px system-ui,sans-serif;fill:var(--muted);text-anchor:middle}
+.legend{display:grid;gap:8px;margin-top:12px}.tier-button{width:100%;display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;padding:10px 11px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);cursor:pointer}.tier-button:hover,.tier-button.active{border-color:#91b66d;background:#1c2a25}.swatch{width:10px;height:10px;border-radius:50%}.tier-button strong{font-size:12px}.tier-button small{display:block;color:var(--muted);font-size:11px}.tier-count{font:12px ui-monospace,monospace;color:#dbe7d0}
+.toolbar{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.toolbar input{flex:1;min-width:190px;background:#0c131c;border:1px solid var(--line);border-radius:7px;color:var(--text);padding:10px 12px}.button{border:1px solid #547342;background:#21301f;color:#d8edc9;border-radius:7px;padding:10px 13px;font-weight:650;cursor:pointer}.button:hover{background:#2d4328}.selection-note{font-size:12px;margin:0 0 10px}
+.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}table{border-collapse:collapse;width:100%;min-width:780px}th,td{padding:10px 11px;border-bottom:1px solid #293542;text-align:left;vertical-align:top}th{position:sticky;top:0;background:#202b38;color:#aab9c9;font-size:10px;letter-spacing:.06em;text-transform:uppercase}td{font-size:12px}td.rule{width:48%;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:#e2eaf2}td.num{font:11px ui-monospace,monospace;white-space:nowrap}.pagination{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px;color:var(--muted);font-size:11px}.pagination button{border:1px solid var(--line);background:#111a24;color:var(--text);padding:7px 10px;border-radius:6px}.pagination button:disabled{opacity:.35;cursor:not-allowed}.footnote{font-size:11px;margin-top:16px}
+@media(max-width:900px){main{padding:20px 14px}.layout{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:430px){.stats{grid-template-columns:1fr 1fr}.stat{padding:11px}.stat b{font-size:17px}.panel{padding:13px}}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">Aether · OpenCL Event Profiling</div><h1 id="report-title">Interactive GPU Rule Performance</h1>
+<p class="subline" id="report-subtitle">Click a performance tier to inspect the exact Hashcat commands measured in that group.</p>
+<section class="stats" aria-label="Benchmark summary">
+ <div class="stat"><small>Rules benchmarked</small><b id="total-rules">—</b></div><div class="stat"><small>Mean GPU Kernel Time</small><b id="mean-time">—</b></div><div class="stat"><small>Median GPU Kernel Time</small><b id="median-time">—</b></div><div class="stat"><small>Mean GPU throughput</small><b id="mean-throughput">—</b></div>
+</section>
+<div class="layout"><section class="panel"><h2>Relative GPU Performance Tiers</h2><p>Click a pie segment or category to list its rules. Equal GPU timings stay together.</p>
+ <div class="chart-wrap"><svg class="chart" id="tier-chart" viewBox="0 0 220 220" role="img" aria-label="Interactive pie chart of relative GPU performance tiers"><circle cx="110" cy="110" r="76" fill="none" stroke="#273342" stroke-width="38"></circle><text x="110" y="106" class="chart-center" id="chart-total">—</text><text x="110" y="126" class="chart-center-label">rules</text></svg></div>
+ <div class="legend" id="tier-legend"></div></section>
+ <section class="panel"><h2 id="table-title">Rules</h2><p class="selection-note" id="selection-note"></p><div class="toolbar"><input id="rule-search" type="search" placeholder="Filter exact rule commands…" aria-label="Filter rule commands"><button class="button" id="export-tier" type="button">↓ Download category .rule</button></div>
+ <div class="table-wrap"><table><thead><tr><th>Exact Hashcat rule command</th><th>GPU Kernel Time</th><th>GPU ops/sec</th><th>End-to-End Time</th><th>CV</th></tr></thead><tbody id="rule-rows"></tbody></table></div>
+ <div class="pagination"><span id="page-status">—</span><div><button id="previous-page" type="button">Previous</button> <button id="next-page" type="button">Next</button></div></div>
+ </section></div>
+<p class="footnote">Primary metric: GPU Kernel Time from OpenCL event START/END timestamps. End-to-End Time is diagnostic only. Categories are relative to this rule file; this report contains the exact source commands.</p>
+</main>
+<script id="report-data" type="application/json">__AETHER_REPORT_JSON__</script>
+<script>
+'use strict';
+const report=JSON.parse(document.getElementById('report-data').textContent);
+const $=id=>document.getElementById(id);let activeTier=report.tiers[0]||null;let page=0;const pageSize=100;
+const fmt=(v,d=3)=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
+const fmtRate=v=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{maximumFractionDigits:0}):'—';
+$('report-title').textContent=report.meta.file_name+' · GPU Rule Performance';
+$('report-subtitle').textContent=(report.meta.corpus_description?report.meta.corpus_description+' · ':'')+report.meta.total_rules.toLocaleString()+' rules · generated '+report.meta.generated_at;
+$('total-rules').textContent=report.meta.total_rules.toLocaleString();$('mean-time').textContent=fmt(report.meta.mean_gpu_kernel_time_us)+' µs';$('median-time').textContent=fmt(report.meta.median_gpu_kernel_time_us)+' µs';$('mean-throughput').textContent=fmtRate(report.meta.mean_gpu_ops_per_sec)+' ops/s';$('chart-total').textContent=report.meta.total_rules.toLocaleString();
+const svgNS='http://www.w3.org/2000/svg';function renderPie(){const svg=$('tier-chart');svg.querySelectorAll('.slice').forEach(n=>n.remove());const total=report.meta.total_rules||1;const radius=76,circ=2*Math.PI*radius;let offset=0;report.tiers.forEach(tier=>{const length=circ*tier.count/total;const circle=document.createElementNS(svgNS,'circle');circle.setAttribute('class','slice'+(activeTier&&activeTier.id===tier.id?' active':''));circle.setAttribute('cx','110');circle.setAttribute('cy','110');circle.setAttribute('r',String(radius));circle.setAttribute('stroke',tier.color);circle.setAttribute('stroke-dasharray',`${length} ${circ-length}`);circle.setAttribute('stroke-dashoffset',String(-offset));circle.setAttribute('transform','rotate(-90 110 110)');circle.setAttribute('tabindex','0');circle.setAttribute('role','button');circle.setAttribute('aria-label',`${tier.label}: ${tier.count} rules, ${fmt(tier.percent,1)} percent`);circle.addEventListener('click',()=>selectTier(tier.id));circle.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectTier(tier.id)}});svg.append(circle);offset+=length;});}
+function renderLegend(){const root=$('tier-legend');root.replaceChildren();report.tiers.forEach(tier=>{const b=document.createElement('button');b.type='button';b.className='tier-button'+(activeTier&&activeTier.id===tier.id?' active':'');const sw=document.createElement('span');sw.className='swatch';sw.style.background=tier.color;const copy=document.createElement('span');const strong=document.createElement('strong');strong.textContent=tier.label;const small=document.createElement('small');small.textContent=`${fmt(tier.percent,1)}% of tested rules`;copy.append(strong,small);const count=document.createElement('span');count.className='tier-count';count.textContent=tier.count.toLocaleString();b.append(sw,copy,count);b.addEventListener('click',()=>selectTier(tier.id));root.append(b);});}
+function selectTier(id){activeTier=report.tiers.find(t=>t.id===id)||report.tiers[0]||null;page=0;$('rule-search').value='';renderPie();renderLegend();renderTable();}
+function renderTable(){const body=$('rule-rows');body.replaceChildren();if(!activeTier){$('table-title').textContent='No rules';$('selection-note').textContent='No valid GPU timing data was recorded.';$('page-status').textContent='0 rules';$('export-tier').disabled=true;return;}const query=$('rule-search').value.trim().toLowerCase();const filtered=activeTier.rules.filter(r=>!query||r.command.toLowerCase().includes(query));const pageCount=Math.max(1,Math.ceil(filtered.length/pageSize));page=Math.max(0,Math.min(page,pageCount-1));const start=page*pageSize;filtered.slice(start,start+pageSize).forEach(rule=>{const tr=document.createElement('tr');const cmd=document.createElement('td');cmd.className='rule';cmd.textContent=rule.command;const gpu=document.createElement('td');gpu.className='num';gpu.textContent=fmt(rule.gpu_kernel_time_us)+' µs';const rate=document.createElement('td');rate.className='num';rate.textContent=fmtRate(rule.gpu_ops_per_sec);const e2e=document.createElement('td');e2e.className='num';e2e.textContent=rule.end_to_end_time_us===null?'—':fmt(rule.end_to_end_time_us)+' µs';const cv=document.createElement('td');cv.className='num';cv.textContent=rule.cv_percent===null?'—':fmt(rule.cv_percent,2)+'%';tr.append(cmd,gpu,rate,e2e,cv);body.append(tr);});$('table-title').textContent=activeTier.label+' · rules';$('selection-note').textContent=`${activeTier.count.toLocaleString()} rules in this category. Search filters the table; download exports the entire category.`;$('page-status').textContent=filtered.length?`Showing ${start+1}–${Math.min(start+pageSize,filtered.length)} of ${filtered.length.toLocaleString()} matching rules`:'No matching rules';$('previous-page').disabled=page===0;$('next-page').disabled=page>=pageCount-1;$('export-tier').disabled=!activeTier.rules.length;}
+$('rule-search').addEventListener('input',()=>{page=0;renderTable()});$('previous-page').addEventListener('click',()=>{page--;renderTable()});$('next-page').addEventListener('click',()=>{page++;renderTable()});$('export-tier').addEventListener('click',()=>{if(!activeTier)return;const contents=activeTier.rules.map(r=>r.command).join('\n')+'\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;const safeBase=report.meta.file_name.replace(/[^A-Za-z0-9._-]+/g,'_')||'aether_rules';a.download=safeBase+'_'+activeTier.id+'.rule';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+renderPie();renderLegend();renderTable();
+</script></body></html>'''
+        html = html.replace('__AETHER_REPORT_JSON__', data_json)
+        output_path = os.path.join(self.output_dir, f"{filename}_interactive.html")
+        with open(output_path, 'w', encoding='utf-8', newline='\n') as report_file:
+            report_file.write(html)
+        print(f"{Colors.GREEN}Interactive HTML report saved: {filename}_interactive.html{Colors.END}")
     def create_statistical_summary(self, rule_performance: List[Tuple[str, Dict]], filename: str, corpus_description: str = ""):
         if not rule_performance:
             print(f"{Colors.YELLOW}No performance data available for statistical summary{Colors.END}")
             return
         try:
             rules = [rule for rule, _ in rule_performance]
-            times = [data['execution_time'] * 1000000 for _, data in rule_performance if 'execution_time' in data]
-            cv_values = [data['metrics']['cv_percent'] for _, data in rule_performance if 'metrics' in data and 'cv_percent' in data['metrics']]
-            ops_sec = [data['operations_per_sec'] for _, data in rule_performance if 'operations_per_sec' in data]
+            times = [data.get('gpu_kernel_time_seconds', data.get('execution_time', float('inf'))) * 1_000_000
+                     for _, data in rule_performance if np.isfinite(data.get('gpu_kernel_time_seconds', data.get('execution_time', float('inf'))))]
+            cv_values = [(data.get('gpu_kernel_metrics') or data.get('metrics') or {}).get('cv_percent')
+                         for _, data in rule_performance if (data.get('gpu_kernel_metrics') or data.get('metrics') or {}).get('cv_percent') is not None]
+            ops_sec = [data.get('gpu_operations_per_sec', data.get('operations_per_sec', 0.0))
+                       for _, data in rule_performance]
             if not times:
                 print(f"{Colors.RED}No execution time data available for statistical summary{Colors.END}")
                 return
@@ -1114,6 +1274,7 @@ Q3: {np.percentile(times, 75):.2f}μs"""
             words = int(performance_data.get('test_words_count', 0) or 0)
             corpus_description = f'{mode} corpus · {words:,} words per rule' if words else ''
             self.create_statistical_summary(rp, filename, corpus_description=corpus_description)
+            self.create_interactive_report(rp, filename, corpus_description=corpus_description)
             self.create_performance_distribution(rp, filename)
         print(f"{Colors.GREEN}Dashboard generation complete!{Colors.END}")
 
@@ -1682,7 +1843,7 @@ def main():
     parser.add_argument('--optimize', action='store_true', help='Create optimized rule set after benchmarking')
     parser.add_argument('--max-optimize-rules', type=int, default=500, help='Maximum rules for optimized set')
     parser.add_argument('--max-time', type=float, default=30.0, help='Maximum cumulative GPU kernel execution time in seconds for optimized set')
-    parser.add_argument('--visualize', action='store_true', help='Generate comprehensive visualizations')
+    parser.add_argument('--visualize', action='store_true', help='Generate PNG dashboards and interactive HTML rule-tier reports')
     parser.add_argument('--dpi', type=int, default=300, help='DPI for output images')
     parser.add_argument('--visualization-output', default=None, help='Separate output directory for visualizations')
     parser.add_argument('--platform', type=int, default=0, help='OpenCL platform index')

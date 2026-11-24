@@ -2718,7 +2718,7 @@ def detect_aether_active_stage(line: str):
     if any(marker in upper for marker in (
         "GENERATING COMPREHENSIVE VISUALIZATION DASHBOARD", "DASHBOARD GENERATION COMPLETE",
         "RADAR CHART SAVED:", "HEATMAP SAVED:", "STATISTICAL SUMMARY SAVED:",
-        "PERFORMANCE DISTRIBUTION SAVED:",
+        "INTERACTIVE HTML REPORT SAVED:", "PERFORMANCE DISTRIBUTION SAVED:",
     )):
         return "Aether · Generating dashboards"
     if "CREATING OPTIMIZED RULE SET" in upper:
@@ -3237,7 +3237,7 @@ def build_aether_command(options: dict, run_dir: Path):
     """Build the Aether GPU rule-performance benchmark + dashboard command.
 
     Both --output and --visualization-output are pointed at run_dir itself
-    (not a subfolder): every PNG/JSON/sorted-rule file Aether produces then
+    (not a subfolder): every PNG/HTML/JSON/sorted-rule file Aether produces then
     lands flat alongside the run's other outputs. run_worker's output
     scanner only lists run_dir's immediate children, and the existing
     /api/run-storage/download-outputs.zip bundles exactly that list -- so
@@ -3640,12 +3640,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def end_headers(self):
         # Centralized defense-in-depth headers apply to success, redirects and errors.
-        self.send_header(
-            "Content-Security-Policy",
+        # A narrowly allow-listed Aether HTML preview can provide a response-scoped
+        # policy because its CSS and JavaScript are intentionally embedded in the
+        # standalone report. Sending both policies would make browsers enforce
+        # their intersection and silently block the report's inline style/script.
+        csp = getattr(self, "_csp_override", None) or (
             "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
             "form-action 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; "
             "img-src 'self' data:; font-src 'self' data:; connect-src 'self'"
         )
+        self.send_header("Content-Security-Policy", csp)
+        self._csp_override = None
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
@@ -3672,6 +3677,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        # The handler may serve multiple requests on one connection. Never let a
+        # report-specific CSP leak into a later response.
+        self._csp_override = None
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -3951,34 +3959,40 @@ class Handler(BaseHTTPRequestHandler):
             with target.open("rb") as f:
                 shutil.copyfileobj(f, self.wfile)
         elif path.startswith("/api/preview/"):
-            # Narrowly-scoped sibling of /api/download/: that endpoint always
-            # forces application/octet-stream + X-Content-Type-Options:
-            # nosniff, so browsers correctly refuse to render it inline as an
-            # <img> (by design, for every other tool's outputs). Aether's
-            # whole point is a browsable PNG gallery, so this serves the
-            # *same* allow-listed current-run output files with a real
-            # image/png Content-Type -- restricted to the current run
-            # actually being an Aether run and the filename ending in .png,
-            # so it can't be used to render arbitrary output content inline.
+            # Only current-run Aether PNGs and generated HTML reports can be
+            # rendered inline. All previews remain allow-listed by STATE.outputs.
             name = safe_name(urllib.parse.unquote(path.rsplit("/", 1)[-1]))
+            suffix = Path(name).suffix.lower()
             with LOCK:
                 run_dir = Path(STATE["run_dir"]) if STATE.get("run_dir") else None
                 allowed = {x["name"] for x in STATE.get("outputs", [])}
                 current_tool = STATE.get("tool")
-            if current_tool != "aether" or not name.lower().endswith(".png"):
+            if current_tool != "aether" or suffix not in {".png", ".html"}:
                 self.send_error(404, "Preview not available")
                 return
             target = run_dir / name if run_dir else None
             if not target or name not in allowed or not target.is_file():
                 self.send_error(404, "Output not found")
                 return
+            content_type = "image/png" if suffix == ".png" else "text/html; charset=utf-8"
             self.send_response(200)
-            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Disposition", f'inline; filename="{name}"')
             self.send_header("Content-Length", str(target.stat().st_size))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
+            if suffix == ".html":
+                # This is the only HTML artifact preview route, and it is
+                # restricted to allow-listed outputs from the current Aether run.
+                # Use one response-scoped CSP: the central app policy disallows
+                # inline assets, while this standalone report needs embedded CSS
+                # and JS. Multiple CSP headers are cumulative, not overrides.
+                self._csp_override = (
+                    "sandbox allow-scripts allow-downloads; default-src 'none'; "
+                    "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                    "img-src data:; connect-src 'none'; object-src 'none'; "
+                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+                )
             self.end_headers()
             with target.open("rb") as f:
                 shutil.copyfileobj(f, self.wfile)

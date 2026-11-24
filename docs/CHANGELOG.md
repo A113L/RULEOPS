@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-24 — Fix Aether interactive report styling (v2.6.5 follow-up)
+
+- Fixed the Aether HTML preview response to send one report-specific Content
+  Security Policy instead of combining it with the global application policy.
+  Browsers enforce multiple CSP headers cumulatively; the previous combination
+  blocked the report's embedded CSS and JavaScript, leaving it unstyled and
+  non-interactive. The preview remains sandboxed, script-limited to inline code,
+  and has no network access.
+
+## 2026-11-24 — Aether interactive performance reports (v2.6.5 follow-up)
+
+- Added a self-contained interactive HTML report for every visualized Aether
+  rule file alongside the existing PNG dashboard. The relative performance
+  pie can be selected by tier to inspect the exact Hashcat rule commands,
+  GPU Kernel Time, GPU throughput, End-to-End Time and coefficient of variation.
+- Added per-tier search, pagination and export of the complete selected tier
+  as a standalone `.rule` file. Tier thresholds use the same tie-preserving
+  relative grouping as the statistical PNG chart.
+- Updated the Aether UI gallery and artifact list to surface interactive HTML
+  reports next to the PNG previews, and added a restricted inline-preview route
+  for current-run Aether HTML artifacts with a sandboxed Content Security Policy.
+
 ## 2026-11-24 — Aether benchmark timing accuracy (v2.6.5 follow-up)
 
 - Fixed the Top 10 chart to show the complete Hashcat rule-file command for

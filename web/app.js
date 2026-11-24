@@ -602,7 +602,7 @@ function renderOutputs(outputs = [], outputTool = 'rulest') {
     ownedOutputs.forEach((file) => {
       const row = document.createElement('div'); row.className = 'output-item';
       const icon = document.createElement('span'); icon.className = 'output-file-icon';
-      icon.textContent = file.name.toLowerCase().endsWith('.csv') ? 'CSV' : file.name.toLowerCase().endsWith('.log') ? 'LOG' : file.name.toLowerCase().endsWith('.png') ? 'IMG' : file.name.toLowerCase().endsWith('.json') ? 'JSON' : 'RULE';
+      icon.textContent = file.name.toLowerCase().endsWith('.csv') ? 'CSV' : file.name.toLowerCase().endsWith('.log') ? 'LOG' : file.name.toLowerCase().endsWith('.png') ? 'IMG' : file.name.toLowerCase().endsWith('.html') ? 'HTML' : file.name.toLowerCase().endsWith('.json') ? 'JSON' : 'RULE';
       const meta = document.createElement('div'); meta.className = 'output-meta';
       const name = document.createElement('b'); name.textContent = file.name;
       const size = document.createElement('small'); size.textContent = humanSize(file.size);
@@ -621,44 +621,50 @@ const TOOL_METRIC_WAITING_STAGES = {
   aether: 'Waiting for Aether',
 };
 
-// Aether names its 4 dashboard charts "<rule-file-basename>_<kind>.png".
-// Group the flat run-output list back into one card per rule file so the
-// gallery reads as "results for rule X", not an unordered pile of images.
+// Aether produces four static PNGs plus a self-contained interactive HTML
+// report per rule file. Group both formats together so the report is easy to find.
 const AETHER_CHART_KINDS = [
   { suffix: '_radar.png', label: 'Radar' },
   { suffix: '_heatmap.png', label: 'Heatmap' },
   { suffix: '_statistical.png', label: 'Statistical' },
   { suffix: '_distribution.png', label: 'Distribution' },
 ];
+const AETHER_INTERACTIVE_SUFFIX = '_interactive.html';
 
 function renderAetherGallery(outputs = []) {
   const root = $('aether-gallery');
   if (!root) return;
-  const pngs = outputs.filter((file) => file.name.toLowerCase().endsWith('.png'));
+  const visualFiles = outputs.filter((file) => {
+    const name = file.name.toLowerCase();
+    return name.endsWith('.png') || name.endsWith(AETHER_INTERACTIVE_SUFFIX);
+  });
   root.innerHTML = '';
-  if (!pngs.length) {
+  if (!visualFiles.length) {
     const empty = document.createElement('div'); empty.className = 'empty-output';
     empty.innerHTML = outputs.length
-      ? '<span>✦</span><b>No charts in this run</b><small>Visualize was off (or no chart could be drawn for this data) — see Aether output files for the JSON report and sorted rules.</small>'
-      : '<span>✦</span><b>No charts yet</b><small>Run a benchmark with Visualize enabled to see per-rule dashboards here.</small>';
+      ? '<span>✦</span><b>No charts in this run</b><small>Visualize was off (or no chart could be drawn) — see Aether output files for JSON reports and sorted rules.</small>'
+      : '<span>✦</span><b>No charts yet</b><small>Run a benchmark with Visualize enabled to see PNG charts and interactive HTML reports here.</small>';
     root.append(empty);
     return;
   }
-  const groups = new Map(); // baseName -> [{label, file}]
-  pngs.forEach((file) => {
+  const groups = new Map(); // baseName -> { charts: [], report: null }
+  visualFiles.forEach((file) => {
     const lower = file.name.toLowerCase();
+    const report = lower.endsWith(AETHER_INTERACTIVE_SUFFIX);
     const kind = AETHER_CHART_KINDS.find((k) => lower.endsWith(k.suffix));
-    const base = kind ? file.name.slice(0, file.name.length - kind.suffix.length) : file.name.replace(/\.png$/i, '');
-    const label = kind ? kind.label : 'Chart';
-    if (!groups.has(base)) groups.set(base, []);
-    groups.get(base).push({ label, file });
+    const base = report
+      ? file.name.slice(0, file.name.length - AETHER_INTERACTIVE_SUFFIX.length)
+      : kind ? file.name.slice(0, file.name.length - kind.suffix.length) : file.name.replace(/\.png$/i, '');
+    if (!groups.has(base)) groups.set(base, { charts: [], report: null });
+    if (report) groups.get(base).report = file;
+    else groups.get(base).charts.push({ label: kind ? kind.label : 'Chart', file });
   });
-  groups.forEach((charts, base) => {
+  groups.forEach((group, base) => {
     const card = document.createElement('div'); card.className = 'aether-rule-card';
     const heading = document.createElement('h4'); heading.textContent = base;
     card.append(heading);
     const grid = document.createElement('div'); grid.className = 'aether-chart-grid';
-    charts.forEach(({ label, file }) => {
+    group.charts.forEach(({ label, file }) => {
       const fig = document.createElement('a');
       fig.className = 'aether-chart-thumb';
       fig.href = `/api/preview/${encodeURIComponent(file.name)}`;
@@ -673,6 +679,19 @@ function renderAetherGallery(outputs = []) {
       fig.append(img, cap);
       grid.append(fig);
     });
+    if (group.report) {
+      const reportLink = document.createElement('a');
+      reportLink.className = 'aether-report-thumb';
+      reportLink.href = `/api/preview/${encodeURIComponent(group.report.name)}`;
+      reportLink.target = '_blank';
+      reportLink.rel = 'noopener noreferrer';
+      reportLink.title = 'Open interactive report: select a performance tier to inspect and export its rules';
+      const badge = document.createElement('span'); badge.className = 'aether-report-icon'; badge.textContent = '↗';
+      const copy = document.createElement('span'); copy.className = 'aether-report-copy';
+      const title = document.createElement('b'); title.textContent = 'Interactive report';
+      const detail = document.createElement('small'); detail.textContent = 'Click tiers · inspect commands · export .rule';
+      copy.append(title, detail); reportLink.append(badge, copy); grid.append(reportLink);
+    }
     card.append(grid);
     root.append(card);
   });

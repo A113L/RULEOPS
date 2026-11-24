@@ -365,7 +365,7 @@ def get_recompute_kernel_source(num_cracked, hash_table_size):
     - score_against_active_kernel: for each (word, rule) pair in the
       current dispatch, if the transformed word hashes to a cracked
       entry that is STILL SET in `active` (not yet covered by an
-      already-selected rule), atomic_add 1 into gains[rule_idx]. Output
+      already-selected rule), atomic_add 1 into gains[rule_base_index + rule_idx]. Output
       is (num_rules_in_batch,) int32 -- O(rules), not O(rules x
       universe).
     - apply_and_clear_kernel: single-rule version that additionally
@@ -396,6 +396,7 @@ void score_against_active_kernel(
     __global int* gains,
     const unsigned int num_words,
     const unsigned int num_rules_in_batch,
+    const unsigned int rule_base_index,
     const unsigned int max_word_len,
     const unsigned int table_mask)
 {{
@@ -414,7 +415,12 @@ void score_against_active_kernel(
         word[i] = c; word_len++;
     }}
 
-    unsigned int rule_start = rule_idx * MAX_RULE_LEN;
+    // Index within the full rule/gain buffers. Passing the base index avoids
+    // creating OpenCL sub-buffers at arbitrary byte offsets: clCreateSubBuffer
+    // requires CL_DEVICE_MEM_BASE_ADDR_ALIGN alignment, while MAX_RULE_LEN
+    // (255 bytes by default) does not preserve that alignment between chunks.
+    unsigned int buffer_rule_idx = rule_base_index + rule_idx;
+    unsigned int rule_start = buffer_rule_idx * MAX_RULE_LEN;
     unsigned char rule_str[MAX_RULE_LEN];
     unsigned int rule_len = 0;
     for (unsigned int i = 0; i < MAX_RULE_LEN; i++) {{
@@ -436,7 +442,7 @@ void score_against_active_kernel(
     unsigned int bit_pos = (unsigned int)slot & 31U;
     if ((active[word_pos] & (1U << bit_pos)) == 0) return;  // already covered
 
-    atomic_add(&gains[rule_idx], 1);
+    atomic_add(&gains[buffer_rule_idx], 1);
 }}
 
 // Single-rule pass for the round's chosen winner: clears matched bits
@@ -1282,16 +1288,18 @@ class _GpuScorer(_ResidentWordlistMixin):
                 for sub_start in range(0, n, rules_per_sub):
                     sub_end = min(sub_start + rules_per_sub, n)
                     sub_num = sub_end - sub_start
-                    sub_rules_g = self.rules_g.get_sub_region(
-                        sub_start * MAX_RULE_LEN, sub_num * MAX_RULE_LEN)
-                    sub_gains_g = self.gains_g.get_sub_region(
-                        sub_start * np.int32().itemsize, sub_num * np.int32().itemsize)
+                    # Use the parent buffers and pass a rule-row base index to
+                    # the kernel. Non-zero get_sub_region() offsets are unsafe
+                    # here: rule rows are MAX_RULE_LEN bytes (255 by default),
+                    # and neither the rule nor int32 gain stride guarantees the
+                    # CL_DEVICE_MEM_BASE_ADDR_ALIGN required by clCreateSubBuffer.
                     global_size = (int(math.ceil(num_words * sub_num / LOCAL_WORK_SIZE)) * LOCAL_WORK_SIZE,)
                     self.score_kernel(self.queue, global_size, (LOCAL_WORK_SIZE,),
-                                       words_g, sub_rules_g, self.hash_table_g,
+                                       words_g, self.rules_g, self.hash_table_g,
                                        self.hash_table_occupied_g, self.active_g,
-                                       sub_gains_g, np.uint32(num_words),
-                                       np.uint32(sub_num), np.uint32(MAX_WORD_LEN),
+                                       self.gains_g, np.uint32(num_words),
+                                       np.uint32(sub_num), np.uint32(sub_start),
+                                       np.uint32(MAX_WORD_LEN),
                                        np.uint32(self.hash_table_mask))
                     self.last_gpu_dispatches += 1
                 progress_done += 1

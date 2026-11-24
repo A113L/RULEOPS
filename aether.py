@@ -731,34 +731,66 @@ class VisualizationEngine:
 
 
     def create_performance_radar(self, rule_performance: List[Tuple[str, Dict]], filename: str):
-        if not rule_performance: return
+        """Render the fastest rules with their exact source commands as legend labels.
+
+        Hashcat rule commands are literal text. In particular, '$', '^' and
+        backslashes must not be interpreted by Matplotlib's MathText parser,
+        and long commands must not be abbreviated because that makes distinct
+        rules appear identical in the chart legend.
+        """
+        if not rule_performance:
+            return
+
         top_rules = rule_performance[:20]
-        rules = [f"{rule[:15]}..." if len(rule) > 15 else rule for rule, _ in top_rules]
-        times = [data['execution_time'] * 1000000 for _, data in top_rules]
-        ops_sec = [data['operations_per_sec'] / 1000 for _, data in top_rules]
+        rules = [self._literal_rule_command(rule) or '<empty rule>' for rule, _ in top_rules]
+        times = [data.get('gpu_kernel_time_seconds', data.get('execution_time', float('inf'))) * 1_000_000
+                 for _, data in top_rules]
+        ops_sec = [data.get('gpu_operations_per_sec', data.get('operations_per_sec', 0.0)) / 1000
+                   for _, data in top_rules]
         cv_values = [data['metrics']['cv_percent'] for _, data in top_rules]
         times_norm = self.normalize_data(times, invert=True)
         ops_norm = self.normalize_data(ops_sec)
         cv_norm = self.normalize_data(cv_values, invert=True)
         categories = ['GPU Kernel Time\n(μs)', 'GPU Throughput\n(K ops/sec)', 'Consistency\n(CV %)']
-        fig, ax = plt.subplots(figsize=(14, 10), subplot_kw=dict(projection='polar'))
+
+        # Reserve a dedicated right-hand area for 20 complete rule commands.
+        # A wider figure keeps the full Hashcat syntax readable without clipping.
+        fig, ax = plt.subplots(figsize=(20, 12), subplot_kw=dict(projection='polar'))
         angles = np.linspace(0, 2*np.pi, len(categories), endpoint=False).tolist()
         angles += angles[:1]
-        for i, (rule, time_n, ops_n, cv_n) in enumerate(zip(rules, times_norm, ops_norm, cv_norm)):
+        for rule, time_n, ops_n, cv_n in zip(rules, times_norm, ops_norm, cv_norm):
             values = [time_n, ops_n, cv_n]
             values += values[:1]
             ax.plot(angles, values, 'o-', linewidth=2, label=rule, markersize=6, alpha=0.7)
             ax.fill(angles, values, alpha=0.1)
+
         ax.set_xticks(angles[:-1])
         ax.set_xticklabels(categories)
         ax.set_ylim(0, 1)
         ax.set_yticks([])
         ax.grid(True, alpha=0.3)
-        plt.title('Rule Performance Radar Chart\n(Top 20 Rules)', size=16, pad=20)
-        plt.legend(bbox_to_anchor=(1.2, 1.0), loc='upper left')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f"{filename}_radar.png"), dpi=300, bbox_inches='tight')
-        plt.close()
+        ax.set_title('Rule Performance Radar Chart\n(Top 20 Rules)', size=16, pad=20)
+
+        legend = ax.legend(
+            bbox_to_anchor=(1.06, 1.0),
+            loc='upper left',
+            borderaxespad=0,
+            fontsize=7,
+            labelspacing=0.55,
+            handlelength=2.2,
+            frameon=False,
+        )
+        # Disable MathText after creating the legend: Hashcat syntax such as
+        # '$1', '^2' and '\' must remain exactly as it appears in the .rule file.
+        for label in legend.get_texts():
+            label.set_parse_math(False)
+            label.set_fontfamily('DejaVu Sans Mono')
+            label.set_fontsize(7)
+
+        fig.subplots_adjust(left=0.02, right=0.67, top=0.92, bottom=0.05)
+        output_path = os.path.join(self.output_dir, f"{filename}_radar.png")
+        fig.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
         print(f"{Colors.GREEN}Radar chart saved: {filename}_radar.png{Colors.END}")
     
     def create_performance_heatmap(self, rule_performance: List[Tuple[str, Dict]], filename: str):

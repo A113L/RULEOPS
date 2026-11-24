@@ -3,7 +3,7 @@
 ## 2026-11-24 — Aether benchmark timing accuracy (v2.6.5 follow-up)
 
 - Fixed the Top 10 chart to show the complete Hashcat rule-file command for
-  each result, with an explicit rank. Removed 15-character truncation and
+  each result without rank prefixes. Removed 15-character truncation and
   disabled MathText parsing so special rule characters such as `$`, `^` and
   backslashes are displayed literally. The chart title and note now clarify
   that `.rule` files contain commands rather than descriptive rule names.
@@ -21,6 +21,17 @@
   OpenCL command queue. The UI now shows an always-on profiling status and
   explains the distinction between GPU Kernel Time and End-to-End Time; JSON
   metadata records that event profiling was enabled.
+
+- Unified Aether's dictionary-mode workload: both modes now submit exactly
+  the configured `Max words` count per rule. Identical mode repeats the same
+  16-word seed dictionary; diverse mode generates deterministic content
+  variants while preserving the same per-position character classes and
+  word-length profile. This removes the previous 16-versus-`Max words`
+  workload mismatch.
+- Updated the Aether UI with an explicit words-per-rule explanation, a live
+  corpus-mode summary, and a clear statement that the two modes use equal
+  GPU work-item counts. JSON reports, sorted-rule headers and statistical
+  dashboard titles now record the corpus mode and word count.
 
 ## 2026-11-23 — RULEOPS v2.6.5
 

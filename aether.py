@@ -10,6 +10,7 @@ import time
 import os
 import json
 import argparse
+import hashlib
 import re
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
@@ -860,7 +861,7 @@ class VisualizationEngine:
             colors.append('#e74c3c')
         return counts, labels, colors
 
-    def create_statistical_summary(self, rule_performance: List[Tuple[str, Dict]], filename: str):
+    def create_statistical_summary(self, rule_performance: List[Tuple[str, Dict]], filename: str, corpus_description: str = ""):
         if not rule_performance:
             print(f"{Colors.YELLOW}No performance data available for statistical summary{Colors.END}")
             return
@@ -967,8 +968,10 @@ class VisualizationEngine:
             else:
                 axes[1,1].text(0.5, 0.5, 'No execution time data', ha='center', va='center', transform=axes[1,1].transAxes)
                 axes[1,1].set_title('Relative GPU Performance Tiers (No Data)')
-            plt.suptitle('Comprehensive Statistical Summary', fontsize=16, y=0.98)
-            plt.tight_layout()
+            fig.suptitle('Comprehensive Statistical Summary', fontsize=16, y=0.99)
+            if corpus_description:
+                fig.text(0.5, 0.962, corpus_description, ha='center', va='top', fontsize=10)
+            plt.tight_layout(rect=(0, 0, 1, 0.94) if corpus_description else None)
             plt.savefig(os.path.join(self.output_dir, f"{filename}_statistical.png"), dpi=300, bbox_inches='tight')
             plt.close()
             print(f"{Colors.GREEN}Statistical summary saved: {filename}_statistical.png{Colors.END}")
@@ -1075,7 +1078,10 @@ Q3: {np.percentile(times, 75):.2f}μs"""
             rp = performance_data['rule_performance']
             self.create_performance_radar(rp, filename)
             self.create_performance_heatmap(rp, filename)
-            self.create_statistical_summary(rp, filename)
+            mode = performance_data.get('word_corpus_mode', 'unknown').replace('_', ' ').title()
+            words = int(performance_data.get('test_words_count', 0) or 0)
+            corpus_description = f'{mode} corpus · {words:,} words per rule' if words else ''
+            self.create_statistical_summary(rp, filename, corpus_description=corpus_description)
             self.create_performance_distribution(rp, filename)
         print(f"{Colors.GREEN}Dashboard generation complete!{Colors.END}")
 
@@ -1132,30 +1138,82 @@ class RulePerformanceTester:
         self.visualizer = VisualizationEngine(output_dir)
         print(f"{Colors.GREEN}Visualization engine initialized{Colors.END}")
     
+    @staticmethod
+    def _make_diverse_word_variant(seed_word: bytes, seed_index: int, cycle_index: int) -> bytes:
+        """Create a deterministic variant without changing length or character class.
+
+        Lowercase letters remain lowercase, uppercase remain uppercase, digits
+        remain digits, and non-alphanumeric bytes stay unchanged. This keeps
+        the per-position character-class and word-length profile matched to the
+        identical-dictionary mode while changing the actual input contents.
+        """
+        if cycle_index <= 0:
+            return seed_word
+        payload = (
+            b"RULEOPS-AETHER-CORPUS-v1\0"
+            + seed_word
+            + seed_index.to_bytes(4, "little", signed=False)
+            + cycle_index.to_bytes(8, "little", signed=False)
+        )
+        digest = hashlib.blake2s(payload, digest_size=32).digest()
+        varied = bytearray(seed_word)
+        for position, char in enumerate(seed_word):
+            value = digest[position]
+            if 97 <= char <= 122:       # a-z
+                varied[position] = 97 + (value % 26)
+            elif 65 <= char <= 90:      # A-Z
+                varied[position] = 65 + (value % 26)
+            elif 48 <= char <= 57:      # 0-9
+                varied[position] = 48 + (value % 10)
+            # Keep punctuation and other bytes unchanged.
+        return bytes(varied)
+
     def setup_test_data(self, max_words: int = 1000, identical_dicts: bool = False):
+        """Build an exactly-sized test corpus for either dictionary mode.
+
+        Both modes always contain exactly ``max_words`` entries and therefore
+        launch the same number of GPU work items per rule. The identical mode
+        repeats the fixed seed dictionary; the diverse mode generates
+        deterministic, length-preserving content variants from those seeds.
+        """
         builtin_words = [
             b"password", b"123456", b"qwerty", b"letmein", b"welcome", b"monkey", b"dragon", b"master",
             b"hello", b"freedom", b"whatever", b"computer", b"internet", b"sunshine", b"princess", b"charlie"
         ]
+        count = max(1, int(max_words))
+        self.test_words_requested = count
+        self.test_word_seed_count = len(builtin_words)
+        self.word_corpus_mode = "identical" if identical_dicts else "diverse"
+        self.word_corpus_generator = (
+            "repeated_seed_dictionary" if identical_dicts
+            else "deterministic_length_preserving_variants_v1"
+        )
+
         if identical_dicts:
-            # Tile the full builtin list repeatedly until we reach max_words.
-            # Every cycle is an exact copy of the same 16 words, so the input
-            # space is perfectly uniform across iterations — precision/reject
-            # rules (!, /, (, ), <, >, _, =, %) see identical inputs every time,
-            # eliminating word-variance noise from the measurements.
-            count = max(1, max_words)
-            self.test_words = (builtin_words * (count // len(builtin_words) + 1))[:count]
-            print(f"{Colors.BOLD}{Colors.MAGENTA}[identical-dicts mode]{Colors.END} "
-                  f"{Colors.GREEN}Dictionary: {count} words "
-                  f"({len(builtin_words)} built-in words tiled × "
-                  f"{count // len(builtin_words) + 1}){Colors.END}")
+            self.test_words = [builtin_words[index % len(builtin_words)] for index in range(count)]
+            mode_label = "Identical dictionary (16 seed words repeated)"
         else:
-            if max_words < len(builtin_words):
-                self.test_words = builtin_words[:max_words]
-            else:
-                self.test_words = builtin_words
-                print(f"{Colors.YELLOW}Built-in word list has only {len(builtin_words)} words, using all.{Colors.END}")
-            print(f"{Colors.GREEN}Using built-in test words ({len(self.test_words)} words){Colors.END}")
+            self.test_words = [
+                self._make_diverse_word_variant(
+                    builtin_words[index % len(builtin_words)],
+                    index % len(builtin_words),
+                    index // len(builtin_words),
+                )
+                for index in range(count)
+            ]
+            mode_label = "Diverse dictionary (deterministic content variants)"
+
+        # Store the profile for reports so the matched workload is auditable.
+        length_counts = {}
+        for word in self.test_words:
+            key = str(len(word))
+            length_counts[key] = length_counts.get(key, 0) + 1
+        self.word_length_distribution = dict(sorted(length_counts.items(), key=lambda item: int(item[0])))
+
+        print(f"{Colors.GREEN}{mode_label}{Colors.END}")
+        print(f"{Colors.CYAN}Test words: {len(self.test_words):,} / {count:,} requested{Colors.END}")
+        print(f"{Colors.CYAN}GPU work-items per rule: exactly {len(self.test_words):,} in either mode{Colors.END}")
+        print(f"{Colors.CYAN}Word-length profile: {self.word_length_distribution}{Colors.END}")
         self.max_word_len = 64
         self.max_rule_len = 32
         self.max_result_len = 512
@@ -1365,7 +1423,7 @@ class RulePerformanceTester:
         print(f"\n{success_color}Completed: {successful_tests}/{total_rules} rules successful{Colors.END}")
         if self.visualizer and rule_performance:
             base_name = output_basename or os.path.splitext(os.path.basename(rule_file_path))[0]
-            self.visualizer.generate_dashboard({'rule_performance': rule_performance, 'test_runs': test_runs, 'timestamp': datetime.now().isoformat()}, base_name)
+            self.visualizer.generate_dashboard({'rule_performance': rule_performance, 'test_runs': test_runs, 'timestamp': datetime.now().isoformat(), 'word_corpus_mode': self.word_corpus_mode, 'test_words_count': len(self.test_words)}, base_name)
         return rule_performance
     
     def read_rules_from_file(self, file_path: str) -> List[bytes]:
@@ -1388,6 +1446,10 @@ class RulePerformanceTester:
                 f.write(f"# Rules sorted by performance (fastest first)\n")
                 f.write(f"# Generated by RulePerformanceTester\n")
                 f.write(f"# Total rules: {len(rule_performance)}\n")
+                f.write(f"# Test words per rule: {len(getattr(self, 'test_words', []))}\n")
+                f.write(f"# Dictionary mode: {getattr(self, 'word_corpus_mode', 'unknown')}\n")
+                f.write(f"# Word-length distribution: {getattr(self, 'word_length_distribution', {})}\n")
+                f.write(f"# Workload matched across dictionary modes: yes\n")
                 f.write(f"# Test date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"# Primary metric: GPU kernel execution time from OpenCL event START..END timestamps\n")
                 f.write(f"# End-to-end time includes host enqueue + queue completion wait (diagnostic only)\n")
@@ -1413,6 +1475,14 @@ class RulePerformanceTester:
                     "test_iterations": self.iterations,
                     "test_runs_per_rule": (rule_performance[0][1].get("test_runs", 0) if rule_performance else 0),
                     "test_words_count": len(self.test_words),
+                    "requested_test_words_count": int(getattr(self, "test_words_requested", len(self.test_words))),
+                    "gpu_work_items_per_rule": len(self.test_words),
+                    "word_corpus_mode": getattr(self, "word_corpus_mode", "identical" if identical_dicts else "diverse"),
+                    "word_corpus_generator": getattr(self, "word_corpus_generator", "unknown"),
+                    "word_corpus_seed_words": int(getattr(self, "test_word_seed_count", 0)),
+                    "word_length_distribution": getattr(self, "word_length_distribution", {}),
+                    "workload_matched_across_corpus_modes": True,
+                    "word_corpus_comparison_note": "Both modes use the same word count and per-position character-class/word-length profile; only word contents and repetition differ.",
                     "max_word_len": self.max_word_len,
                     "max_rule_len": self.max_rule_len,
                     "identical_dicts_mode": identical_dicts,
@@ -1575,7 +1645,7 @@ def main():
     parser.add_argument('--output', '-o', default='./benchmark_results', help='Output directory for results')
     parser.add_argument('--iterations', '-i', type=int, default=50, help='Number of test iterations per rule')
     parser.add_argument('--test-runs', type=int, default=3, help='Number of test runs per rule for statistical accuracy')
-    parser.add_argument('--max-words', type=int, default=1000, help='Maximum number of test words to use')
+    parser.add_argument('--max-words', type=int, default=1000, help='Exact number of test words/work-items per rule in either corpus mode')
     parser.add_argument('--max-test-rules', type=int, default=1000, help='Maximum number of rules to test')
     parser.add_argument('--optimize', action='store_true', help='Create optimized rule set after benchmarking')
     parser.add_argument('--max-optimize-rules', type=int, default=500, help='Maximum rules for optimized set')
@@ -1585,16 +1655,15 @@ def main():
     parser.add_argument('--visualization-output', default=None, help='Separate output directory for visualizations')
     parser.add_argument('--platform', type=int, default=0, help='OpenCL platform index')
     parser.add_argument('--device', type=int, default=0, help='OpenCL device index')
-    # ── Identical-dicts precision mode ──────────────────────────────────────
+    # ── Matched dictionary corpus modes ─────────────────────────────────────
     parser.add_argument(
         '--identical-dicts',
         action='store_true',
         help=(
-            'Tile the built-in word list repeatedly to fill --max-words entries. '
-            'Every cycle is the same 16 words in the same order, so the input '
-            'space is perfectly uniform across iterations — precision / reject '
-            'rules (!, /, (, ), <, >, _, =, %%) see identical inputs every time, '
-            'eliminating word-variance noise from the measurements.'
+            'Repeat the fixed 16-word seed dictionary to exactly --max-words entries. '
+            'Without this flag, Aether creates deterministic content variants while '
+            'preserving the same word-length and character-class profile. Both modes '
+            'use exactly --max-words GPU work-items per rule.'
         )
     )
     args = parser.parse_args()
@@ -1628,10 +1697,10 @@ def main():
         print(f"  {Colors.WHITE}Test runs per rule:{Colors.END} {Colors.YELLOW}{args.test_runs}{Colors.END}")
         print(f"  {Colors.WHITE}Max test rules:{Colors.END} {Colors.YELLOW}{args.max_test_rules}{Colors.END}")
         print(f"  {Colors.WHITE}Max words:{Colors.END} {Colors.YELLOW}{args.max_words}{Colors.END}")
-        print(f"  {Colors.WHITE}Test words loaded:{Colors.END} {Colors.YELLOW}{len(tester.test_words)}{Colors.END}")
-        if args.identical_dicts:
-            print(f"  {Colors.WHITE}Identical-dicts mode:{Colors.END} {Colors.MAGENTA}ENABLED{Colors.END} "
-                  f"— {len(tester.test_words)} words (built-ins tiled)")
+        print(f"  {Colors.WHITE}Test words loaded:{Colors.END} {Colors.YELLOW}{len(tester.test_words):,}{Colors.END}")
+        corpus_label = "Identical (seed dictionary repeated)" if args.identical_dicts else "Diverse (length-preserving variants)"
+        print(f"  {Colors.WHITE}Dictionary mode:{Colors.END} {Colors.MAGENTA}{corpus_label}{Colors.END}")
+        print(f"  {Colors.WHITE}GPU work-items per rule:{Colors.END} {Colors.YELLOW}{len(tester.test_words):,}{Colors.END} (matched across modes)")
     except Exception as e:
         print(f"{Colors.RED}Failed to initialize tester: {e}{Colors.END}")
         return

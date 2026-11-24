@@ -2278,3 +2278,4 @@ body{
 .aether-profiling-banner p{margin:8px 0 0 15px;max-width:1050px;font-size:9px;line-height:1.55;color:#9aa895;}
 .aether-profiling-banner code,.notes-panel code{font:8px var(--mono);color:#c5e99d;background:#202b20;border:1px solid #35452f;border-radius:4px;padding:2px 4px;}
 @media(max-width:650px){.aether-profiling-banner-head{flex-wrap:wrap}.aether-profiling-state{margin-left:15px}.aether-profiling-banner p{margin-left:0;}}
+.aether-corpus-mode-hint{color:#a2c878!important;font-family:var(--mono);font-size:8px!important;letter-spacing:.02em}

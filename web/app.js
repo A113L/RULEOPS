@@ -2105,6 +2105,21 @@ function readUtilityFloat(id, label) {
   }
   return value;
 }
+function updateAetherCorpusModeHint() {
+  const wordsInput = $('aether-max-words');
+  const identicalToggle = $('aether-identical-dicts');
+  const hint = $('aether-corpus-mode-hint');
+  if (!wordsInput || !identicalToggle || !hint) return;
+  const parsed = Number(wordsInput.value);
+  const count = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+  const formattedCount = count.toLocaleString();
+  const mode = identicalToggle.checked ? 'Identical' : 'Diverse';
+  const detail = identicalToggle.checked
+    ? 'the same 16-word seed dictionary is repeated'
+    : 'deterministic content variants are generated';
+  hint.textContent = `${mode} corpus selected: ${formattedCount} words per rule; ${detail}. GPU work-item count is unchanged between modes.`;
+}
+
 function utilityOptions(tool) {
   if (tool === 'aether') {
     if (!(uploadState.aether_files || []).length) throw new Error('Upload at least one Hashcat rules file for Aether.');
@@ -2192,7 +2207,7 @@ function initializeApp() {
   }
   $('token_strip').addEventListener('change', e => toggleStage('token', e.target.checked));
   $('genetic').addEventListener('change', e => toggleStage('genetic', e.target.checked));
-  $('reset-defaults').addEventListener('click', () => { setDefaults(); toast('All configuration values reset to defaults.'); });
+  $('reset-defaults').addEventListener('click', () => { setDefaults(); updateAetherCorpusModeHint(); toast('All configuration values reset to defaults.'); });
   $('advanced-trigger').addEventListener('click', () => {
     const btn = $('advanced-trigger'), open = btn.getAttribute('aria-expanded') !== 'true';
     btn.setAttribute('aria-expanded', String(open)); $('advanced-content').classList.toggle('open', open);
@@ -2208,6 +2223,9 @@ function initializeApp() {
   $('minimizer-cancel').addEventListener('click', () => cancelUtilityRun('minimizer'));
   $('aether-start').addEventListener('click', () => startUtilityRun('aether'));
   $('aether-cancel').addEventListener('click', () => cancelUtilityRun('aether'));
+  $('aether-max-words').addEventListener('input', updateAetherCorpusModeHint);
+  $('aether-identical-dicts').addEventListener('change', updateAetherCorpusModeHint);
+  updateAetherCorpusModeHint();
   const navigateTo = (href) => {
     const target = href && href.startsWith('#') ? document.getElementById(href.slice(1)) : null;
     if (!target) return;

@@ -829,6 +829,12 @@ async function loadToolRunHistory(showToast = false) {
     toolHistoryLoading = false;
   }
 }
+// Backwards-compatible entry point for older page callbacks that still use
+// the generic history loader name. Persistent history is now shared by all
+// tools and is rendered by loadToolRunHistory().
+function loadHistory(showToast = false) {
+  return loadToolRunHistory(showToast);
+}
 
 async function openToolRunHistoryRun(runId, groupName = '') {
   const listRoot = $('tool-run-history-list');
@@ -1875,8 +1881,11 @@ async function pollStatus() {
       });
     }
     renderStatus(data);
-    if (data.tool === 'aether' && !['running', 'stopping'].includes(data.status) && Date.now() - lastAetherHistoryRefresh > 8000) {
-      loadAetherHistory();
+    // Aether's persistent history now lives in the shared run-history view.
+    // Refresh it after a run completes instead of calling the removed legacy
+    // Aether-only history loader.
+    if (data.tool === 'aether' && !['running', 'stopping'].includes(data.status) && Date.now() - lastToolHistoryRefresh > 8000) {
+      loadToolRunHistory();
     }
     if (data.error && data.status === 'failed') $('status-note').textContent = data.error;
   } catch (error) {
@@ -2473,7 +2482,6 @@ async function startUtilityRun(tool) {
     lastLogId = 0;
     const started = await apiPost('/api/tools/run', { tool, options });
     trackStartedJob(started);
-    if (tool === 'aether') loadAetherHistory();
     toast(`${title} started.`);
     await pollStatus();
   } catch (error) {

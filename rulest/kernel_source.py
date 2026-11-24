@@ -15,7 +15,7 @@ class GPUCompatibleRulesGenerator:
     def generate_gpu_compatible_rules(self):
         rules = set()
         digits = '0123456789'
-        rules.update(['l','u','c','C','t','r','d','f','q','E','{','}','[',']','k','K',':'])
+        rules.update(['l','u','c','C','t','r','d','f','q','E','h','H','S','{','}','[',']','k','K',':'])
         for cmd in ('T','D','L','R','+','-','.',',',"'",'z','Z','y','Y'):
             for p in POSITION_CHARS: rules.add(f'{cmd}{p}')
         for p in POSITION_CHARS: rules.add(f'p{p}')
@@ -32,6 +32,11 @@ class GPUCompatibleRulesGenerator:
             for ch in chars: rules.add(f'i{p}{ch}'); rules.add(f'o{p}{ch}')
         for n in range(1,10):
             for ch in ('p','y','Y','z','Z'): rules.add(f'{ch}{n}')
+        for n in POSITION_CHARS:
+            for code in range(33, 127):
+                ch = chr(code)
+                rules.add(f'v{n}{ch}')
+                rules.add(f'B{n}{ch}')
         for sep in '-_.,;:|/\\+*&^%$#@!~`': rules.add(f'e{sep}')
         chars2 = string.ascii_letters+string.digits+'!@#$%^&*()_+-=[]{}|;:,.<>?/~'
         for n in digits:
@@ -84,6 +89,26 @@ inline int dpos(unsigned char c) {{
     return -1;
 }}
 
+inline uchar shift_case_mask(uchar c) {{
+    if ((c >= 65 && c <= 93) || (c >= 97 && c <= 125)) return 32;
+    switch (c) {{
+        case 33: return 16; case 34: return 5; case 35: return 16;
+        case 36: return 16; case 37: return 16; case 38: return 17;
+        case 39: return 5; case 40: return 17; case 41: return 25;
+        case 42: return 18; case 43: return 22; case 44: return 16;
+        case 45: return 114; case 46: return 16; case 47: return 16;
+        case 48: return 25; case 49: return 16; case 50: return 114;
+        case 51: return 16; case 52: return 16; case 53: return 16;
+        case 54: return 104; case 55: return 17; case 56: return 18;
+        case 57: return 17; case 58: return 1; case 59: return 1;
+        case 60: return 16; case 61: return 22; case 62: return 16;
+        case 63: return 16; case 64: return 114; case 94: return 104;
+        case 95: return 114; case 96: return 30; case 126: return 30;
+        default: return 0;
+    }}
+}}
+inline uchar shift_case(uchar c) {{ return c ^ shift_case_mask(c); }}
+
 int apply(const unsigned char *rs, int rl,
           const unsigned char *in, int il,
           unsigned char *out, int *ol) {{
@@ -106,6 +131,21 @@ int apply(const unsigned char *rs, int rl,
             if (out[i] >= 'a' && out[i] <= 'z') out[i] -= 32;
             else if (out[i] >= 'A' && out[i] <= 'Z') out[i] += 32;
         }} changed = 1; break;
+        case 'h':
+        case 'H': {{
+            const uchar hex_lower[16] = {{'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'}};
+            const uchar hex_upper[16] = {{'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'}};
+            if (*ol * 2 >= MAX_OUTPUT_LEN) return 0;
+            uchar tmp[MAX_OUTPUT_LEN]; int new_len = *ol * 2;
+            for (int i = 0; i < *ol; i++) {{
+                uchar v = out[i];
+                tmp[i * 2] = (cmd == 'h') ? hex_lower[v >> 4] : hex_upper[v >> 4];
+                tmp[i * 2 + 1] = (cmd == 'h') ? hex_lower[v & 15] : hex_upper[v & 15];
+            }}
+            for (int i = 0; i < new_len; i++) out[i] = tmp[i];
+            *ol = new_len; changed = 1; break;
+        }}
+        case 'S': for (int i = 0; i < *ol; i++) out[i] = shift_case(out[i]); changed = 1; break;
         case 'r': for (int i = 0; i < *ol/2; i++) {{
             unsigned char t = out[i]; out[i] = out[*ol-1-i]; out[*ol-1-i] = t;
         }} changed = 1; break;
@@ -282,6 +322,23 @@ int apply(const unsigned char *rs, int rl,
         }} else if (cmd == 'o' && p1>='0' && p1<='9') {{
             int pos = p1-'0';
             if (pos < *ol) {{ out[pos] = p2; changed = 1; }}
+        }} else if (cmd == 'v') {{
+            int n = dpos(p1);
+            if (n > 0 && n < *ol + 1) {{
+                int new_len = *ol + (*ol / n);
+                if (new_len < MAX_OUTPUT_LEN) {{
+                    int src = *ol - 1, dst = new_len - 1;
+                    while (src >= 0) {{
+                        out[dst--] = out[src];
+                        if ((src + 1) % n == 0) out[dst--] = p2;
+                        src--;
+                    }}
+                    *ol = new_len; changed = 1;
+                }}
+            }}
+        }} else if (cmd == 'B') {{
+            int pos = dpos(p1);
+            if (pos >= 0 && pos < *ol) {{ out[pos] = (uchar)(out[pos] + p2); changed = 1; }}
         }} else if (cmd == 'e') {{
             int cap = 1;
             for (int i = 0; i < *ol; i++) {{

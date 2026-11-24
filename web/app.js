@@ -205,7 +205,7 @@ async function selectLibraryAsset(field, assetId, select) {
   if (!assetId) return;
   try {
     const result = await apiPost('/api/library/select', { field, asset_id: assetId });
-    const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count };
+    const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count, rule_validation: result.rule_validation };
     if (field in MULTI_FILE_FIELDS) {
       if (!result.already_selected) uploadState[field] = [...(uploadState[field] || []), meta];
       renderMultiFileState(field);
@@ -442,19 +442,33 @@ function renderMultiFileState(field) {
 }
 function updateAetherRuleCountHint() {
   const hint = $('aether-max-test-rules-hint');
-  if (!hint) return;
+  const summaryEl = $('aether-validation-summary');
   const files = uploadState.aether_files || [];
   if (!files.length) {
-    hint.textContent = 'Caps rules sampled per file. Select a rule file to show its rule count.';
+    if (hint) hint.textContent = 'Caps the number of benchmarkable rules sampled per file. Validation counts appear after selecting a rule file.';
+    if (summaryEl) summaryEl.textContent = 'Hashcat 8 preflight validation runs before benchmarking. Invalid, CLI-only and unsupported rules are skipped and reported with source line numbers.';
     return;
   }
   const counts = files.map((file) => {
-    const count = Number.isInteger(file.rule_count) && file.rule_count >= 0
-      ? `${file.rule_count.toLocaleString()} rules`
-      : 'rule count unavailable';
-    return `${file.name}: ${count}`;
+    const validation = file.rule_validation || {};
+    const benchmarkable = Number.isInteger(validation.benchmarkable_rules) ? validation.benchmarkable_rules : file.rule_count;
+    const countText = Number.isInteger(benchmarkable) && benchmarkable >= 0
+      ? `${benchmarkable.toLocaleString()} benchmarkable`
+      : 'benchmarkable count unavailable';
+    const invalid = Number(validation.invalid_rules || 0);
+    const cliOnly = Number(validation.cli_only_rules || 0);
+    const unsupported = Number(validation.unsupported_rules || 0);
+    return `${file.name}: ${countText}, ${invalid.toLocaleString()} invalid, ${cliOnly.toLocaleString()} CLI-only, ${unsupported.toLocaleString()} unsupported by Aether`;
   });
-  hint.textContent = `${counts.join(' · ')}. Limit applies separately to each file.`;
+  if (hint) hint.textContent = `${counts.join(' · ')}. Max test rules limits benchmarkable rules per file.`;
+  if (summaryEl) {
+    const totals = files.reduce((acc, file) => {
+      const v = file.rule_validation || {};
+      for (const key of ['benchmarkable_rules', 'invalid_rules', 'cli_only_rules', 'unsupported_rules']) acc[key] += Number(v[key] || 0);
+      return acc;
+    }, { benchmarkable_rules: 0, invalid_rules: 0, cli_only_rules: 0, unsupported_rules: 0 });
+    summaryEl.textContent = `Preflight totals · ${totals.benchmarkable_rules.toLocaleString()} benchmarkable · ${totals.invalid_rules.toLocaleString()} invalid · ${totals.cli_only_rules.toLocaleString()} CLI-only · ${totals.unsupported_rules.toLocaleString()} valid Hashcat rules not supported by the current Aether kernel. Line-numbered reports are saved with benchmark outputs.`;
+  }
 }
 // Kept as a thin alias: older call sites refer to this name directly.
 function renderConcentratorFileState() { renderMultiFileState('concentrator_files'); }
@@ -477,7 +491,7 @@ function uploadMultiFile(field, file) {
       try { result = JSON.parse(xhr.responseText); } catch { result = { error: 'Invalid server response.' }; }
       if (xhr.status === 401) { window.location.replace('/'); reject(new Error('Authentication required.')); return; }
       if (xhr.status >= 200 && xhr.status < 300 && result.ok) {
-        uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count }];
+        uploadState[field] = [...(uploadState[field] || []), { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count, rule_validation: result.rule_validation }];
         if (progress) progress.style.width = '100%';
         renderMultiFileState(field);
         if (result.library) await refreshLibraryMenus();

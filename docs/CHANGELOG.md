@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.6.5 — Hashcat 8 rule operators across CPU and GPU engines
+
+- Added byte-exact support for Hashcat 8 operators `h` (lowercase hexadecimal),
+  `H` (uppercase hexadecimal), `S` (keyboard Shift Case), `vNX` (insert a byte
+  after every N input bytes, including a terminal insertion when divisible),
+  and `BNX` (add the operand byte modulo 256 at base-36 position N).
+- Centralized the byte-level Python semantics in `hashcat_rule_ops.py` and
+  aligned RULEST, Rulestripper, Concentrator and Rule Minimizer interpreters.
+- Extended the RULEST OpenCL rule-chain kernel and atomic rule generator, both
+  Rule Ranker OpenCL kernels, and the Aether OpenCL benchmark kernel.
+- Updated Rule Ranker validation so valid `vNX` rules are no longer discarded
+  and the five new operators pass the legacy Ranker and current CELF paths.
+- Completed Aether preflight validation for the new operators. It benchmarks
+  supported single-operation rules and continues to report malformed, CLI-only
+  and valid-but-not-benchmarkable rules separately with source line numbers.
+- Added CPU semantic, validator, generator and kernel-source regression tests.
+
+## v2.6.5 — Aether Hashcat rule validation and benchmark safety
+
+- Added a Hashcat 8 rule-file preflight validator before Aether GPU timing. It
+  reports malformed rules, `-j/-k`-only commands and valid Hashcat commands
+  that the current Aether kernel does not implement as separate categories.
+- Aether benchmarks only the explicitly supported single-operation subset;
+  valid chained rules are reported as unsupported by the current kernel rather
+  than receiving misleading timings.
+- The Aether upload UI and reusable-library selection show validation counts;
+  line-numbered JSON and text reports are saved with each benchmark output.
+- Preserved literal `#` and whitespace operands instead of truncating rule
+  commands as inline comments, and corrected Hashcat `E` title-case behavior.
+- Fixed `_sorted.rule` output so performance metadata is written as standalone
+  comment lines and never appended to executable Hashcat rule commands.
+
 ## v2.6.5 — Aether run-history unification
 
 - Removed Aether's separate persistent history panel and dedicated history API; previous Aether benchmarks now appear in the shared **Run storage** page alongside every other tool.

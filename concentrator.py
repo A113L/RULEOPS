@@ -27,6 +27,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Callable, Any, Set, Optional
 
+from hashcat_rule_ops import apply_hashcat8_operator
+
 # -----------------------------------------------------------------------------
 # Windows terminal color support (ANSI → WinAPI conversion)
 # -----------------------------------------------------------------------------
@@ -562,13 +564,11 @@ def should_exclude_rule(rule: str) -> bool:
     unknown to hashcat's parser.  All multi-operator rules are handled by
     the main loop.
 
-    v3.5 fix: removed the previous catch-all for 3-char rules starting with
-    '?', '=', or 'v'.  '=' and '%' are already in NEVER_PRODUCE_OPS and are
-    caught by _has_banned_op(); '?' and 'v' are not recognised operators and
-    are correctly rejected by the "any other character" fall-through in the
-    main loop.  The over-broad 3-char check was incorrectly blocking any rule
-    whose THIRD character happened to be '?', '=', or 'v', because the check
-    looked at rule[0], not at the actual operator position.
+    The parser below handles all supported two- and three-character command
+    forms, including Hashcat 8.0 `vNX` and `BNX`.  This pre-check deliberately
+    does not reject by line length or by the third character: doing so would
+    incorrectly discard valid `vNX` rules or rules whose operands contain
+    punctuation such as '?'.
     """
     if not rule:
         return False
@@ -622,7 +622,7 @@ def is_valid_hashcat_rule(rule: str) -> bool:
             continue
         # Zero-argument operators
         if c in (':', 'l', 'u', 'c', 'C', 't', 'r', 'd', 'f', 'q', 'k', 'K',
-                 'E', '{', '}', '[', ']'):
+                 'E', 'h', 'H', 'S', '{', '}', '[', ']'):
             pos += 1
             cnt += 1
             continue
@@ -636,7 +636,7 @@ def is_valid_hashcat_rule(rule: str) -> bool:
             cnt += 1
             continue
         # Operators with one digit and then one character (i, o, 3)
-        if c in ('i', 'o', '3'):
+        if c in ('i', 'o', '3', 'v', 'B'):
             pos += 1
             if pos >= n or not is_digit(rule[pos]):
                 return False
@@ -1635,12 +1635,12 @@ class RuleEngine:
 # Byte-level hashcat rule engine (ported from minimizer.py)
 # ---------------------------------------------------------------------------
 
-_ZERO_ARG_OPS_MIN = frozenset(':lucCtErdfkK{}[]q')
+_ZERO_ARG_OPS_MIN = frozenset(':lucCtErdfkK{}[]qhHS')
 _ONE_ARG_OPS_MIN  = frozenset([
     '^', '$', '@', 'p', 'T', 'D', 'L', 'R',
     '+', '-', '.', ',', "'", 'z', 'Z', 'y', 'Y', 'e',
 ])
-_TWO_ARG_OPS_MIN  = frozenset(['s', 'i', 'o', 'x', 'O', '*', '3'])
+_TWO_ARG_OPS_MIN  = frozenset(['s', 'i', 'o', 'x', 'O', '*', '3', 'v', 'B'])
 
 # Sentinel prefix for rules with unsupported opcodes.
 # Each such rule gets a UNIQUE signature ('__UNSUPPORTED__', rule_text) so that
@@ -1707,6 +1707,8 @@ def _min_apply_single(rule: str, word: str) -> Optional[str]:
         elif cmd == 't':
             w = [c | 0x20 if 65 <= c <= 90 else
                  (c & ~0x20 if 97 <= c <= 122 else c) for c in w]
+        elif cmd in ('h', 'H', 'S'):
+            w = apply_hashcat8_operator(cmd, w)
         elif cmd == 'E':
             # Title-case: lowercase everything, then uppercase after space/hyphen/underscore.
             out = []
@@ -1809,6 +1811,9 @@ def _min_apply_single(rule: str, word: str) -> Optional[str]:
         elif cmd == 'o' and len(rule) >= 3:
             p, ch = dg(rule[1]), _min_arg_ord(rule, 2)
             if 0 <= p < len(w): w[p] = ch
+        elif cmd in ('v', 'B') and len(rule) >= 3:
+            p, ch = dg(rule[1]), _min_arg_ord(rule, 2)
+            w = apply_hashcat8_operator(cmd, w, p, ch)
         elif cmd == 'e' and len(rule) >= 2:
             # Title-case with custom separator: lowercase everything, then uppercase after sep.
             sep = _min_arg_ord(rule, 1)

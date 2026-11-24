@@ -119,7 +119,7 @@ def should_exclude_rule(rule):
     if len(rule) == 2 and rule[0] in ('!', '/', '(', ')', '<', '>', '_'):
         return True
     # Three-character reject ops (e.g. '=0', '%0', 'Q0')
-    if len(rule) == 3 and rule[0] in ('?', '=', 'v'):
+    if len(rule) == 3 and rule[0] in ('?', '='):
         return True
     return False
 
@@ -131,7 +131,7 @@ class HashcatRuleValidator:
     def is_pos(c):
         # BUG FIX #7: Hashcat position arguments are not decimal-only. Per the
         # hashcat rule reference, positions >9 are encoded as 'A'-'Z' (A=10 ... Z=35).
-        # This applies to T,D,L,R,+,-,.,,,',y,Y,z,Z and the N/M parts of i,o,x,O,*,3.
+        # This applies to T,D,L,R,+,-,.,,,',y,Y,z,Z and the N/M parts of i,o,x,O,*,3,v,B.
         # The old digit-only check rejected every valid rule targeting position >=10
         # (e.g. 'TA', ''C', 'x0A'), which was the main source of false GPU-incompatible
         # rejections.
@@ -164,13 +164,13 @@ class HashcatRuleValidator:
                 pos+=1
                 if pos>=n or not isp(rule_str[pos]): return False
                 pos+=1; cnt+=1; continue
-            if c in (':','l','u','c','C','t','r','d','f','a','q','k','K','E','{','}','[',']'):
+            if c in (':','l','u','c','C','t','r','d','f','a','q','k','K','E','h','H','S','{','}','[',']'):
                 pos+=1; cnt+=1; continue
             if c in ('T','D','L','R','+','-','.',',',"'",'y','Y'):
                 pos+=1
                 if pos>=n or not isp(rule_str[pos]): return False
                 pos+=1; cnt+=1; continue
-            if c in ('i','o','3'):
+            if c in ('i','o','3','v','B'):
                 pos+=1
                 if pos>=n or not isp(rule_str[pos]): return False
                 pos+=1
@@ -910,6 +910,27 @@ unsigned char toggle_case(unsigned char c) {{
     if (is_upper(c)) return c + 32;
     return c;
 }}
+uchar shift_case_mask(uchar c) {{
+    switch (c) {{
+        case '!': return 16; case '"': return 5; case '#': return 16;
+        case '$': return 16; case '%': return 16; case '&': return 17;
+        case 39: return 5; case '(': return 17; case ')': return 25;
+        case '*': return 18; case '+': return 22; case ',': return 16;
+        case '-': return 114; case '.': return 16; case '/': return 16;
+        case '0': return 25; case '1': return 16; case '2': return 114;
+        case '3': return 16; case '4': return 16; case '5': return 16;
+        case '6': return 104; case '7': return 17; case '8': return 18;
+        case '9': return 17; case ':': return 1; case ';': return 1;
+        case '<': return 16; case '=': return 22; case '>': return 16;
+        case '?': return 16; case '@': return 114;
+        case '^': return 104; case '_': return 114; case '`': return 30;
+        case '~': return 30;
+        default: break;
+    }}
+    if ((c >= 'A' && c <= ']') || (c >= 'a' && c <= '}}')) return 32;
+    return 0;
+}}
+uchar shift_case(uchar c) {{ return c ^ shift_case_mask(c); }}
 
 unsigned int char_to_pos(unsigned char c) {{
     if (c >= '0' && c <= '9') return c - '0';
@@ -1089,6 +1110,24 @@ static int apply_single_command(const unsigned char* in, int in_len,
             case 't':
                 *out_len = in_len;
                 for (int i = 0; i < in_len; i++) out[i] = toggle_case(in[i]);
+                changed = 1;
+                break;
+            case 'h':
+            case 'H': {{
+                const unsigned char hex_lower[16] = {{'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'}};
+                const unsigned char hex_upper[16] = {{'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'}};
+                if (in_len * 2 > MAX_OUTPUT_LEN) return -2;
+                *out_len = in_len * 2;
+                for (int i = 0; i < in_len; i++) {{
+                    out[i * 2] = (cmd[0] == 'h') ? hex_lower[in[i] >> 4] : hex_upper[in[i] >> 4];
+                    out[i * 2 + 1] = (cmd[0] == 'h') ? hex_lower[in[i] & 15] : hex_upper[in[i] & 15];
+                }}
+                changed = 1;
+                break;
+            }}
+            case 'S':
+                *out_len = in_len;
+                for (int i = 0; i < in_len; i++) out[i] = shift_case(in[i]);
                 changed = 1;
                 break;
             case 'r':
@@ -1480,6 +1519,30 @@ static int apply_single_command(const unsigned char* in, int in_len,
                     }}
                 }}
                 break;
+            case 'v': {{
+                if (n1 > 0 && n1 < in_len + 1) {{
+                    int required_len = in_len + (in_len / n1);
+                    if (required_len > MAX_OUTPUT_LEN) return -2;
+                    *out_len = 0;
+                    for (int i = 0; i < in_len; i++) {{
+                        out[(*out_len)++] = in[i];
+                        if ((i + 1) % n1 == 0) out[(*out_len)++] = a2;
+                    }}
+                    changed = 1;
+                }} else {{
+                    *out_len = in_len;
+                    for (int i = 0; i < in_len; i++) out[i] = in[i];
+                }}
+                break;
+            }}
+            case 'B':
+                *out_len = in_len;
+                for (int i = 0; i < in_len; i++) out[i] = in[i];
+                if (n1 >= 0 && n1 < in_len) {{
+                    out[n1] = (unsigned char)(in[n1] + a2);
+                    changed = 1;
+                }}
+                break;
             case '%':
                 if (n1 >= 0) {{
                     int cnt = 0;
@@ -1531,7 +1594,7 @@ void apply_hashcat_rule(const unsigned char* word, int word_len,
         unsigned char cmd_char = rule[pos];
         int cmd_len = 1;
         if (cmd_char == 's' || cmd_char == 'x' || cmd_char == 'O' || cmd_char == 'i' ||
-            cmd_char == 'o' || cmd_char == '*' || cmd_char == '3' || cmd_char == '%' || cmd_char == '=') {{
+            cmd_char == 'o' || cmd_char == '*' || cmd_char == '3' || cmd_char == 'v' || cmd_char == 'B' || cmd_char == '%' || cmd_char == '=') {{
             cmd_len = 3;
         }} else if (pos + 1 < rule_len && (cmd_char == 'T' || cmd_char == 'D' || cmd_char == 'L' ||
                                          cmd_char == 'R' || cmd_char == '+' || cmd_char == '-' ||

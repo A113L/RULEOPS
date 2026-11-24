@@ -70,6 +70,12 @@ All server-side tools share one password-protected local web UI (live log,
 job monitor, run-storage manager, download area); each is also runnable as a
 standalone CLI.
 
+
+Hashcat 8.0 byte-oriented rule operators (`h`, `H`, `S`, `vNX`, `BNX`) are
+supported by RULEOPS CPU interpreters and the RULEST, Rule Ranker and Aether
+OpenCL paths. Aether preflight validation separately identifies malformed,
+CLI-only, and valid rules that its single-operation benchmark cannot execute.
+
 ## Architecture overview
 
 - **`app.py`** — the authenticated Control Center web server (LAN-capable,

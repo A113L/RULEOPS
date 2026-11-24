@@ -18,6 +18,7 @@ import tempfile
 from collections import defaultdict
 
 from . import state
+from hashcat_rule_ops import apply_hashcat8_operator
 
 # One shared tqdm format for word/rule search, GA, and minimization.
 STANDARD_PROGRESS_BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}"
@@ -456,7 +457,7 @@ def should_exclude_rule(rule):
     if not rule: return False
     if len(rule)==1 and rule in ('_','M','4','6','Q'): return True
     if len(rule)==2 and rule[0] in ('!','/','(',')','<','>','_'): return True
-    if len(rule)==3 and rule[0] in ('?','=','v'): return True
+    if len(rule)==3 and rule[0] in ('?','='): return True
     return False
 
 def _is_digit_char(c): return '0' <= c <= '9'
@@ -476,15 +477,15 @@ def _validate_rule_for_gpu_impl(rule_str):
             cnt+=1; pos+=1
             if pos<n and isp(rule_str[pos]): pos+=1
             continue
-        if c in (':','l','u','c','C','t','r','d','f','q','k','K','E','{','}','[',']'):
+        if c in (':','l','u','c','C','t','r','d','f','q','k','K','E','h','H','S','{','}','[',']'):
             pos+=1; cnt+=1; continue
         if c in ('T','D','L','R','+','-','.',',',"'",'y','Y'):
             pos+=1
             if pos>=n or not isp(rule_str[pos]): return False
             pos+=1; cnt+=1; continue
-        if c in ('i','o','3'):
+        if c in ('i','o','3','v','B'):
             pos+=1
-            if pos>=n or not isd(rule_str[pos]): return False
+            if pos>=n or not isp(rule_str[pos]): return False
             pos+=1
             if pos>=n: return False
             pos+=1; cnt+=1; continue
@@ -556,6 +557,7 @@ def _py_apply_single_rule(rule, word):
                 w[0] = w[0]|0x20 if 65<=w[0]<=90 else w[0]
                 w[1:] = [c&~0x20 if 97<=c<=122 else c for c in w[1:]]
         elif cmd == 't': w = [c|0x20 if 65<=c<=90 else (c&~0x20 if 97<=c<=122 else c) for c in w]
+        elif cmd in ('h','H','S'): w = apply_hashcat8_operator(cmd, w)
         elif cmd == 'r': w = w[::-1]
         elif cmd == 'd': w = w + w
         elif cmd == 'f': w = w + w[::-1]
@@ -641,6 +643,9 @@ def _py_apply_single_rule(rule, word):
         elif cmd == 'o' and len(rule)>=3:
             p,ch = _dg(rule[1]), ord(rule[2])
             if 0<=p<len(w): w[p] = ch
+        elif cmd in ('v','B') and len(rule)>=3:
+            p,ch = _dg(rule[1]), ord(rule[2])
+            w = apply_hashcat8_operator(cmd, w, p, ch)
         elif cmd == 'e' and len(rule)>=2:
             sep = ord(rule[1]); out = []; cap = True
             for c in w:

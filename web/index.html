@@ -702,10 +702,11 @@
                 <div class="upload-head"><div class="file-icon rules-icon">R</div><div><h3>Hashcat rule files</h3><small>.rule, .rules, .txt, .hr, .hashcat</small></div><span class="required-star">*</span></div>
                 <label class="drop-zone" for="aether_files-file"><span class="upload-cloud">↑</span><strong>Choose files <em>or drop them here</em></strong><small>Select one or more rule files · benchmarked and visualized individually</small><input id="aether_files-file" type="file" multiple accept=".rule,.rules,.hr,.hashcat,.txt,text/plain"></label>
                 <div class="file-state" id="aether_files-state"><span class="file-state-dot"></span><span>No rules files selected</span></div>
+                <div class="aether-validation-summary" id="aether-validation-summary" aria-live="polite">Hashcat 8 preflight validation runs before benchmarking. Invalid, CLI-only and unsupported rules are skipped and reported with source line numbers.</div>
                 <div class="upload-progress"><span id="aether_files-progress"></span></div>
                 <div class="library-pick"><label for="library-aether_files">Reuse saved rules</label><select id="library-aether_files" data-library-field="aether_files"><option value="">Add saved rule file…</option></select></div>
               </div>
-              <div class="ranker-input-note">Uploaded rule files are saved in the reusable rules library. Results (PNG charts, interactive HTML reports + data files) are named after each rule file.</div>
+              <div class="ranker-input-note">Uploaded rule files are saved in the reusable rules library. Before GPU timing, Aether validates Hashcat 8 rule-file syntax and checks the current kernel's supported operations. The current kernel benchmarks one operation per line; valid chains and unimplemented operators are reported separately, not timed. Invalid, CLI-only and unsupported entries are saved with source line numbers.</div>
             </section>
             <section class="panel">
               <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">02</span><h2>Benchmark settings</h2></div><p>Controls the synthetic word corpus and GPU device used for timing.</p></div></div>

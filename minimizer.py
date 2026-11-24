@@ -73,6 +73,8 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 from typing import List, Optional, Tuple, Union
 
+from hashcat_rule_ops import apply_hashcat8_operator
+
 try:
     from tqdm import tqdm
     HAS_TQDM = True
@@ -495,6 +497,8 @@ def _apply_single(
         elif cmd == 't':
             w = [c | 0x20 if 65 <= c <= 90 else
                  (c & ~0x20 if 97 <= c <= 122 else c) for c in w]
+        elif cmd in ('h', 'H', 'S'):
+            w = apply_hashcat8_operator(cmd, w)
         elif cmd == 'E':
             # Title-case: lowercase everything, then uppercase the first letter
             # and every letter that immediately follows a space (0x20).
@@ -611,6 +615,10 @@ def _apply_single(
             p, pos2 = parg(rule, 1)
             ch = _arg_ord(rule, pos2)
             if 0 <= p < len(w): w[p] = ch
+        elif cmd in ('v', 'B') and len(rule) >= 3:
+            p, pos2 = parg(rule, 1)
+            ch = _arg_ord(rule, pos2)
+            w = apply_hashcat8_operator(cmd, w, p, ch)
         elif cmd == 'e' and len(rule) >= 2:
             # Title-case with custom separator: lowercase everything, then uppercase
             # the first letter and every letter after the separator character.
@@ -674,13 +682,13 @@ def _apply_single(
 
 # ── opcode arity tables ───────────────────────────────────────────────────────
 # How many *argument* characters follow the command byte in a concatenated rule.
-_ZERO_ARG_OPS = frozenset(':lucCtErdfkK{}[]q')
+_ZERO_ARG_OPS = frozenset(':lucCtErdfkK{}[]qhHS')
 _ONE_ARG_OPS  = frozenset([
     '^', '$', '@', 'p', 'T', 'D', 'L', 'R',
     '+', '-', '.', ',', "'", 'z', 'Z', 'y', 'Y',
     'e',   # title-case by separator  (technically ≥1, but only 1 sep char)
 ])
-_TWO_ARG_OPS  = frozenset(['s', 'i', 'o', 'x', 'O', '*', '3'])
+_TWO_ARG_OPS  = frozenset(['s', 'i', 'o', 'x', 'O', '*', '3', 'v', 'B'])
 
 
 def _read_arg_char(chain: str, pos: int) -> Tuple[str, int]:

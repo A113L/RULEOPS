@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Hashcat Rule Performance Benchmark Tool with Advanced Visualizations
-Full rule support: implements all Hashcat transformations, reject rules, etc.
+Aether Hashcat Rule Performance Benchmark Tool.
+The preflight validator admits only Hashcat -r rules that the current
+OpenCL kernel implements faithfully as a single operation.
 """
 
 import pyopencl as cl
@@ -19,6 +20,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from datetime import datetime
+
+from aether_validation import validate_rule_file, write_validation_artifacts
 
 # Color codes for terminal output
 class Colors:
@@ -38,11 +41,11 @@ plt.style.use('seaborn-v0_8')
 sns.set_palette("husl")
 
 # ============================================================================
-# COMPLETE HASHCAT RULE ENGINE KERNEL
+# AETHER OPENCL RULE BENCHMARK KERNEL (validated single-operation subset)
 # ============================================================================
 OPENCL_KERNEL_SOURCE = """
 #define MAX_WORD_LEN 256
-#define MAX_RULE_LEN 16
+#define MAX_RULE_LEN 32
 #define MAX_OUTPUT_LEN 512
 
 int is_lower(uchar c) {
@@ -70,6 +73,27 @@ uchar to_upper(uchar c) {
     if (is_lower(c)) return c - 32;
     return c;
 }
+uchar shift_case_mask(uchar c) {
+    switch (c) {
+        case '!': return 16; case '"': return 5; case '#': return 16;
+        case '$': return 16; case '%': return 16; case '&': return 17;
+        case 39: return 5; case '(': return 17; case ')': return 25;
+        case '*': return 18; case '+': return 22; case ',': return 16;
+        case '-': return 114; case '.': return 16; case '/': return 16;
+        case '0': return 25; case '1': return 16; case '2': return 114;
+        case '3': return 16; case '4': return 16; case '5': return 16;
+        case '6': return 104; case '7': return 17; case '8': return 18;
+        case '9': return 17; case ':': return 1; case ';': return 1;
+        case '<': return 16; case '=': return 22; case '>': return 16;
+        case '?': return 16; case '@': return 114;
+        case '^': return 104; case '_': return 114; case '`': return 30;
+        case '~': return 30;
+        default: break;
+    }
+    if ((c >= 'A' && c <= ']') || (c >= 'a' && c <= '}')) return 32;
+    return 0;
+}
+uchar shift_case(uchar c) { return c ^ shift_case_mask(c); }
 int parse_position(uchar c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
@@ -162,6 +186,25 @@ __kernel void rule_processor(
                 for (int i = 0; i < word_len; i++) output[i] = toggle_case(word[i]);
                 changed = 1;
                 break;
+            case 'h':
+            case 'H': {
+                const uchar hex_lower[16] = {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+                const uchar hex_upper[16] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
+                if (word_len * 2 >= max_result_len || word_len * 2 > MAX_OUTPUT_LEN) break;
+                out_len = word_len * 2;
+                for (int i = 0; i < word_len; i++) {
+                    const uchar value = word[i];
+                    output[i * 2] = (rule[0] == 'h') ? hex_lower[value >> 4] : hex_upper[value >> 4];
+                    output[i * 2 + 1] = (rule[0] == 'h') ? hex_lower[value & 15] : hex_upper[value & 15];
+                }
+                changed = 1;
+                break;
+            }
+            case 'S':
+                out_len = word_len;
+                for (int i = 0; i < word_len; i++) output[i] = shift_case(word[i]);
+                changed = 1;
+                break;
             case 'r':
                 out_len = word_len;
                 for (int i = 0; i < word_len; i++) output[i] = word[word_len - 1 - i];
@@ -246,13 +289,14 @@ __kernel void rule_processor(
                 }
                 break;
             case 'E':
+                // Hashcat E: lowercase the word, then uppercase the first
+                // letter and the first letter following each literal space.
                 out_len = word_len;
                 int cap = 1;
                 for (int i = 0; i < word_len; i++) {
                     if (cap && is_lower(word[i])) output[i] = word[i] - 32;
-                    else output[i] = word[i];
-                    if (word[i] == ' ' || word[i] == '-' || word[i] == '_') cap = 1;
-                    else cap = 0;
+                    else output[i] = to_lower(word[i]);
+                    cap = (word[i] == ' ');
                 }
                 changed = 1;
                 break;
@@ -641,17 +685,28 @@ __kernel void rule_processor(
         }
         else if (cmd == 'v') {
             int n = parse_position(arg1);
-            uchar x = arg2;
-            if (n > 0 && word_len + (word_len / n) <= MAX_OUTPUT_LEN) {
-                out_len = 0;
-                for (int i = 0; i < word_len; i++) {
-                    output[out_len++] = word[i];
-                    if ((i+1) % n == 0 && i+1 < word_len) {
-                        output[out_len++] = x;
+            if (n > 0 && n < word_len + 1) {
+                int required_len = word_len + (word_len / n);
+                if (required_len < max_result_len && required_len <= MAX_OUTPUT_LEN) {
+                    out_len = 0;
+                    for (int i = 0; i < word_len; i++) {
+                        output[out_len++] = word[i];
+                        if ((i + 1) % n == 0) output[out_len++] = arg2;
                     }
+                    changed = 1;
                 }
+            } else {
+                out_len = word_len;
+                for (int i = 0; i < word_len; i++) output[i] = word[i];
                 changed = 1;
             }
+        }
+        else if (cmd == 'B') {
+            int n = parse_position(arg1);
+            out_len = word_len;
+            for (int i = 0; i < word_len; i++) output[i] = word[i];
+            if (n >= 0 && n < word_len) output[n] = (uchar)(word[n] + arg2);
+            changed = 1;
         }
         else {
             changed = 0;
@@ -909,7 +964,7 @@ class VisualizationEngine:
         return counts, [spec['label'] for spec in specs], [spec['color'] for spec in specs]
 
     def create_interactive_report(self, rule_performance: List[Tuple[str, Dict]], filename: str,
-                                  corpus_description: str = ""):
+                                  corpus_description: str = "", validation_summary: Dict[str, Any] | None = None):
         """Write a self-contained HTML report with interactive tier filtering/export."""
         valid_rows = []
         for rule, data in rule_performance:
@@ -984,6 +1039,7 @@ class VisualizationEngine:
                 'mean_gpu_ops_per_sec': float(np.mean(all_ops)) if all_ops else 0.0,
                 'profiling_enabled': bool(getattr(self, 'profiling_enabled', True)),
                 'primary_metric': 'GPU Kernel Time · OpenCL Event Profiling',
+                'validation_summary': dict(validation_summary or {}),
             },
             'tiers': tiers,
         }
@@ -1036,7 +1092,7 @@ const $=id=>document.getElementById(id);let activeTier=report.tiers[0]||null;let
 const fmt=(v,d=3)=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const fmtRate=v=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{maximumFractionDigits:0}):'—';
 $('report-title').textContent=report.meta.file_name+' · GPU Rule Performance';
-$('report-subtitle').textContent=(report.meta.corpus_description?report.meta.corpus_description+' · ':'')+report.meta.total_rules.toLocaleString()+' rules · generated '+report.meta.generated_at;
+const validation=report.meta.validation_summary||{};const skipped=Number(validation.invalid_rules||0)+Number(validation.cli_only_rules||0)+Number(validation.unsupported_rules||0);$('report-subtitle').textContent=(report.meta.corpus_description?report.meta.corpus_description+' · ':'')+report.meta.total_rules.toLocaleString()+' benchmarkable rules · '+skipped.toLocaleString()+' skipped by preflight · generated '+report.meta.generated_at;
 $('total-rules').textContent=report.meta.total_rules.toLocaleString();$('mean-time').textContent=fmt(report.meta.mean_gpu_kernel_time_us)+' µs';$('median-time').textContent=fmt(report.meta.median_gpu_kernel_time_us)+' µs';$('mean-throughput').textContent=fmtRate(report.meta.mean_gpu_ops_per_sec)+' ops/s';$('chart-total').textContent=report.meta.total_rules.toLocaleString();
 const svgNS='http://www.w3.org/2000/svg';function renderPie(){const svg=$('tier-chart');svg.querySelectorAll('.slice').forEach(n=>n.remove());const total=report.meta.total_rules||1;const radius=76,circ=2*Math.PI*radius;let offset=0;report.tiers.forEach(tier=>{const length=circ*tier.count/total;const circle=document.createElementNS(svgNS,'circle');circle.setAttribute('class','slice'+(activeTier&&activeTier.id===tier.id?' active':''));circle.setAttribute('cx','110');circle.setAttribute('cy','110');circle.setAttribute('r',String(radius));circle.setAttribute('stroke',tier.color);circle.setAttribute('stroke-dasharray',`${length} ${circ-length}`);circle.setAttribute('stroke-dashoffset',String(-offset));circle.setAttribute('transform','rotate(-90 110 110)');circle.setAttribute('tabindex','0');circle.setAttribute('role','button');circle.setAttribute('aria-label',`${tier.label}: ${tier.count} rules, ${fmt(tier.percent,1)} percent`);circle.addEventListener('click',()=>selectTier(tier.id));circle.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectTier(tier.id)}});svg.append(circle);offset+=length;});}
 function renderLegend(){const root=$('tier-legend');root.replaceChildren();report.tiers.forEach(tier=>{const b=document.createElement('button');b.type='button';b.className='tier-button'+(activeTier&&activeTier.id===tier.id?' active':'');const sw=document.createElement('span');sw.className='swatch';sw.style.background=tier.color;const copy=document.createElement('span');const strong=document.createElement('strong');strong.textContent=tier.label;const small=document.createElement('small');small.textContent=`${fmt(tier.percent,1)}% of tested rules`;copy.append(strong,small);const count=document.createElement('span');count.className='tier-count';count.textContent=tier.count.toLocaleString();b.append(sw,copy,count);b.addEventListener('click',()=>selectTier(tier.id));root.append(b);});}
@@ -1273,14 +1329,21 @@ Q3: {np.percentile(times, 75):.2f}μs"""
             mode = performance_data.get('word_corpus_mode', 'unknown').replace('_', ' ').title()
             words = int(performance_data.get('test_words_count', 0) or 0)
             corpus_description = f'{mode} corpus · {words:,} words per rule' if words else ''
+            validation_summary = performance_data.get('validation_summary') or {}
             self.create_statistical_summary(rp, filename, corpus_description=corpus_description)
-            self.create_interactive_report(rp, filename, corpus_description=corpus_description)
+            self.create_interactive_report(
+                rp, filename, corpus_description=corpus_description,
+                validation_summary=validation_summary
+            )
             self.create_performance_distribution(rp, filename)
         print(f"{Colors.GREEN}Dashboard generation complete!{Colors.END}")
 
 class RulePerformanceTester:
     def __init__(self, platform_index=0, device_index=0):
         self.visualizer = None
+        self.output_dir = None
+        self.last_validation_report = None
+        self.active_rule_line_numbers = []
         self.setup_opencl(platform_index, device_index)
     
     def setup_opencl(self, platform_index: int, device_index: int):
@@ -1586,19 +1649,29 @@ class RulePerformanceTester:
         print(f"{Colors.BOLD}{Colors.CYAN}Testing rule file: {rule_file_path}{Colors.END}")
         print(f"{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.END}")
         rules = self.read_rules_from_file(rule_file_path)
+        base_name = output_basename or os.path.splitext(os.path.basename(rule_file_path))[0]
+        if self.output_dir:
+            try:
+                for path in write_validation_artifacts(self.last_validation_report or {}, self.output_dir, base_name):
+                    print(f"{Colors.CYAN}Validation artifact saved: {path}{Colors.END}")
+            except Exception as exc:
+                print(f"{Colors.YELLOW}Could not save validation artifacts: {exc}{Colors.END}")
         if not rules:
-            print(f"{Colors.RED}No rules found in {rule_file_path}{Colors.END}")
+            print(f"{Colors.RED}No Aether-benchmarkable Hashcat rules found in {rule_file_path}{Colors.END}")
             return []
         if len(rules) > max_test_rules:
-            print(f"{Colors.YELLOW}Limiting to first {max_test_rules} rules (out of {len(rules)}){Colors.END}")
+            print(f"{Colors.YELLOW}Limiting to first {max_test_rules} benchmarkable rules (out of {len(rules)}){Colors.END}")
             rules = rules[:max_test_rules]
+            self.active_rule_line_numbers = self.active_rule_line_numbers[:max_test_rules]
         rule_performance = []
         total_rules = len(rules)
         successful_tests = 0
         for i, rule in enumerate(rules):
-            rule_str = rule.decode('ascii', errors='ignore')
-            print(f"{Colors.WHITE}  Testing rule {i+1}/{total_rules}: {Colors.YELLOW}{rule_str}{Colors.END}")
+            rule_str = rule.decode('ascii', errors='strict')
+            source_line_number = self.active_rule_line_numbers[i] if i < len(self.active_rule_line_numbers) else None
+            print(f"{Colors.WHITE}  Testing rule {i+1}/{total_rules} (source line {source_line_number}): {Colors.YELLOW}{rule_str}{Colors.END}")
             performance_data = self.test_single_rule_performance(rule, test_runs)
+            performance_data['source_line_number'] = source_line_number
             if performance_data['success']:
                 successful_tests += 1
                 rule_performance.append((rule_str, performance_data))
@@ -1616,23 +1689,42 @@ class RulePerformanceTester:
         print(f"\n{success_color}Completed: {successful_tests}/{total_rules} rules successful{Colors.END}")
         if self.visualizer and rule_performance:
             base_name = output_basename or os.path.splitext(os.path.basename(rule_file_path))[0]
-            self.visualizer.generate_dashboard({'rule_performance': rule_performance, 'test_runs': test_runs, 'timestamp': datetime.now().isoformat(), 'word_corpus_mode': self.word_corpus_mode, 'test_words_count': len(self.test_words)}, base_name)
+            self.visualizer.generate_dashboard({
+                'rule_performance': rule_performance,
+                'test_runs': test_runs,
+                'timestamp': datetime.now().isoformat(),
+                'word_corpus_mode': self.word_corpus_mode,
+                'test_words_count': len(self.test_words),
+                'validation_summary': (self.last_validation_report or {}).get('summary', {}),
+            }, base_name)
         return rule_performance
     
     def read_rules_from_file(self, file_path: str) -> List[bytes]:
-        rules = []
+        """Validate a Hashcat rule file before passing safe entries to OpenCL.
+
+        The source-line mapping is retained so performance artifacts can point
+        back to the exact original line. Invalid, CLI-only and currently
+        unsupported commands are reported separately and never benchmarked.
+        """
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line or line.startswith('#'): continue
-                    if '#' in line: line = line.split('#')[0].strip()
-                    if line: rules.append(line.encode('ascii', errors='ignore'))
-            print(f"{Colors.GREEN}Read {len(rules)} rules from {file_path}{Colors.END}")
-        except Exception as e:
-            print(f"{Colors.RED}Error reading rule file {file_path}: {e}{Colors.END}")
-        return rules
-    
+            self.last_validation_report = validate_rule_file(file_path)
+            summary = self.last_validation_report["summary"]
+            benchmark_rules = self.last_validation_report["benchmark_rules"]
+            self.active_rule_line_numbers = [int(item["line_number"]) for item in benchmark_rules]
+            rules = [str(item["rule"]).encode("ascii", errors="strict") for item in benchmark_rules]
+            print(
+                f"{Colors.GREEN}Aether validation: {summary['benchmarkable_rules']:,} benchmarkable; "
+                f"{summary['invalid_rules']:,} invalid; {summary['cli_only_rules']:,} CLI-only; "
+                f"{summary['unsupported_rules']:,} valid for Hashcat but unsupported by this Aether kernel; "
+                f"{summary['comment_lines']:,} comments; {summary['blank_lines']:,} blank lines.{Colors.END}"
+            )
+            return rules
+        except Exception as exc:
+            self.last_validation_report = None
+            self.active_rule_line_numbers = []
+            print(f"{Colors.RED}Error validating rule file {file_path}: {exc}{Colors.END}")
+            return []
+
     def save_sorted_rules(self, rule_performance: List[Tuple[str, Dict[str, Any]]], output_file: str):
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
@@ -1646,14 +1738,20 @@ class RulePerformanceTester:
                 f.write(f"# Test date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"# Primary metric: GPU kernel execution time from OpenCL event START..END timestamps\n")
                 f.write(f"# End-to-end time includes host enqueue + queue completion wait (diagnostic only)\n")
-                f.write(f"# Format: rule # gpu_kernel_time_seconds end_to_end_time_seconds gpu_operations_per_sec coefficient_of_variation\n\n")
+                f.write(f"# Performance metadata is stored as standalone comments immediately before each rule.\n\n")
                 for rule, perf_data in rule_performance:
+                    source_line = perf_data.get('source_line_number')
+                    if source_line is not None:
+                        f.write(f"# Source line: {int(source_line)}\n")
                     f.write(
-                        f"{rule} # GPU {perf_data['gpu_kernel_time_seconds']:.9f}s | "
+                        f"# GPU {perf_data['gpu_kernel_time_seconds']:.9f}s | "
                         f"E2E {perf_data['end_to_end_time_seconds']:.9f}s | "
                         f"{perf_data['gpu_operations_per_sec']:,.0f} GPU ops/sec | "
                         f"{perf_data['metrics']['cv_percent']:.1f}% CV\n"
                     )
+                    # Hashcat rule files require comments to be standalone lines;
+                    # never append diagnostic text to an executable rule command.
+                    f.write(f"{rule}\n")
             print(f"{Colors.GREEN}Sorted rules saved to: {output_file}{Colors.END}")
         except Exception as e:
             print(f"{Colors.RED}Error saving sorted rules: {e}{Colors.END}")
@@ -1683,6 +1781,8 @@ class RulePerformanceTester:
                     "opencl_profiling_enabled": bool(getattr(self, "profiling_enabled", False)),
                     "opencl_command_queue_property": "PROFILING_ENABLE",
                     "primary_time_metric": "gpu_kernel_time_seconds",
+                    "rule_validation": (self.last_validation_report or {}).get("summary", {}),
+                    "rule_validation_policy": "Hashcat 8 -r syntax plus current Aether single-operation kernel compatibility; unsupported rules are reported and not benchmarked.",
                     "end_to_end_time_definition": "Host enqueue loop plus queue completion wait; excludes buffer allocation and kernel argument setup.",
                     "device_name": str(getattr(getattr(self, 'device', None), 'name', 'unknown')),
                     "device_type": "GPU",
@@ -1703,6 +1803,7 @@ class RulePerformanceTester:
                         "timing_method": perf_data['timing_method'],
                         "total_operations": perf_data['total_operations'],
                         "performance_rank": i + 1,
+                        "source_line_number": perf_data.get("source_line_number"),
                         "statistical_metrics": perf_data['gpu_kernel_metrics'],
                         "end_to_end_statistical_metrics": perf_data['end_to_end_metrics']
                     }
@@ -1879,6 +1980,7 @@ def main():
     
     try:
         tester = RulePerformanceTester(platform_index=args.platform, device_index=args.device)
+        tester.output_dir = args.output
         tester.iterations = args.iterations
         if args.visualize: tester.setup_visualization(viz_output)
         tester.setup_test_data(

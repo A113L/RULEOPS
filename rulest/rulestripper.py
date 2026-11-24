@@ -89,6 +89,7 @@ from .token_strip import PackedWordBuffer
 from .tokenstrip_hashset import FlatHashSet64
 from .shared_target_postings import SharedTargetLookup, SharedTargetPostings
 from .common import safe_worker_count
+from hashcat_rule_ops import apply_hashcat8_operator
 import time
 import datetime
 
@@ -206,7 +207,7 @@ def should_exclude_rule(rule: str) -> bool:
         return True
     if len(rule) == 2 and rule[0] in ('!', '/', '(', ')', '<', '>', '_'):
         return True
-    if len(rule) == 3 and rule[0] in ('?', '=', 'v'):
+    if len(rule) == 3 and rule[0] in ('?', '='):
         return True
     return False
 
@@ -221,11 +222,16 @@ class HashcatRuleValidator:
         return '0' <= c <= '9'
 
     @staticmethod
+    def is_pos_char(c: str) -> bool:
+        return ('0' <= c <= '9') or ('A' <= c <= 'Z')
+
+    @staticmethod
     def validate_rule_for_gpu(rule_str: str) -> bool:
         if should_exclude_rule(rule_str):
             return False
         pos = 0; cnt = 0; n = len(rule_str)
         isd = HashcatRuleValidator.is_digit
+        isp = HashcatRuleValidator.is_pos_char
         while pos < n:
             c = rule_str[pos]
             if c == ' ':
@@ -235,15 +241,15 @@ class HashcatRuleValidator:
                 if pos < n and isd(rule_str[pos]): pos += 1
                 continue
             if c in (':', 'l', 'u', 'c', 'C', 't', 'r', 'd', 'f',
-                     'a', 'q', 'k', 'K', 'E', '{', '}', '[', ']'):
+                     'a', 'q', 'k', 'K', 'E', 'h', 'H', 'S', '{', '}', '[', ']'):
                 pos += 1; cnt += 1; continue
             if c in ('T', 'D', 'L', 'R', '+', '-', '.', ',', "'", 'y', 'Y'):
                 pos += 1
                 if pos >= n or not isd(rule_str[pos]): return False
                 pos += 1; cnt += 1; continue
-            if c in ('i', 'o', '3'):
+            if c in ('i', 'o', '3', 'v', 'B'):
                 pos += 1
-                if pos >= n or not isd(rule_str[pos]): return False
+                if pos >= n or not isp(rule_str[pos]): return False
                 pos += 1
                 if pos >= n: return False
                 pos += 1; cnt += 1; continue
@@ -279,7 +285,10 @@ def _py_apply_single_rule(rule: str, word: str) -> Optional[str]:
         return word
     w   = list(word.encode('utf-8'))
     cmd = rule[0]
-    def dg(c): return ord(c) - 48 if '0' <= c <= '9' else -1
+    def dg(c):
+        if '0' <= c <= '9': return ord(c) - 48
+        if 'A' <= c <= 'Z': return ord(c) - 55
+        return -1
     try:
         if   cmd == ':': pass
         elif cmd == 'l': w = [c | 0x20 if 65<=c<=90 else c for c in w]
@@ -294,6 +303,8 @@ def _py_apply_single_rule(rule: str, word: str) -> Optional[str]:
                 w[1:] = [c & ~0x20 if 97<=c<=122 else c for c in w[1:]]
         elif cmd == 't':
             w = [c|0x20 if 65<=c<=90 else (c&~0x20 if 97<=c<=122 else c) for c in w]
+        elif cmd in ('h', 'H', 'S'):
+            w = apply_hashcat8_operator(cmd, w)
         elif cmd == 'r': w = w[::-1]
         elif cmd == 'd': w = w + w
         elif cmd == 'f': w = w + w[::-1]
@@ -372,6 +383,9 @@ def _py_apply_single_rule(rule: str, word: str) -> Optional[str]:
         elif cmd == 'o' and len(rule)==3:
             p, ch = dg(rule[1]), ord(rule[2])
             if 0 <= p < len(w): w[p] = ch
+        elif cmd in ('v', 'B') and len(rule)==3:
+            p, ch = dg(rule[1]), ord(rule[2])
+            w = apply_hashcat8_operator(cmd, w, p, ch)
         elif cmd == 'e' and len(rule)>=2:
             sep = ord(rule[1]); out = []; cap = True
             for c in w:

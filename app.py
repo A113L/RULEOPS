@@ -36,6 +36,8 @@ WEB = ROOT / "web"
 DATA = ROOT / "runs"
 UPLOADS = DATA / "uploads"
 RUN_DATASET_MANIFEST = ".ruleops-run.json"
+AETHER_RUN_MANIFEST = ".aether-run.json"
+RUN_HISTORY_MANIFEST = ".ruleops-history.json"
 AUTH_FILE = ROOT / "auth.json"
 
 
@@ -799,7 +801,8 @@ def search_library_assets(query: str, limit: int = 300) -> dict:
                     if not (current_path / name).is_symlink()
                 )
                 for filename in sorted(file_names, key=str.casefold):
-                    if filename == RUN_DATASET_MANIFEST or needle not in filename.casefold():
+                    if filename in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
+                                     RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp"} or needle not in filename.casefold():
                         continue
                     candidate = current_path / filename
                     try:
@@ -1114,7 +1117,8 @@ def _scan_library_duplicate_records() -> tuple[list[dict], list[dict]]:
                 directory_names[:] = safe_directories
 
                 for filename in sorted(file_names, key=str.casefold):
-                    if filename == RUN_DATASET_MANIFEST:
+                    if filename in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
+                                    RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp"}:
                         continue
                     candidate = current_path / filename
                     try:
@@ -1679,6 +1683,209 @@ def _run_input_metadata(tool: str, mode: str) -> list[dict]:
     return selected
 
 
+def _run_history_group_names(tool: str, mode: str, selected: list[dict]) -> list[str]:
+    """Choose meaningful input-name groups for the shared run archive."""
+    names = [safe_name(item.get("name") or "input", "input") for item in selected if isinstance(item, dict)]
+    if not names:
+        return ["Unnamed input"]
+
+    if tool == "aether":
+        # Aether can benchmark several rule files in one process. Keep each
+        # original filename as a separate group in the shared Run storage UI.
+        return list(dict.fromkeys(names))
+    if tool == "rulest":
+        # A custom seed ruleset is the most useful grouping key. Without one,
+        # distinguish built-in/generated seed runs by their TARGET wordlist.
+        if len(names) >= 3:
+            return [names[2]]
+        target_name = names[1] if len(names) > 1 else names[0]
+        return [f"Built-in / generated seeds · {target_name}"[:220]]
+    if tool == "ranker":
+        if mode == "rank":
+            return [names[1] if len(names) > 1 else names[0]]
+        return [names[0]]
+    if tool == "concentrator":
+        return list(dict.fromkeys(names))
+    if tool == "rulestripper":
+        # Rulestripper has wordlist inputs rather than a rule file; group by
+        # TARGET, while both BASE and TARGET remain visible in run details.
+        return [names[1] if len(names) > 1 else names[0]]
+    if tool == "minimizer":
+        return [names[0]]
+    return [names[0]]
+
+
+def _write_run_history_manifest(run_dir: Path, tool: str, mode: str) -> dict | None:
+    """Persist display/group metadata for run history, separately from dedup fingerprints."""
+    selected = _run_input_metadata(tool, mode)
+    if not selected:
+        return None
+    try:
+        output_stems: dict[str, str] = {}
+        if tool == "aether":
+            # Match Aether's deterministic path ordering and output naming so
+            # the shared history can show only the artifacts for the selected
+            # rule file even when several files were benchmarked together.
+            used_names: set[str] = set()
+            ordered = sorted(selected, key=lambda item: os.path.abspath(str(item.get("path") or "")))
+            for item in ordered:
+                raw_path = str(item.get("path") or "")
+                label = str(item.get("name") or Path(raw_path).name)
+                output_stems[raw_path] = _aether_output_stem(label, used_names)
+
+        inputs = []
+        for index, item in enumerate(selected):
+            name = safe_name(item.get("name") or "input", "input")
+            record = {
+                "slot": index + 1,
+                "name": name,
+                "size": max(0, int(item.get("size") or 0)),
+            }
+            if tool == "aether":
+                raw_path = str(item.get("path") or "")
+                record["output_stem"] = output_stems.get(raw_path) or _aether_output_stem(name, set())
+                try:
+                    rule_count = item.get("rule_count")
+                    if rule_count is not None:
+                        record["rule_count"] = max(0, int(rule_count))
+                except (TypeError, ValueError):
+                    pass
+            inputs.append(record)
+        manifest = {
+            "schema_version": 1,
+            "run_id": run_dir.name,
+            "tool": str(tool),
+            "mode": str(mode),
+            "created_at": time.time(),
+            "status": "running",
+            "finished_at": None,
+            "exit_code": None,
+            "inputs": inputs,
+            "group_names": _run_history_group_names(tool, mode, selected),
+        }
+        target = run_dir / RUN_HISTORY_MANIFEST
+        temporary = run_dir / (RUN_HISTORY_MANIFEST + ".tmp")
+        temporary.write_text(json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+        return manifest
+    except (OSError, ValueError, TypeError):
+        try:
+            (run_dir / (RUN_HISTORY_MANIFEST + ".tmp")).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def _validated_run_history_manifest(manifest: object, expected_run_id: str | None = None) -> dict | None:
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        return None
+    run_id = str(manifest.get("run_id") or "")
+    tool = str(manifest.get("tool") or "")
+    mode = str(manifest.get("mode") or "")
+    if not re.fullmatch(r"[a-f0-9]{10}", run_id) or (expected_run_id and run_id != expected_run_id):
+        return None
+    if tool not in {"rulest", "ranker", "concentrator", "rulestripper", "minimizer", "aether"}:
+        return None
+    if not mode or len(mode) > 40:
+        return None
+    raw_inputs = manifest.get("inputs")
+    max_inputs = MAX_AETHER_FILES if tool == "aether" else MAX_CONCENTRATOR_FILES
+    if not isinstance(raw_inputs, list) or not 1 <= len(raw_inputs) <= max_inputs:
+        return None
+    inputs = []
+    for index, item in enumerate(raw_inputs, start=1):
+        if not isinstance(item, dict):
+            return None
+        try:
+            slot = int(item.get("slot"))
+            name = safe_name(item.get("name") or "input", "input")
+            size = max(0, int(item.get("size") or 0))
+        except (TypeError, ValueError):
+            return None
+        if slot != index:
+            return None
+        normalized = {"slot": slot, "name": name[:220], "size": size}
+        if tool == "aether":
+            stem = str(item.get("output_stem") or "")
+            if stem:
+                if safe_name(stem, "") != stem or len(stem) > 140:
+                    return None
+                normalized["output_stem"] = stem
+            rule_count = item.get("rule_count")
+            if rule_count is not None:
+                try:
+                    rule_count = int(rule_count)
+                except (TypeError, ValueError):
+                    return None
+                if rule_count < 0:
+                    return None
+                normalized["rule_count"] = rule_count
+        inputs.append(normalized)
+    group_names = manifest.get("group_names")
+    if not isinstance(group_names, list) or not group_names:
+        group_names = _run_history_group_names(tool, mode, inputs)
+    normalized_groups = []
+    for value in group_names[:MAX_CONCENTRATOR_FILES]:
+        if not isinstance(value, str):
+            continue
+        label = re.sub(r"[\x00-\x1f\x7f]", "", value).strip()[:220]
+        if label and label.casefold() not in {item.casefold() for item in normalized_groups}:
+            normalized_groups.append(label)
+    if not normalized_groups:
+        normalized_groups = [inputs[0]["name"]]
+    status = str(manifest.get("status") or "archived").lower()
+    if status not in {"running", "stopping", "completed", "failed", "stopped", "interrupted", "archived"}:
+        status = "archived"
+    try:
+        created_at = float(manifest.get("created_at") or 0)
+        finished_at = float(manifest.get("finished_at")) if manifest.get("finished_at") is not None else None
+        exit_code = int(manifest.get("exit_code")) if manifest.get("exit_code") is not None else None
+    except (TypeError, ValueError):
+        return None
+    return {
+        "schema_version": 1,
+        "run_id": run_id, "tool": tool, "mode": mode, "created_at": created_at,
+        "finished_at": finished_at, "exit_code": exit_code, "status": status,
+        "inputs": inputs, "group_names": normalized_groups, "source": "recorded",
+    }
+
+
+def _read_run_history_manifest(directory: Path) -> dict | None:
+    path = directory / RUN_HISTORY_MANIFEST
+    try:
+        before = os.lstat(str(path))
+        if stat_module.S_ISLNK(before.st_mode) or not stat_module.S_ISREG(before.st_mode) or before.st_size > 128 * 1024:
+            return None
+        with path.open("r", encoding="utf-8") as stream:
+            raw = json.load(stream)
+        after = os.lstat(str(path))
+        if _library_file_signature(before) != _library_file_signature(after):
+            return None
+        return _validated_run_history_manifest(raw, directory.name)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _update_run_history_manifest(run_dir: Path, status: str, exit_code: int | None) -> None:
+    manifest = _read_run_history_manifest(run_dir)
+    if not manifest:
+        return
+    manifest["schema_version"] = 1
+    manifest["status"] = status if status in {"completed", "failed", "stopped"} else "failed"
+    manifest["finished_at"] = time.time()
+    manifest["exit_code"] = exit_code
+    target = run_dir / RUN_HISTORY_MANIFEST
+    temporary = run_dir / (RUN_HISTORY_MANIFEST + ".tmp")
+    try:
+        temporary.write_text(json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _stable_run_input_record(meta: dict, slot: int) -> dict:
     """Build a content identity for one selected dataset without loading it into RAM."""
     raw_path = meta.get("path")
@@ -1978,7 +2185,7 @@ def _run_directory_metadata(directory: Path) -> dict | None:
                     "mtime_ns": child_mtime_ns,
                     "mode": int(child_stat.st_mode),
                 })
-                if relative == RUN_DATASET_MANIFEST or name == "control.txt":
+                if relative in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, RUN_HISTORY_MANIFEST} or name == "control.txt":
                     continue
                 visible_files.append(relative)
                 if Path(name).suffix.lower() == ".log":
@@ -2366,7 +2573,8 @@ def storage_intelligence_summary() -> dict:
                 directory_names[:] = safe_names
 
                 for filename in file_names:
-                    if source == "run" and filename == RUN_DATASET_MANIFEST:
+                    if source == "run" and filename in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
+                                                          RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp"}:
                         continue
                     candidate_path = current_path / filename
                     try:
@@ -3300,6 +3508,288 @@ def build_aether_command(options: dict, run_dir: Path):
     return cmd, "aether_benchmark_results"
 
 
+
+def _aether_output_stem(label: str, used_names: set[str]) -> str:
+    """Mirror aether.py's build_rule_output_names() for persistent gallery links."""
+    label_name = Path(str(label or "rules")).name
+    output_name = os.path.splitext(label_name)[0]
+    output_name = re.sub(r"[^A-Za-z0-9._ -]+", "_", output_name).strip(" ._-")[:120] or "rules"
+    unique_name = output_name
+    suffix = 2
+    while unique_name.casefold() in used_names:
+        tail = f"-{suffix}"
+        unique_name = f"{output_name[:120 - len(tail)]}{tail}"
+        suffix += 1
+    used_names.add(unique_name.casefold())
+    return unique_name
+
+
+def _read_aether_run_manifest(directory: Path) -> dict | None:
+    """Read legacy Aether gallery metadata for migration into shared Run storage."""
+    if not _is_direct_run_directory(directory):
+        return None
+    target = directory / AETHER_RUN_MANIFEST
+    try:
+        info = os.lstat(str(target))
+        if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode) or info.st_size > 128 * 1024:
+            raise ValueError("Invalid Aether manifest")
+        value = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("run_id") != directory.name:
+            raise ValueError("Invalid Aether manifest")
+        inputs = value.get("inputs")
+        if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_AETHER_FILES:
+            raise ValueError("Invalid Aether manifest inputs")
+        normalized_inputs = []
+        for item in inputs:
+            if not isinstance(item, dict):
+                raise ValueError("Invalid Aether manifest input")
+            name = str(item.get("name") or "")
+            stem = str(item.get("output_stem") or "")
+            if not name or safe_name(name, "") != name or not stem or safe_name(stem, "") != stem:
+                raise ValueError("Invalid Aether manifest labels")
+            row = {"name": name, "output_stem": stem}
+            if isinstance(item.get("rule_count"), int) and item["rule_count"] >= 0:
+                row["rule_count"] = item["rule_count"]
+            normalized_inputs.append(row)
+        created_at = float(value.get("created_at") or 0)
+        finished_at = value.get("finished_at")
+        finished_at = float(finished_at) if finished_at is not None else None
+        status = str(value.get("status") or "interrupted")
+        if status not in {"running", "completed", "failed", "stopped", "interrupted"}:
+            status = "interrupted"
+        return {
+            "run_id": directory.name, "created_at": created_at,
+            "finished_at": finished_at, "status": status,
+            "inputs": normalized_inputs,
+            "options": value.get("options") if isinstance(value.get("options"), dict) else {},
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        common = _read_run_dataset_manifest(directory)
+        if not common or common.get("tool") != "aether":
+            return None
+        used_names: set[str] = set()
+        inputs = []
+        for item in common.get("inputs", []):
+            name = str(item.get("name") or "rules.rule")
+            inputs.append({"name": name, "output_stem": _aether_output_stem(name, used_names)})
+        if not inputs:
+            return None
+        return {
+            "run_id": directory.name,
+            "created_at": float(common.get("created_at") or directory.stat().st_mtime),
+            "finished_at": None,
+            "status": "archived",
+            "inputs": inputs,
+            "options": {},
+        }
+
+
+def _tool_history_files(directory: Path, directory_metadata: dict | None = None) -> list[dict]:
+    """List regular artifacts from any tool run without following links."""
+    metadata = directory_metadata if directory_metadata is not None else _run_directory_metadata(directory)
+    if metadata is None:
+        return []
+    internal = {
+        RUN_DATASET_MANIFEST, RUN_DATASET_MANIFEST + ".tmp",
+        RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp",
+        AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp", "control.txt",
+    }
+    rows = []
+    for item in metadata.get("snapshot_records", []):
+        relative = str(item.get("path") or "")
+        if not relative or relative in internal or Path(relative).name in internal:
+            continue
+        path = PurePosixPath(relative)
+        suffix = Path(path.name).suffix.lower()
+        rows.append({
+            "name": path.name,
+            "path": path.as_posix(),
+            "size": max(0, int(item.get("size") or 0)),
+            "type": suffix.lstrip(".") or "file",
+            "previewable": suffix in {".png", ".html", ".txt", ".csv", ".json", ".rule", ".rules", ".log", ".md"},
+        })
+    rows.sort(key=lambda item: item["path"].casefold())
+    return rows
+
+
+def _tool_history_manifest_for_directory(directory: Path) -> dict | None:
+    """Read shared history metadata, migrating legacy Aether manifests in memory."""
+    history = _read_run_history_manifest(directory)
+    if history:
+        return history
+
+    # Earlier Aether releases wrote a separate .aether-run.json manifest.
+    # Keep those folders visible in the unified archive without maintaining a
+    # second persistence implementation or rewriting historical folders.
+    legacy_aether = _read_aether_run_manifest(directory) if (directory / AETHER_RUN_MANIFEST).exists() else None
+    if legacy_aether:
+        dataset = _read_run_dataset_manifest(directory)
+        sizes_by_name = {
+            str(item.get("name") or ""): max(0, int(item.get("size") or 0))
+            for item in (dataset or {}).get("inputs", [])
+        }
+        inputs = []
+        for index, item in enumerate(legacy_aether.get("inputs", []), start=1):
+            name = safe_name(item.get("name") or "rules.rule", "rules.rule")
+            normalized = {
+                "slot": index,
+                "name": name,
+                "size": sizes_by_name.get(name, 0),
+                "output_stem": str(item.get("output_stem") or _aether_output_stem(name, set())),
+            }
+            if isinstance(item.get("rule_count"), int) and item["rule_count"] >= 0:
+                normalized["rule_count"] = item["rule_count"]
+            inputs.append(normalized)
+        if inputs:
+            status = str(legacy_aether.get("status") or "archived")
+            return {
+                "schema_version": 1,
+                "run_id": directory.name,
+                "tool": "aether",
+                "mode": "benchmark",
+                "created_at": float(legacy_aether.get("created_at") or 0),
+                "finished_at": legacy_aether.get("finished_at"),
+                "exit_code": None,
+                "status": status,
+                "inputs": inputs,
+                "group_names": _run_history_group_names("aether", "benchmark", inputs),
+                "source": "legacy-aether",
+            }
+
+    dataset = _run_dataset_manifest_for_directory(directory)
+    if not dataset:
+        return None
+    inputs = dataset.get("inputs") or []
+    groups = _run_history_group_names(dataset.get("tool", ""), dataset.get("mode", ""), inputs)
+    normalized_inputs = [
+        {"slot": int(item.get("slot") or index + 1), "name": str(item.get("name") or "input"),
+         "size": max(0, int(item.get("size") or 0))}
+        for index, item in enumerate(inputs)
+    ]
+    if dataset.get("tool") == "aether":
+        used_names: set[str] = set()
+        for item in normalized_inputs:
+            item["output_stem"] = _aether_output_stem(item["name"], used_names)
+    return {
+        "run_id": directory.name,
+        "tool": dataset.get("tool"),
+        "mode": dataset.get("mode"),
+        "created_at": float(dataset.get("created_at") or 0),
+        "finished_at": None,
+        "exit_code": None,
+        "status": "archived",
+        "inputs": normalized_inputs,
+        "group_names": groups,
+        "source": dataset.get("source", "legacy"),
+    }
+
+
+def list_tool_run_history() -> list[dict]:
+    """List persistent history for every tool, grouped in the UI by tool and input name."""
+    rows = []
+    with LOCK:
+        active_run_id = Path(STATE["run_dir"]).name if STATE.get("run_dir") else None
+        active_status = STATE.get("status")
+        active_tool = STATE.get("tool")
+    for directory in _iter_run_directories():
+        manifest = _tool_history_manifest_for_directory(directory)
+        if not manifest:
+            continue
+        directory_metadata = _run_directory_metadata(directory)
+        if directory_metadata is None:
+            continue
+        files = _tool_history_files(directory, directory_metadata)
+        group_output_counts = {}
+        if manifest.get("tool") == "aether":
+            for group_name in manifest.get("group_names", []):
+                stems = {
+                    str(item.get("output_stem") or "")
+                    for item in manifest.get("inputs", [])
+                    if str(item.get("name") or "") == group_name and item.get("output_stem")
+                }
+                if stems:
+                    group_output_counts[group_name] = sum(
+                        1 for file in files
+                        if any(Path(file["path"]).name.startswith(f"{stem}_") for stem in stems)
+                    )
+        status = str(manifest.get("status") or "archived")
+        if directory.name == active_run_id and active_tool == manifest.get("tool") and active_status in {"running", "stopping"}:
+            status = str(active_status)
+        elif status in {"running", "stopping"}:
+            status = "interrupted"
+        created_at = float(manifest.get("created_at") or 0)
+        if not created_at:
+            try:
+                created_at = directory.stat().st_mtime
+            except OSError:
+                continue
+        rows.append({
+            "run_id": directory.name,
+            "tool": manifest.get("tool"),
+            "mode": manifest.get("mode"),
+            "created_at": created_at,
+            "finished_at": manifest.get("finished_at"),
+            "status": status,
+            "inputs": manifest.get("inputs", []),
+            "group_names": manifest.get("group_names", []),
+            "group_output_counts": group_output_counts,
+            "output_count": len(files),
+            "bytes": int(directory_metadata.get("bytes") or 0),
+            "source": manifest.get("source", "recorded"),
+        })
+    rows.sort(key=lambda item: (float(item.get("created_at") or 0), item["run_id"]), reverse=True)
+    return rows
+
+
+def get_tool_history_run(run_id: str) -> tuple[dict, Path]:
+    """Resolve a shared tool-history run and its regular artifacts."""
+    if not re.fullmatch(r"[a-f0-9]{10}", str(run_id or "")):
+        raise ValueError("Invalid run identifier.")
+    directory = DATA / run_id
+    if not _is_direct_run_directory(directory):
+        raise ValueError("Saved run folder was not found.")
+    manifest = _tool_history_manifest_for_directory(directory)
+    if not manifest:
+        raise ValueError("Saved tool run folder was not found.")
+    directory_metadata = _run_directory_metadata(directory)
+    if directory_metadata is None:
+        raise ValueError("Run folder contains unsafe filesystem entries.")
+    files = _tool_history_files(directory, directory_metadata)
+    with LOCK:
+        is_current = bool(STATE.get("run_dir") and Path(STATE["run_dir"]).name == run_id)
+        current_status = STATE.get("status")
+        current_tool = STATE.get("tool")
+    if is_current and current_tool == manifest.get("tool") and current_status in {"running", "stopping"}:
+        manifest["status"] = current_status
+    elif manifest.get("status") in {"running", "stopping"}:
+        manifest["status"] = "interrupted"
+    return ({**manifest, "files": files, "output_count": len(files), "bytes": int(directory_metadata.get("bytes") or 0)}, directory)
+
+
+def delete_tool_history_run(run_id: str) -> dict:
+    """Delete one inactive tool run after manifest and filesystem validation."""
+    if not re.fullmatch(r"[a-f0-9]{10}", str(run_id or "")):
+        raise ValueError("Invalid run identifier.")
+    with _run_storage_maintenance():
+        directory = DATA / run_id
+        if not _is_direct_run_directory(directory):
+            raise ValueError("Saved run folder was not found or is not safe to delete.")
+        manifest = _tool_history_manifest_for_directory(directory)
+        if not manifest:
+            raise ValueError("Only saved tool runs can be deleted here.")
+        metadata = _run_directory_metadata(directory)
+        if metadata is None:
+            raise ValueError("Run folder contains unsafe filesystem entries; deletion was refused.")
+        reclaimed = int(metadata.get("bytes", 0))
+        shutil.rmtree(directory)
+        with LOCK:
+            _clear_deleted_run_state({run_id})
+            summary = run_storage_summary_unlocked()
+    _invalidate_storage_scan_snapshots()
+    tool_label = str(manifest.get("tool") or "tool")
+    _record_storage_activity("Tool run folder deleted", f"Deleted {tool_label} run {run_id}", reclaimed)
+    return {"deleted_run_id": run_id, "reclaimed_bytes": reclaimed, **summary}
+
 def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_baseline_bytes=None, env_overrides=None):
     global PROCESS, RUN_THREAD
     env = os.environ.copy()
@@ -3445,8 +3935,13 @@ def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_b
         cleanup_uploaded_files(log_message=True)
         if error is None:
             for item in sorted(run_dir.iterdir()):
-                if item.is_file() and item.name not in {"control.txt", RUN_DATASET_MANIFEST}:
+                if item.is_file() and item.name not in {
+                    "control.txt", RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
+                    RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp",
+                }:
                     outputs.append({"name": item.name, "size": item.stat().st_size})
+        final_status = "failed" if error is not None or (code not in (None, 0) and not was_stopped) else ("stopped" if was_stopped else "completed")
+        _update_run_history_manifest(run_dir, final_status, code)
         with LOCK:
             PROCESS = None
             RUN_THREAD = None
@@ -3640,10 +4135,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def end_headers(self):
         # Centralized defense-in-depth headers apply to success, redirects and errors.
-        # A narrowly allow-listed Aether HTML preview can provide a response-scoped
-        # policy because its CSS and JavaScript are intentionally embedded in the
-        # standalone report. Sending both policies would make browsers enforce
-        # their intersection and silently block the report's inline style/script.
+        # Allow-listed standalone report previews from any tool can
+        # provide a response-scoped policy because their CSS/JavaScript are embedded
+        # in the report. Sending both policies would make browsers enforce their
+        # intersection and silently block the report's inline style/script.
         csp = getattr(self, "_csp_override", None) or (
             "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
             "form-action 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; "
@@ -3939,6 +4434,13 @@ class Handler(BaseHTTPRequestHandler):
                     for k, v in UPLOADS_META.items()
                 }
             self.send_json(data)
+        elif path == "/api/run-history":
+            try:
+                self.send_json({"ok": True, "runs": list_tool_run_history()})
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.send_json({"error": f"Run history could not be loaded: {exc}"}, 500)
+        elif path.startswith("/api/run-history/"):
+            self.handle_tool_history_get(path)
         elif path.startswith("/api/download/"):
             name = safe_name(urllib.parse.unquote(path.rsplit("/", 1)[-1]))
             with LOCK:
@@ -3982,9 +4484,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             if suffix == ".html":
-                # This is the only HTML artifact preview route, and it is
-                # restricted to allow-listed outputs from the current Aether run.
-                # Use one response-scoped CSP: the central app policy disallows
+                # This route is restricted to allow-listed outputs from the
+                # current Aether run. Use one response-scoped CSP: the central app
+                # policy disallows
                 # inline assets, while this standalone report needs embedded CSS
                 # and JS. Multiple CSP headers are cumulative, not overrides.
                 self._csp_override = (
@@ -4061,6 +4563,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_concentrator_cancel()
         elif parsed.path == "/api/tools/run":
             self.handle_tools_run()
+        elif parsed.path == "/api/run-history/delete":
+            self.handle_tool_history_delete()
         elif parsed.path == "/api/tools/cancel":
             self.handle_tools_cancel()
         elif parsed.path == "/api/tools/topn-seeds":
@@ -4704,6 +5208,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cmd, output_name = build_command(options, run_dir)
                 run_manifest = _write_run_dataset_manifest(run_dir, "rulest", "default")
+                _write_run_history_manifest(run_dir, "rulest", "default")
             except Exception as exc:
                 self.send_json({"error": str(exc)}, 400)
                 return
@@ -4751,6 +5256,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cmd, output_name = build_ranker_command(str(mode), options, run_dir)
                 run_manifest = _write_run_dataset_manifest(run_dir, "ranker", str(mode))
+                _write_run_history_manifest(run_dir, "ranker", str(mode))
             except Exception as exc:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 self.send_json({"error": str(exc)}, 400)
@@ -4804,6 +5310,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cmd, output_name = build_concentrator_command(mode, options, run_dir)
                 run_manifest = _write_run_dataset_manifest(run_dir, "concentrator", mode)
+                _write_run_history_manifest(run_dir, "concentrator", mode)
             except Exception as exc:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 self.send_json({"error": str(exc)}, 400)
@@ -4826,6 +5333,155 @@ class Handler(BaseHTTPRequestHandler):
             RUN_THREAD = thread
         thread.start()
         self.send_json({"ok": True, "job_id": run_id, "output": output_name, "tool": "concentrator", "mode": mode})
+
+    def handle_tool_history_get(self, path: str):
+        """Serve saved run details and safely preview/download artifacts for every tool."""
+        parts = path.split("/")
+        if len(parts) == 5 and parts[4] == "download.zip":
+            run_id = parts[3]
+            opened_outputs = []
+            try:
+                detail, _directory = get_tool_history_run(run_id)
+                if detail.get("status") in {"running", "stopping"}:
+                    raise RuntimeError("Wait for this run to finish before downloading its ZIP archive.")
+                if not detail["files"]:
+                    raise ValueError("This run has no artifacts to package.")
+                for item in detail["files"]:
+                    descriptor, metadata, target = open_run_folder_file(run_id, item["path"])
+                    opened_outputs.append((item["path"], descriptor, metadata))
+            except RuntimeError as exc:
+                for _name, descriptor, _metadata in opened_outputs:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                self.send_json({"error": str(exc)}, 409)
+                return
+            except (ValueError, OSError) as exc:
+                for _name, descriptor, _metadata in opened_outputs:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                self.send_json({"error": str(exc)}, 404)
+                return
+
+            archive_name = safe_name(f"RULEOPS-{detail.get('tool', 'tool')}-{run_id}.zip", "RULEOPS-run.zip")
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{archive_name}"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                with zipfile.ZipFile(
+                    _HTTPZipSink(self.wfile), mode="w",
+                    compression=zipfile.ZIP_DEFLATED, compresslevel=1,
+                ) as archive:
+                    for relative_name, descriptor, metadata in opened_outputs:
+                        info = zipfile.ZipInfo(relative_name)
+                        info.compress_type = zipfile.ZIP_DEFLATED
+                        info.file_size = int(metadata.st_size)
+                        info.external_attr = (stat_module.S_IFREG | 0o600) << 16
+                        with os.fdopen(descriptor, "rb") as source, archive.open(
+                            info, mode="w", force_zip64=True
+                        ) as destination:
+                            shutil.copyfileobj(source, destination, length=1024 * 1024)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError, zipfile.BadZipFile):
+                self.close_connection = True
+            finally:
+                for _name, descriptor, _metadata in opened_outputs:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+            return
+
+        if len(parts) == 4:
+            try:
+                detail, _directory = get_tool_history_run(parts[3])
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 404)
+                return
+            self.send_json({"ok": True, **detail})
+            return
+
+        if len(parts) >= 6 and parts[4] in {"preview", "download"}:
+            run_id, action = parts[3], parts[4]
+            relative_path = urllib.parse.unquote("/".join(parts[5:]))
+            descriptor = None
+            try:
+                detail, _directory = get_tool_history_run(run_id)
+                allowed = {item["path"] for item in detail["files"]}
+                if relative_path not in allowed:
+                    raise ValueError("Run artifact was not found.")
+                descriptor, metadata, target = open_run_folder_file(run_id, relative_path)
+            except (ValueError, OSError) as exc:
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                self.send_json({"error": str(exc)}, 404)
+                return
+
+            suffix = target.suffix.lower()
+            preview_types = {
+                ".png": "image/png",
+                ".html": "text/html; charset=utf-8",
+                ".txt": "text/plain; charset=utf-8",
+                ".rule": "text/plain; charset=utf-8",
+                ".rules": "text/plain; charset=utf-8",
+                ".log": "text/plain; charset=utf-8",
+                ".md": "text/plain; charset=utf-8",
+                ".csv": "text/csv; charset=utf-8",
+                ".json": "application/json; charset=utf-8",
+            }
+            if action == "preview" and suffix not in preview_types:
+                os.close(descriptor)
+                self.send_error(404, "Preview not available")
+                return
+            content_type = preview_types.get(suffix, "application/octet-stream")
+            download_name = safe_name(target.name, "run-artifact")
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            disposition = "inline" if action == "preview" else "attachment"
+            self.send_header("Content-Disposition", f'{disposition}; filename="{download_name}"')
+            self.send_header("Content-Length", str(metadata.st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if action == "preview" and suffix == ".html":
+                self._csp_override = (
+                    "sandbox allow-scripts allow-downloads; default-src 'none'; "
+                    "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                    "img-src data:; connect-src 'none'; object-src 'none'; "
+                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+                )
+            self.end_headers()
+            try:
+                with os.fdopen(descriptor, "rb") as handle:
+                    shutil.copyfileobj(handle, self.wfile)
+            except OSError:
+                self.close_connection = True
+            return
+        self.send_error(404)
+
+    def handle_tool_history_delete(self):
+        data = self.read_json_body(16 * 1024)
+        if self._body_read_failed:
+            return
+        run_id = data.get("run_id") if isinstance(data, dict) else None
+        try:
+            result = delete_tool_history_run(str(run_id or ""))
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, 409)
+            return
+        except (OSError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, 404)
+            return
+        self.send_json({"ok": True, **result})
 
     def handle_tools_run(self):
         """Launch the standalone Rulestripper, Rule Minimizer or Aether utility."""
@@ -4863,6 +5519,7 @@ class Handler(BaseHTTPRequestHandler):
                 cmd, output_name = builder(options, run_dir)
                 workflow_mode = {"rulestripper": "extract", "minimizer": "minimize"}.get(tool, "benchmark")
                 run_manifest = _write_run_dataset_manifest(run_dir, tool, workflow_mode)
+                _write_run_history_manifest(run_dir, tool, workflow_mode)
             except Exception as exc:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 self.send_json({"error": str(exc)}, 400)

@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&topn-pcfg-ui=20261120a&select-cost-profile=20261121a">
+  <link rel="stylesheet" href="/styles.css?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&topn-pcfg-ui=20261120a&select-cost-profile=20261121a&unified-run-storage=20261124c">
 </head>
 <body>
   <div class="app-shell">
@@ -740,7 +740,7 @@
             </section>
             <section class="panel aether-gallery-panel">
               <div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">RESULTS</span><h2>Benchmark gallery</h2></div></div>
-              <p class="aether-gallery-hint">Results are grouped by rule file. PNG thumbnails open as static charts; open the interactive HTML report to click Fastest / Middle / Slowest, inspect full Hashcat commands and download each category as a .rule file. Use "Download all files" below to get every artifact as one ZIP.</p>
+              <p class="aether-gallery-hint">Current-run results are grouped by rule file. PNG thumbnails open as static charts; open the interactive HTML report to select Fastest / Middle / Slowest, inspect full Hashcat commands and export a category as a .rule file. Previous Aether runs are stored with every other tool in <a href="#run-storage">Run storage</a>.</p>
               <div id="aether-gallery" class="aether-gallery-scroll"><div class="empty-output"><span>✦</span><b>No charts yet</b><small>Run a benchmark with Visualize enabled to see per-rule dashboards here.</small></div></div>
             </section>
           </div>
@@ -757,7 +757,7 @@
           <div class="storage-heading-copy">
             <span class="side-panel-kicker">SYSTEM MANAGEMENT <span aria-hidden="true">/</span> STORAGE</span>
             <h1>Run storage<span class="title-period">.</span></h1>
-            <p>Review and remove saved run folders created by RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Aether.</p>
+            <p>Browse persistent run history for all RULEOPS tools, including Aether. Runs are grouped by tool and then by rule file or primary input.</p>
           </div>
           <div class="heading-badge storage-heading-badge"><span class="badge-orbit">▤</span><div><b>Local run archive</b><small>Uploads are stored separately</small></div></div>
         </section>
@@ -766,6 +766,26 @@
           <article class="metric-card"><div class="metric-label">FILES</div><div class="metric-value" id="storage-file-count">—</div><div class="metric-note">Outputs, logs and partial results</div></article>
           <article class="metric-card"><div class="metric-label">DISK USAGE</div><div class="metric-value" id="storage-bytes">—</div><div class="metric-note">Total run directory size</div></article>
           <article class="metric-card"><div class="metric-label">ENGINE STATUS</div><div class="metric-value" id="storage-engine-state">READY</div><div class="metric-note" id="storage-engine-note">No active run detected</div></article>
+        </section>
+        <section class="panel tool-run-history-panel" aria-labelledby="tool-run-history-title">
+          <div class="storage-targeted-heading tool-run-history-heading">
+            <div class="panel-heading-copy">
+              <span class="side-panel-kicker">PERSISTENT RUN ARCHIVE</span>
+              <h2 id="tool-run-history-title">Previous tool runs</h2>
+              <p>Runs from every tool are grouped by tool and then by their rule file or primary input name. Open a run to preview or download its saved artifacts, or remove that run folder.</p>
+            </div>
+            <button id="tool-run-history-refresh" class="secondary-button" type="button">↻ Refresh history</button>
+          </div>
+          <div id="tool-run-history-list" class="tool-run-history-list">
+            <div class="empty-output"><span>◷</span><b>Loading saved tool runs…</b></div>
+          </div>
+          <div id="tool-run-history-detail" class="tool-run-history-detail" hidden>
+            <div class="tool-run-history-detail-head">
+              <div><span class="side-panel-kicker">SAVED RUN</span><h3 id="tool-run-history-detail-title">Tool · input</h3><small id="tool-run-history-detail-meta"></small></div>
+              <div class="tool-run-history-detail-actions"><button id="tool-run-history-back" class="secondary-button" type="button">← All runs</button><a id="tool-run-history-download-zip" class="secondary-button tool-history-zip-link is-disabled" href="#" aria-disabled="true" tabindex="-1">↓ Download run ZIP</a><button id="tool-run-history-delete" class="danger-button" type="button">Delete run folder</button></div>
+            </div>
+            <div id="tool-run-history-artifacts" class="tool-run-history-artifacts"><div class="empty-output"><span>▤</span><b>Loading artifacts…</b></div></div>
+          </div>
         </section>
         <div class="storage-workspace-grid">
           <div class="storage-management-column">
@@ -1145,6 +1165,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
 
-      <script src="/app.js?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&select-cost-profile=20261121a&aether-nav-units=20261123a"></script>
+      <script src="/app.js?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&select-cost-profile=20261121a&aether-nav-units=20261123a&unified-run-history=20261124c"></script>
 </body>
 </html>

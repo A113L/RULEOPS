@@ -37,6 +37,9 @@ let pollTimer = null;
 let toastTimer = null;
 let currentStatus = 'idle';
 let lastStorageSummaryAt = 0;
+let lastToolHistoryRefresh = 0;
+let toolHistoryLoading = false;
+let selectedToolHistoryRun = null;
 let lastStorageIntelligenceAt = 0;
 let storageIntelligenceLoading = false;
 let lastRunStorageScan = null;
@@ -631,8 +634,8 @@ const AETHER_CHART_KINDS = [
 ];
 const AETHER_INTERACTIVE_SUFFIX = '_interactive.html';
 
-function renderAetherGallery(outputs = []) {
-  const root = $('aether-gallery');
+function renderAetherGallery(outputs = [], target = $('aether-gallery')) {
+  const root = target;
   if (!root) return;
   const visualFiles = outputs.filter((file) => {
     const name = file.name.toLowerCase();
@@ -642,12 +645,13 @@ function renderAetherGallery(outputs = []) {
   if (!visualFiles.length) {
     const empty = document.createElement('div'); empty.className = 'empty-output';
     empty.innerHTML = outputs.length
-      ? '<span>✦</span><b>No charts in this run</b><small>Visualize was off (or no chart could be drawn) — see Aether output files for JSON reports and sorted rules.</small>'
+      ? '<span>✦</span><b>No charts in this run</b><small>Visualize was off (or no chart could be drawn) — see the saved artifacts below.</small>'
       : '<span>✦</span><b>No charts yet</b><small>Run a benchmark with Visualize enabled to see PNG charts and interactive HTML reports here.</small>';
     root.append(empty);
     return;
   }
-  const groups = new Map(); // baseName -> { charts: [], report: null }
+  const previewBase = '/api/preview/';
+  const groups = new Map();
   visualFiles.forEach((file) => {
     const lower = file.name.toLowerCase();
     const report = lower.endsWith(AETHER_INTERACTIVE_SUFFIX);
@@ -667,24 +671,20 @@ function renderAetherGallery(outputs = []) {
     group.charts.forEach(({ label, file }) => {
       const fig = document.createElement('a');
       fig.className = 'aether-chart-thumb';
-      fig.href = `/api/preview/${encodeURIComponent(file.name)}`;
-      fig.target = '_blank';
-      fig.rel = 'noopener noreferrer';
+      fig.href = `${previewBase}${encodeURIComponent(file.name)}`;
+      fig.target = '_blank'; fig.rel = 'noopener noreferrer';
       fig.title = `Open ${file.name} full size`;
       const img = document.createElement('img');
-      img.src = `/api/preview/${encodeURIComponent(file.name)}`;
-      img.alt = `${base} — ${label} chart`;
-      img.loading = 'lazy';
+      img.src = `${previewBase}${encodeURIComponent(file.name)}`;
+      img.alt = `${base} — ${label} chart`; img.loading = 'lazy';
       const cap = document.createElement('small'); cap.textContent = label;
-      fig.append(img, cap);
-      grid.append(fig);
+      fig.append(img, cap); grid.append(fig);
     });
     if (group.report) {
       const reportLink = document.createElement('a');
       reportLink.className = 'aether-report-thumb';
-      reportLink.href = `/api/preview/${encodeURIComponent(group.report.name)}`;
-      reportLink.target = '_blank';
-      reportLink.rel = 'noopener noreferrer';
+      reportLink.href = `${previewBase}${encodeURIComponent(group.report.name)}`;
+      reportLink.target = '_blank'; reportLink.rel = 'noopener noreferrer';
       reportLink.title = 'Open interactive report: select a performance tier to inspect and export its rules';
       const badge = document.createElement('span'); badge.className = 'aether-report-icon'; badge.textContent = '↗';
       const copy = document.createElement('span'); copy.className = 'aether-report-copy';
@@ -692,9 +692,239 @@ function renderAetherGallery(outputs = []) {
       const detail = document.createElement('small'); detail.textContent = 'Click tiers · inspect commands · export .rule';
       copy.append(title, detail); reportLink.append(badge, copy); grid.append(reportLink);
     }
-    card.append(grid);
-    root.append(card);
+    card.append(grid); root.append(card);
   });
+}
+
+function formatAetherDate(timestamp) {
+  const value = Number(timestamp || 0);
+  if (!Number.isFinite(value) || value <= 0) return 'Date unavailable';
+  try { return new Date(value * 1000).toLocaleString(); } catch { return 'Date unavailable'; }
+}
+
+const TOOL_HISTORY_LABELS = {
+  rulest: 'RULEST',
+  ranker: 'Rule Ranker',
+  concentrator: 'Concentrator',
+  rulestripper: 'Rulestripper',
+  minimizer: 'Rule Minimizer',
+  aether: 'Aether',
+};
+const TOOL_HISTORY_ORDER = ['rulest', 'ranker', 'concentrator', 'rulestripper', 'minimizer', 'aether'];
+
+function toolHistoryStatus(status) {
+  const normalized = String(status || 'archived').toLowerCase();
+  const label = ({
+    completed: 'Completed', failed: 'Failed', stopped: 'Stopped', running: 'Running',
+    stopping: 'Stopping', interrupted: 'Interrupted', archived: 'Archived',
+  })[normalized] || 'Archived';
+  return { label, className: normalized };
+}
+
+function renderToolRunHistory(runs = []) {
+  const root = $('tool-run-history-list');
+  if (!root) return;
+  root.replaceChildren();
+  if (!runs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-output';
+    const icon = document.createElement('span'); icon.textContent = '◷';
+    const title = document.createElement('b'); title.textContent = 'No saved tool runs yet';
+    const hint = document.createElement('small'); hint.textContent = 'New runs from RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Aether will be archived here.';
+    empty.append(icon, title, hint); root.append(empty); return;
+  }
+
+  const tools = new Map();
+  runs.forEach((run) => {
+    const tool = String(run.tool || '');
+    if (!TOOL_HISTORY_LABELS[tool]) return;
+    if (!tools.has(tool)) tools.set(tool, new Map());
+    const groups = tools.get(tool);
+    const names = Array.isArray(run.group_names) && run.group_names.length ? run.group_names : ['Unlabelled input'];
+    names.forEach((groupName) => {
+      const key = String(groupName || 'Unlabelled input');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(run);
+    });
+  });
+
+  TOOL_HISTORY_ORDER.filter((tool) => tools.has(tool)).forEach((tool) => {
+    const groups = tools.get(tool);
+    const runIds = new Set();
+    groups.forEach((items) => items.forEach((run) => runIds.add(run.run_id)));
+    const toolDetails = document.createElement('details');
+    toolDetails.className = 'tool-history-tool';
+    toolDetails.open = true;
+    const toolSummary = document.createElement('summary');
+    toolSummary.className = 'tool-history-tool-summary';
+    const toolName = document.createElement('b'); toolName.textContent = TOOL_HISTORY_LABELS[tool];
+    const toolCount = document.createElement('small'); toolCount.textContent = `${runIds.size.toLocaleString()} run(s)`;
+    toolSummary.append(toolName, toolCount); toolDetails.append(toolSummary);
+
+    Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0])).forEach(([groupName, groupRuns]) => {
+      const groupDetails = document.createElement('details');
+      groupDetails.className = 'tool-history-file-group';
+      const groupSummary = document.createElement('summary');
+      const groupTitle = document.createElement('span'); groupTitle.className = 'tool-history-file-name'; groupTitle.textContent = groupName;
+      const groupCount = document.createElement('small'); groupCount.textContent = `${groupRuns.length.toLocaleString()} run(s)`;
+      groupSummary.append(groupTitle, groupCount); groupDetails.append(groupSummary);
+
+      groupRuns.forEach((run) => {
+        const row = document.createElement('div'); row.className = 'tool-history-run-row';
+        const open = document.createElement('button'); open.type = 'button'; open.className = 'tool-history-run-link';
+        const date = formatAetherDate(run.created_at);
+        open.textContent = `${date} · ${String(run.mode || 'run').toUpperCase()}`;
+        open.title = `Open ${TOOL_HISTORY_LABELS[tool]} results for ${groupName}`;
+        open.addEventListener('click', () => openToolRunHistoryRun(run.run_id, groupName));
+        const meta = document.createElement('small');
+        const groupArtifactCount = run.group_output_counts && Number.isFinite(Number(run.group_output_counts[groupName]))
+          ? Number(run.group_output_counts[groupName]) : Number(run.output_count || 0);
+        meta.textContent = `${groupArtifactCount.toLocaleString()} artifact(s) · ${humanSize(Number(run.bytes || 0))}`;
+        const statusData = toolHistoryStatus(run.status);
+        const status = document.createElement('span');
+        status.className = `run-history-status ${statusData.className}`;
+        status.textContent = statusData.label;
+        row.append(open, meta, status); groupDetails.append(row);
+      });
+      toolDetails.append(groupDetails);
+    });
+    root.append(toolDetails);
+  });
+}
+
+async function loadToolRunHistory(showToast = false) {
+  const root = $('tool-run-history-list');
+  if (!root || toolHistoryLoading) return;
+  toolHistoryLoading = true;
+  lastToolHistoryRefresh = Date.now();
+  try {
+    const data = await apiGet('/api/run-history');
+    renderToolRunHistory(Array.isArray(data.runs) ? data.runs : []);
+    if (showToast) toast('Saved tool run history refreshed.');
+  } catch (error) {
+    root.replaceChildren();
+    const empty = document.createElement('div'); empty.className = 'empty-output';
+    const icon = document.createElement('span'); icon.textContent = '!';
+    const title = document.createElement('b'); title.textContent = 'Run history unavailable';
+    const detail = document.createElement('small'); detail.textContent = error.message;
+    empty.append(icon, title, detail); root.append(empty);
+    if (showToast) toast(error.message, true);
+  } finally {
+    toolHistoryLoading = false;
+  }
+}
+
+async function openToolRunHistoryRun(runId, groupName = '') {
+  const listRoot = $('tool-run-history-list');
+  const detailRoot = $('tool-run-history-detail');
+  const title = $('tool-run-history-detail-title');
+  const meta = $('tool-run-history-detail-meta');
+  const artifactRoot = $('tool-run-history-artifacts');
+  if (!detailRoot || !listRoot || !artifactRoot) return;
+  try {
+    const run = await apiGet(`/api/run-history/${encodeURIComponent(runId)}`);
+    const toolLabel = TOOL_HISTORY_LABELS[run.tool] || run.tool || 'Tool';
+    const allFiles = Array.isArray(run.files) ? run.files : [];
+    let files = allFiles;
+    if (run.tool === 'aether' && groupName) {
+      const matchingInputs = (Array.isArray(run.inputs) ? run.inputs : []).filter((input) => String(input.name || '') === groupName);
+      const outputStems = new Set(matchingInputs.map((input) => String(input.output_stem || '')).filter(Boolean));
+      if (outputStems.size) {
+        files = allFiles.filter((file) => {
+          const basename = String(file.path || file.name || '').split('/').pop();
+          return Array.from(outputStems).some((stem) => basename.startsWith(`${stem}_`));
+        });
+      }
+    }
+    const runIsActive = ['running', 'stopping'].includes(String(run.status || '').toLowerCase());
+    const engineIsActive = ['running', 'stopping'].includes(String(currentStatus || '').toLowerCase());
+    const deleteBlocked = runIsActive || engineIsActive;
+    selectedToolHistoryRun = { runId, groupName, toolLabel, tool: run.tool, inputNames: (run.inputs || []).map((input) => input.name), canDelete: !deleteBlocked };
+    if (title) title.textContent = `${toolLabel} · ${groupName || (run.group_names || [toolLabel])[0]}`;
+    if (meta) meta.textContent = `${formatAetherDate(run.created_at)} · ${toolHistoryStatus(run.status).label} · ${String(run.mode || 'run')} · ${files.length} artifact(s) for this input${run.tool === 'aether' && files.length !== allFiles.length ? ` · ${allFiles.length} in full run` : ''} · folder ${runId}`;
+    const deleteButton = $('tool-run-history-delete');
+    if (deleteButton) {
+      deleteButton.disabled = deleteBlocked;
+      deleteButton.title = deleteBlocked ? 'Run-folder deletion is locked while a job or upload is active.' : (run.tool === 'aether' ? 'Delete this complete Aether run folder, including results for every rule file in that run.' : 'Delete this complete run folder and all its artifacts.');
+    }
+    const zipLink = $('tool-run-history-download-zip');
+    const zipBlocked = runIsActive || !Number(run.output_count || 0);
+    if (zipLink) {
+      if (zipBlocked) {
+        zipLink.removeAttribute('href');
+        zipLink.setAttribute('tabindex', '-1');
+      } else {
+        zipLink.href = `/api/run-history/${encodeURIComponent(runId)}/download.zip`;
+        zipLink.setAttribute('tabindex', '0');
+      }
+      zipLink.classList.toggle('is-disabled', zipBlocked);
+      zipLink.setAttribute('aria-disabled', String(zipBlocked));
+      zipLink.title = runIsActive ? 'The ZIP is available after this run finishes.' : (!Number(run.output_count || 0) ? 'This run has no artifacts to package.' : (run.tool === 'aether' ? 'Download all Aether artifacts from the complete run, including every selected rule file.' : 'Download all artifacts from this run as one ZIP.'));
+    }
+    artifactRoot.replaceChildren();
+    if (!files.length) {
+      const empty = document.createElement('div'); empty.className = 'empty-output';
+      const icon = document.createElement('span'); icon.textContent = '▤';
+      const text = document.createElement('b'); text.textContent = 'No saved artifacts';
+      const hint = document.createElement('small'); hint.textContent = 'This run may have stopped before writing outputs. Its folder and metadata are still retained.';
+      empty.append(icon, text, hint); artifactRoot.append(empty);
+    } else {
+      files.forEach((file) => {
+        const row = document.createElement('article'); row.className = 'tool-history-artifact-row';
+        const icon = document.createElement('span'); icon.className = 'output-file-icon'; icon.textContent = String(file.type || 'file').slice(0, 4).toUpperCase();
+        const copy = document.createElement('div'); copy.className = 'output-meta';
+        const name = document.createElement('b'); name.textContent = file.path || file.name;
+        const size = document.createElement('small'); size.textContent = humanSize(Number(file.size || 0));
+        copy.append(name, size);
+        const actions = document.createElement('div'); actions.className = 'tool-history-artifact-actions';
+        if (file.previewable) {
+          const preview = document.createElement('a'); preview.className = 'secondary-button'; preview.textContent = 'Preview';
+          preview.href = `/api/run-history/${encodeURIComponent(runId)}/preview/${encodeURIComponent(file.path)}`;
+          preview.target = '_blank'; preview.rel = 'noopener noreferrer';
+          actions.append(preview);
+        }
+        const download = document.createElement('a'); download.className = 'download-output'; download.textContent = '↓';
+        download.href = `/api/run-history/${encodeURIComponent(runId)}/download/${encodeURIComponent(file.path)}`;
+        download.title = `Download ${file.name}`; download.setAttribute('aria-label', `Download ${file.name}`);
+        actions.append(download);
+        row.append(icon, copy, actions); artifactRoot.append(row);
+      });
+    }
+    listRoot.hidden = true;
+    detailRoot.hidden = false;
+    detailRoot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function closeToolRunHistoryDetail() {
+  const detail = $('tool-run-history-detail');
+  const list = $('tool-run-history-list');
+  if (detail) detail.hidden = true;
+  if (list) list.hidden = false;
+  selectedToolHistoryRun = null;
+}
+
+async function deleteToolRunHistoryRun() {
+  if (!selectedToolHistoryRun) return;
+  const { runId, groupName, toolLabel, tool, inputNames, canDelete } = selectedToolHistoryRun;
+  if (!canDelete) { toast('Run-folder deletion is locked while a job or upload is active.', true); return; }
+  const scopeNote = tool === 'aether' && inputNames.length > 1 ? ` This Aether run also contains: ${inputNames.filter((name) => name !== groupName).join(', ')}.` : '';
+  if (!window.confirm(`Delete the complete ${toolLabel} run folder for ${groupName}? All outputs and logs from this run will be permanently removed.${scopeNote}`)) return;
+  const button = $('tool-run-history-delete');
+  if (button) button.disabled = true;
+  try {
+    await apiPost('/api/run-history/delete', { run_id: runId });
+    closeToolRunHistoryDetail();
+    await loadToolRunHistory();
+    await loadRunStorageSummary();
+    toast(`Deleted ${toolLabel} run for ${groupName}.`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function renderToolMetrics(tool, data) {
@@ -1037,7 +1267,7 @@ async function deleteAllRunDirectories() {
   if (!button || button.disabled) return;
   const count = Number(($('storage-run-count').textContent || '0').replace(/,/g, '')) || 0;
   if (!count) { toast('There are no run folders to delete.'); return; }
-  const confirmation = `Permanently delete all ${count} run folder(s)? This removes generated outputs, logs and partial results for RULEST, Rule Ranker and Concentrator. The runs/uploads folder and auth.json will be preserved. This cannot be undone.`;
+  const confirmation = `Permanently delete all ${count} run folder(s)? This removes generated outputs, logs and partial results for every tool, including Aether. The runs/uploads and reusable runs/library folders plus auth.json will be preserved. This cannot be undone.`;
   if (!window.confirm(confirmation)) return;
   button.disabled = true;
   button.textContent = 'Deleting run folders…';
@@ -1052,6 +1282,7 @@ async function deleteAllRunDirectories() {
     toast(`Deleted ${result.deleted_directories || 0} run folder(s).`);
     await pollStatus();
     await loadRunStorageSummary();
+    await loadToolRunHistory();
   } catch (error) {
     if (feedback) feedback.textContent = `Cleanup failed: ${error.message}`;
     toast(`Could not delete run folders: ${error.message}`, true);
@@ -1163,6 +1394,7 @@ async function deleteLogOnlyRunDirectories() {
     toast(`Deleted ${result.deleted_directories || 0} empty/log-only folder(s).`);
     await pollStatus();
     await loadRunStorageSummary();
+    await loadToolRunHistory();
     await loadStorageIntelligence(true);
   } catch (error) {
     $('storage-scan-feedback').textContent = `Could not delete log-only folders: ${error.message}`;
@@ -1188,6 +1420,7 @@ async function deleteDuplicateRunDirectories() {
     toast(`Deleted ${result.deleted_directories || 0} older repeated-dataset run folder(s).`);
     await pollStatus();
     await loadRunStorageSummary();
+    await loadToolRunHistory();
     await loadStorageIntelligence(true);
   } catch (error) {
     $('storage-scan-feedback').textContent = `Could not remove older repeated-dataset runs: ${error.message}`;
@@ -1544,6 +1777,7 @@ function renderStatus(data) {
   const storageView = $('system-view');
   if (storageView && !storageView.hidden) {
     if (Date.now() - lastStorageSummaryAt > 5000) loadRunStorageSummary();
+    if (Date.now() - lastToolHistoryRefresh > 15000) loadToolRunHistory();
     const storageState = $('storage-engine-state');
     const storageNote = $('storage-engine-note');
     const deleteButton = $('delete-run-directories');
@@ -1605,6 +1839,9 @@ async function pollStatus() {
       });
     }
     renderStatus(data);
+    if (data.tool === 'aether' && !['running', 'stopping'].includes(data.status) && Date.now() - lastAetherHistoryRefresh > 8000) {
+      loadAetherHistory();
+    }
     if (data.error && data.status === 'failed') $('status-note').textContent = data.error;
   } catch (error) {
     $('status-note').textContent = 'Web interface disconnected';
@@ -1868,7 +2105,10 @@ function setActiveSystemView(view = 'storage') {
   }
   const breadcrumb = document.querySelector('.breadcrumb strong');
   if (breadcrumb) breadcrumb.textContent = view === 'about' ? 'About' : 'Run storage';
-  if (view === 'storage') loadRunStorageSummary();
+  if (view === 'storage') {
+    loadRunStorageSummary();
+    loadToolRunHistory();
+  }
 }
 
 
@@ -2197,6 +2437,7 @@ async function startUtilityRun(tool) {
     lastLogId = 0;
     const started = await apiPost('/api/tools/run', { tool, options });
     trackStartedJob(started);
+    if (tool === 'aether') loadAetherHistory();
     toast(`${title} started.`);
     await pollStatus();
   } catch (error) {
@@ -2317,6 +2558,9 @@ function initializeApp() {
   $('download-log').addEventListener('click', downloadLog);
   $('clear-log').addEventListener('click', clearLogHistoryFromUi);
   $('delete-run-directories').addEventListener('click', deleteAllRunDirectories);
+  $('tool-run-history-refresh').addEventListener('click', () => loadToolRunHistory(true));
+  $('tool-run-history-back').addEventListener('click', closeToolRunHistoryDetail);
+  $('tool-run-history-delete').addEventListener('click', deleteToolRunHistoryRun);
   $('scan-run-storage').addEventListener('click', scanRunStorage);
   $('delete-log-only-directories').addEventListener('click', deleteLogOnlyRunDirectories);
   $('delete-duplicate-directories').addEventListener('click', deleteDuplicateRunDirectories);

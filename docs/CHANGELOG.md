@@ -1,5 +1,56 @@
 # Changelog
 
+## v2.6.5 — Aether run-history unification
+
+- Removed Aether's separate persistent history panel and dedicated history API; previous Aether benchmarks now appear in the shared **Run storage** page alongside every other tool.
+- New Aether runs write the common run-history manifest, including per-input output stems and rule counts, so multi-file benchmarks remain grouped by their original rule filenames.
+- Migrated existing `.aether-run.json` folders into the unified Run storage view without rewriting or discarding their saved results.
+- Unified preview, artifact downloads, whole-run ZIP downloads and run-folder deletion through the shared Run storage endpoints. Aether artifact details are filtered to the selected rule file, while ZIP and deletion actions clearly apply to the complete multi-input run folder.
+- Kept the live Aether benchmark gallery for the current run; only persistent history moved to Run storage.
+
+
+## 2026-11-24 — Persistent run history for the other tools (v2.6.5 follow-up)
+
+- Added a persistent archive to the Run storage page for RULEST, Rule Ranker,
+  Concentrator, Rulestripper and Rule Minimizer. Aether remains in its dedicated
+  gallery and is intentionally excluded from this shared history.
+- Grouped saved runs first by tool and then by the relevant rule filename or
+  primary input: RULEST seed rules (or built-in/generated seeds plus TARGET),
+  Ranker source rules/CSV, each Concentrator input ruleset, Rulestripper TARGET
+  wordlist, and Minimizer input ruleset.
+- Added per-run detail pages with safely previewable artifacts, individual
+  downloads, status and storage metadata, plus a guarded action to delete one
+  complete run folder.
+- Added a one-click ZIP download for all artifacts in a selected run; the
+  action is enabled only after that run has finished and has saved outputs.
+- Added a small run-history manifest alongside the existing dataset fingerprint
+  manifest. It records display names and lifecycle status without duplicating
+  generated artifacts; older runs continue to use the existing manifest or
+  saved command-log inference where available.
+- Kept global run-storage cleanup and Aether history behavior separate. Shared
+  history preview/download and delete routes enforce authenticated/CSRF access,
+  direct `runs/` child validation, regular-file checks, symlink rejection and
+  active-job storage locks.
+- The Aether separation described above was superseded by the later v2.6.5
+  run-history unification entry at the top of this changelog.
+
+## 2026-11-24 — Persistent Aether benchmark gallery (v2.6.5 follow-up)
+
+- Added a persistent Aether run archive backed by the existing `runs/` storage
+  folders. Previous benchmark sessions remain available after page reloads and
+  application restarts, with each uploaded rule filename shown as a direct link
+  to that file's saved charts, interactive report and downloadable artifacts.
+- Added a per-run folder deletion action with server-side run identity checks,
+  symlink-safe file access, CSRF protection and safeguards against deleting
+  storage while a job or upload is active.
+- Kept the all-artifacts ZIP download in the existing Aether output-files panel
+  on the right and corrected the gallery note so it no longer says the ZIP is
+  below the gallery.
+- Confirmed the completion chime is wired to successful job completion: the
+  Aether launch response registers its job ID, status polling detects the
+  matching completed state, and the browser plays the enabled Web Audio chime
+  after user interaction unlocks audio. Failed or cancelled runs stay silent.
+
 ## 2026-11-24 — Fix Aether interactive report styling (v2.6.5 follow-up)
 
 - Fixed the Aether HTML preview response to send one report-specific Content

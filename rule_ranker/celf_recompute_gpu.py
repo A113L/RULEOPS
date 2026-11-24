@@ -1867,6 +1867,14 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
             "refusing to truncate rule bytes."
         )
 
+    if budget is not None:
+        try:
+            budget = int(budget)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Selection budget must be a non-negative integer (0 means saturation).") from exc
+        if budget < 0:
+            raise ValueError("Selection budget cannot be negative; use 0 to continue until saturation.")
+
     n_rules = len(rules)
     log(f"{blue('Recompute-GPU greedy select:')} {cyan(f'{n_rules:,}')} {bold('candidates,')} "
         f"{cyan(f'{len(cracked_hashes_sorted):,}')} {bold('cracked universe')}")
@@ -1990,7 +1998,17 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 f"mean={float(top_values.mean()):,.1f}, max={int(top_values.max()):,}."
             )
 
-    limit = budget if budget else n_active
+    # A zero or omitted budget means there is no user-imposed rule-count cap.
+    # The greedy loop then stops only when every remaining candidate has zero
+    # exact marginal coverage (or the candidate heap is exhausted).
+    unlimited_selection = budget is None or budget == 0
+    limit = n_active if unlimited_selection else min(int(budget), n_active)
+    selection_target = "saturation" if unlimited_selection else f"{limit:,}"
+    if unlimited_selection:
+        log(f"{blue('Selection budget:')} {cyan('0')} — no fixed rule-count cap; "
+            f"continuing until candidate-pool saturation ({n_active:,} active candidates max).")
+    else:
+        log(f"{blue('Selection budget:')} {cyan(f'{limit:,}')} rules.")
     greedy_rescore_batch = max(
         1,
         int(os.environ.get('RANKER_GREEDY_RESCORE_BATCH', '256')),
@@ -2024,7 +2042,9 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
     )
 
     pbar = ProgressBar(
-        total=limit, desc=cyan("CELF"), unit="rule", bar_width=14,
+        total=limit,
+        desc=cyan("CELF (to saturation)" if unlimited_selection else "CELF"),
+        unit="rule", bar_width=14,
         rate_window_seconds=30.0, rate_min_elapsed_seconds=10.0,
     )
 
@@ -2069,7 +2089,7 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 )
             postfix = (
                 f"round={round_num} | stage={stage}:{chunk_text} "
-                f"| selected={len(selected)}/{limit} | batch={batch_n} "
+                f"| selected={len(selected)}/{selection_target} | batch={batch_n} "
                 f"| gpu_dispatches={live_dispatches} "
                 f"| rescored={rescored_this_pick} "
                 f"| rescored/s={rescored_rate_text}"
@@ -2079,7 +2099,7 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 log(
                     f"CELF round {round_num}: {stage} {chunk_text} chunks; "
                     f"batch={batch_n} rules, words/chunk={words_n:,}, "
-                    f"selected={len(selected)}/{limit}, "
+                    f"selected={len(selected)}/{selection_target}, "
                     f"gpu_dispatches={live_dispatches}, "
                     f"rescored={rescored_this_pick}, "
                     f"rescored/s={rescored_rate_text}."
@@ -2101,16 +2121,17 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                 rule_indices, wordlist_path, progress_callback=progress_callback)
         return scorer.score_batch(rule_indices, wordlist_path)
 
+    termination_reason = None
     while len(selected) < limit and candidate_heap:
         round_num += 1
         dispatches_this_pick = 0
         rescored_this_pick = 0
         if round_num == 1:
             pbar.set_postfix_str(
-                f"round=1 | seed exact starting | selected=0/{limit} | "
+                f"round=1 | seed exact starting | selected=0/{selection_target} | "
                 f"heap={len(candidate_heap):,}", refresh=True)
             log(
-                f"CELF first round started: selected=0/{limit}, "
+                f"CELF first round started: selected=0/{selection_target}, "
                 f"challengers={len(candidate_heap):,}. Inner scoring progress "
                 f"will be logged while the first winner is being resolved."
             )
@@ -2181,7 +2202,7 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                     pbar.set_postfix_str(
                         f"round={round_num} | exact batch starting "
                         f"| batch={len(resolve_batch)} rules "
-                        f"| selected={len(selected)}/{limit} "
+                        f"| selected={len(selected)}/{selection_target} "
                         f"| gpu_dispatches={dispatches_this_pick} "
                         f"| rescored={rescored_this_pick}", refresh=True)
                     with _Timed("fresh_resolve_exact_batch", n=len(resolve_batch)):
@@ -2268,7 +2289,7 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
             # best_priority directly, and never replace best_idx.
             pbar.set_postfix_str(
                 f"round={round_num} | batch-tighten starting "
-                f"| batch={len(batch)} rules | selected={len(selected)}/{limit} "
+                f"| batch={len(batch)} rules | selected={len(selected)}/{selection_target} "
                 f"| gpu_dispatches={dispatches_this_pick} "
                 f"| rescored={rescored_this_pick}", refresh=False)
             with _Timed("batch_tighten", n=len(batch)):
@@ -2289,9 +2310,11 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
                     fresh_this_round.add(ridx)
 
         if best_gain <= 0:
-            # Keep the profile total accurate even if the final round
-            # evaluated challengers but found no positive marginal gain.
+            # No remaining rule contributes any new cracked entries: this is
+            # the exact saturation condition for an unlimited selection.
+            # Keep the profile total accurate for the final zero-gain round.
             total_gpu_dispatches += dispatches_this_pick
+            termination_reason = "saturation reached (no positive marginal coverage remains)"
             break
 
         with _Timed("apply_winner_and_clear"):
@@ -2366,6 +2389,14 @@ def celf_select_recompute_gpu(rules, wordlist_path, cracked_hashes_sorted,
         })
 
     pbar.close()
+    if termination_reason is None:
+        if unlimited_selection and (not candidate_heap or len(selected) >= limit):
+            termination_reason = "saturation reached (candidate pool exhausted)"
+        elif len(selected) >= limit:
+            termination_reason = f"selection budget reached ({limit:,} rules)"
+        else:
+            termination_reason = "candidate pool exhausted before the requested budget"
+    log(f"{blue('Selection stop:')} {termination_reason}. Selected {len(selected):,} rules.")
 
     remaining = scorer.remaining_active_count()
     total_covered = len(cracked_hashes_sorted) - remaining

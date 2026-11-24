@@ -2219,7 +2219,7 @@ function rankerOptionsForActiveWorkflow() {
     if (budgetText && budgetText.split(',').some((part) => !/^\s*\d+\s*$/.test(part) || Number(part.trim()) < 1)) throw new Error('Budget sweep must contain positive integers separated by commas.');
     return {
       output_name: valueOf('opt_output_name'), source_type: source, candidates: integerOrBlank('opt_candidates', 'Candidate limit', 1),
-      budget: integerOrBlank('opt_budget', 'Selection budget', 1), budgets: budgetText,
+      budget: integerOrBlank('opt_budget', 'Selection budget', 0), budgets: budgetText,
       rule_batch_size: integerOrBlank('opt_rule_batch_size', 'Rule batch size', 1),
       words_batch_size: integerOrBlank('opt_words_batch_size', 'Words batch size', 1),
       max_word_len: maxWord, max_rule_len: integerOrBlank('opt_max_rule_len', 'Maximum rule length', 1),

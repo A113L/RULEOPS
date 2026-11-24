@@ -462,7 +462,7 @@ def main(argv=None):
     ap.add_argument('-c', '--candidates', type=int, default=20000,
                     help="How many top-scored rules to feed into greedy selection (default 20000).")
     ap.add_argument('-b', '--budget', type=int, default=None,
-                    help="Max rules in final selection (default: run to saturation). Ignored if --budgets is given.")
+                    help="Max rules in final selection; 0 or omitted runs until candidate-pool saturation. Ignored if --budgets is given.")
     ap.add_argument('-B', '--budgets', type=str, default=None,
                     help="Comma-separated list of budget cutoffs to export from one run, e.g. '64,250,5000'.")
     ap.add_argument('-R', '--rule-batch-size', type=int, default=1024,

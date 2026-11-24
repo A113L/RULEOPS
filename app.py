@@ -3261,7 +3261,7 @@ def build_ranker_command(mode: str, options: dict, run_dir: Path):
                           ("max_rule_len", "--max-rule-len"), ("max_output_len", "--max-output-len")):
             raw = options.get(key)
             if raw not in (None, ""):
-                minimum = 1 if key in {"budget", "rule_batch_size", "words_batch_size", "max_word_len", "max_rule_len", "max_output_len"} else 0
+                minimum = 0 if key == "budget" else 1 if key in {"rule_batch_size", "words_batch_size", "max_word_len", "max_rule_len", "max_output_len"} else 0
                 cmd += [flag, str(_int_option(options, key, 1, minimum))]
         budgets = str(options.get("budgets", "") or "").strip()
         if budgets:

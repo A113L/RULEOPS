@@ -709,6 +709,14 @@
             </section>
             <section class="panel">
               <div class="panel-heading"><div class="utility-heading-copy"><div class="utility-heading-title"><span class="section-index">02</span><h2>Benchmark settings</h2></div><p>Controls the synthetic word corpus and GPU device used for timing.</p></div></div>
+              <div class="aether-profiling-banner" role="status" aria-label="OpenCL event profiling is always enabled">
+                <div class="aether-profiling-banner-head">
+                  <span class="aether-profiling-indicator" aria-hidden="true"></span>
+                  <b>OpenCL Event Profiling</b>
+                  <span class="aether-profiling-state">ON BY DEFAULT · REQUIRED</span>
+                </div>
+                <p><code>PROFILING_ENABLE</code> is applied to Aether's OpenCL command queue automatically. <b>GPU Kernel Time</b> is measured from device event timestamps and drives ranking/optimization; <b>End-to-End Time</b> is shown separately for host dispatch diagnostics. There is no toggle because GPU event timing is required.</p>
+              </div>
               <div class="form-grid three-col">
                 <label class="field"><span>Iterations</span><input id="aether-iterations" type="number" min="1" max="100000" value="50"></label>
                 <label class="field"><span>Test runs</span><input id="aether-test-runs" type="number" min="1" max="50" value="3"><small>Repeats per rule, for stable timing.</small></label>
@@ -723,7 +731,7 @@
               <div class="toggle-row"><div><b>Optimize search</b><small>Search for the fastest-equivalent rule ordering within a time budget.</small></div><label class="switch"><input id="aether-optimize" type="checkbox"><span></span></label></div>
               <div class="form-grid two-col" style="margin-top:10px">
                 <label class="field"><span>Max rules to optimize</span><input id="aether-max-optimize-rules" type="number" min="1" max="2000000" value="500"><small>Used only when Optimize search is on.</small></label>
-                <label class="field"><span>Max optimize time (µs)</span><input id="aether-max-time" type="number" min="1" max="86400000000" step="1" value="30000000"><small>Cumulative rule execution-time limit: 30,000,000 µs = 30 s. Used only when Optimize search is on.</small></label>
+                <label class="field"><span>Max optimize time (µs)</span><input id="aether-max-time" type="number" min="1" max="86400000000" step="1" value="30000000"><small>Cumulative GPU kernel-time budget: 30,000,000 µs = 30 s. Uses OpenCL event timings; used only when Optimize search is on.</small></label>
               </div>
             </section>
             <section class="concentrator-launch-bar">
@@ -739,7 +747,7 @@
           <aside class="secondary-column">
             <section class="panel stage-monitor-panel"><div class="panel-heading"><div class="utility-monitor-heading"><span class="side-panel-kicker">LIVE MONITOR</span><h2>Aether status</h2></div><span class="live-pill" id="aether-live-pill"><i></i> STANDBY</span></div><div class="stage-monitor-copy"><b id="aether-current-stage">Waiting for Aether</b><p id="aether-stage-detail">Upload rule files to begin.</p></div><div class="monitor-meta"><span class="monitor-meta-item"><small>RUNTIME</small><b id="aether-runtime">00:00</b></span><span class="monitor-meta-item"><small>PID</small><b id="aether-pid">—</b></span></div></section>
             <section class="panel"><div class="panel-heading"><div class="panel-heading-copy"><span class="side-panel-kicker">ARTIFACTS</span><h2>Aether output files</h2></div><span class="output-count" id="aether-output-count">0</span></div><div id="aether-output-list" class="output-list"><div class="empty-output"><span>▤</span><b>No outputs yet</b><small>Charts, JSON reports and sorted rules will appear here.</small></div></div></section>
-            <section class="panel notes-panel"><div class="notes-icon">✦</div><h3>How benchmarking works</h3><div class="note-row"><span>01</span><p>Each rule file is applied to a synthetic word corpus on the GPU and timed over several iterations.</p></div><div class="note-row"><span>02</span><p>With Visualize on, four charts summarize throughput, opcode cost, spread and output-length distribution.</p></div><div class="note-row"><span>03</span><p>Charts, JSON reports and (with Optimize) a reordered rule file are all named after the source rule file.</p></div></section>
+            <section class="panel notes-panel"><div class="notes-icon">✦</div><h3>How benchmarking works</h3><div class="note-row"><span>01</span><p><code>PROFILING_ENABLE</code> is always enabled on Aether's OpenCL queue; event profiling is required and cannot be switched off.</p></div><div class="note-row"><span>02</span><p>Each rule is executed on the selected OpenCL GPU against the synthetic word corpus, after warm-up iterations. <b>GPU Kernel Time</b> comes from device event START/END timestamps and excludes Python enqueue/driver dispatch overhead.</p></div><div class="note-row"><span>03</span><p><b>End-to-End Time</b> separately measures host enqueue plus queue completion wait. It is diagnostic; ranking and optimization use GPU Kernel Time.</p></div><div class="note-row"><span>04</span><p>Charts, JSON reports and sorted rules are named after the source file and include both timing metrics.</p></div></section>
           </aside>
         </div>
       </div><!-- /aether-view -->
@@ -977,7 +985,7 @@
                   <li>Benchmark Hashcat rule execution throughput on an OpenCL GPU</li>
                   <li>Compare rule timing across files and sort rules from fastest to slowest</li>
                   <li>Generate per-file radar, opcode heatmap, statistical and length-distribution charts</li>
-                  <li>Build an optimized ruleset using a cumulative execution-time budget</li>
+                  <li>Build an optimized ruleset using a cumulative GPU kernel-time budget</li>
                 </ul>
                 <a class="about-tool-link" href="#aether" data-nav-tool="aether">Open Aether →</a>
               </article>

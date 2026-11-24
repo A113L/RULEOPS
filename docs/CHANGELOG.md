@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-24 — Aether benchmark timing accuracy (v2.6.5 follow-up)
+
+- Fixed the Top 10 chart to show the complete Hashcat rule-file command for
+  each result, with an explicit rank. Removed 15-character truncation and
+  disabled MathText parsing so special rule characters such as `$`, `^` and
+  backslashes are displayed literally. The chart title and note now clarify
+  that `.rule` files contain commands rather than descriptive rule names.
+
+- Switched Aether's primary timing metric to OpenCL event profiling: each
+  rule's GPU Kernel Time is derived from device-side event START/END timestamps,
+  with warm-up launches excluded from the sample. The benchmark now requires an
+  OpenCL GPU and no longer silently reports CPU-device timings as GPU results.
+- Added a separate End-to-End Time diagnostic covering the host enqueue loop
+  and queue completion wait. JSON reports and sorted-rule files record both
+  metrics; ranking, throughput and the optimization time budget use GPU Kernel
+  Time. Corrected throughput to count one word-rule application per kernel
+  launch rather than multiplying by the number of benchmark iterations twice.
+- Made `cl.command_queue_properties.PROFILING_ENABLE` unconditional for Aether's
+  OpenCL command queue. The UI now shows an always-on profiling status and
+  explains the distinction between GPU Kernel Time and End-to-End Time; JSON
+  metadata records that event profiling was enabled.
+
 ## 2026-11-23 — RULEOPS v2.6.5
 
 ### Aether integration

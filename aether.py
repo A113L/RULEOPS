@@ -717,7 +717,18 @@ class VisualizationEngine:
         plt.rcParams['font.size'] = 10
         plt.rcParams['axes.titlesize'] = 14
         plt.rcParams['axes.labelsize'] = 12
-    
+
+    @staticmethod
+    def _literal_rule_command(rule: str) -> str:
+        """Return the complete rule-file command without math/text rewriting."""
+        command = str(rule)
+        # Keep unusual whitespace visible in static charts and avoid accidental
+        # line breaks changing how a Hashcat command is read.
+        return (command.replace('\t', r'\t')
+                       .replace('\r', r'\r')
+                       .replace('\n', r'\n'))
+
+
     def create_performance_radar(self, rule_performance: List[Tuple[str, Dict]], filename: str):
         if not rule_performance: return
         top_rules = rule_performance[:20]
@@ -728,7 +739,7 @@ class VisualizationEngine:
         times_norm = self.normalize_data(times, invert=True)
         ops_norm = self.normalize_data(ops_sec)
         cv_norm = self.normalize_data(cv_values, invert=True)
-        categories = ['Speed\n(μs)', 'Throughput\n(K ops/sec)', 'Consistency\n(CV %)']
+        categories = ['GPU Kernel Time\n(μs)', 'GPU Throughput\n(K ops/sec)', 'Consistency\n(CV %)']
         fig, ax = plt.subplots(figsize=(14, 10), subplot_kw=dict(projection='polar'))
         angles = np.linspace(0, 2*np.pi, len(categories), endpoint=False).tolist()
         angles += angles[:1]
@@ -781,8 +792,8 @@ class VisualizationEngine:
                     ax.text(j, i, f"{char_labels[i, j]}\n{heatmap_data[i, j]:.1f}μs",
                             ha="center", va="center", color="black", fontsize=8,
                             bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.7))
-        plt.colorbar(im, ax=ax, label='Execution Time (μs)')
-        ax.set_title('Rule Type Performance Heatmap\n(Lower = Faster)', pad=20)
+        plt.colorbar(im, ax=ax, label='GPU Kernel Time (μs)')
+        ax.set_title('Rule Type Performance Heatmap\n(GPU Kernel Time · Lower = Faster)', pad=20)
         ax.set_xticks([])
         ax.set_yticks([])
         plt.tight_layout()
@@ -794,9 +805,9 @@ class VisualizationEngine:
     def _relative_performance_tiers(times_us: List[float]):
         """Build balanced, tie-preserving performance tiers for one rule file.
 
-        Absolute 10/100 µs cut-offs are not portable across GPUs and include
-        kernel-launch/measurement overhead. Relative tiers describe the rules
-        within the current benchmark while keeping identical timings together.
+        Absolute 10/100 µs cut-offs are not portable across GPUs. Relative
+        tiers describe the rules within the current benchmark while keeping
+        identical timings together.
         """
         values = np.asarray(times_us, dtype=float)
         values = values[np.isfinite(values)]
@@ -866,39 +877,55 @@ class VisualizationEngine:
             axes[0,0].hist(times, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
             axes[0,0].axvline(np.mean(times), color='red', linestyle='--', label=f'Mean: {np.mean(times):.2f}μs')
             axes[0,0].axvline(np.median(times), color='green', linestyle='--', label=f'Median: {np.median(times):.2f}μs')
-            axes[0,0].set_xlabel('Execution Time (μs)')
+            axes[0,0].set_xlabel('GPU Kernel Time (μs)')
             axes[0,0].set_ylabel('Frequency')
-            axes[0,0].set_title('Performance Distribution')
+            axes[0,0].set_title('GPU Kernel Time Distribution')
             axes[0,0].legend()
             axes[0,0].grid(True, alpha=0.3)
             # 2. Consistency vs Performance
             if times and cv_values and len(times) == len(cv_values):
                 scatter = axes[0,1].scatter(times, cv_values, c=ops_sec if ops_sec else times, cmap='viridis', alpha=0.6, s=50, edgecolors='black', linewidth=0.5)
-                axes[0,1].set_xlabel('Execution Time (μs)')
+                axes[0,1].set_xlabel('GPU Kernel Time (μs)')
                 axes[0,1].set_ylabel('Coefficient of Variation (%)')
-                axes[0,1].set_title('Performance vs Consistency')
-                plt.colorbar(scatter, ax=axes[0,1], label='Operations/sec' if ops_sec else 'Execution Time (μs)')
+                axes[0,1].set_title('GPU Kernel Time vs Consistency')
+                plt.colorbar(scatter, ax=axes[0,1], label='GPU Operations/sec' if ops_sec else 'GPU Kernel Time (μs)')
                 axes[0,1].grid(True, alpha=0.3)
             else:
                 axes[0,1].text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=axes[0,1].transAxes)
-                axes[0,1].set_title('Performance vs Consistency (No Data)')
-            # 3. Top 10 fastest rules. Show the delta from the fastest rule so
-            # the chart remains informative when all absolute times are close.
+                axes[0,1].set_title('GPU Kernel Time vs Consistency (No Data)')
+            # 3. Top 10 fastest Hashcat rule commands. Rule files contain
+            # command strings, not semantic names: show each complete source
+            # line verbatim without rank prefixes, truncation, or MathText.
             if rule_performance:
-                top_10 = rule_performance[:min(10, len(rule_performance))]
-                top_rules = [f"{rule[:15]}..." if len(rule) > 15 else rule for rule, _ in top_10]
-                top_times = [data['execution_time'] * 1000000 for _, data in top_10]
+                top_10 = sorted(
+                    rule_performance,
+                    key=lambda item: item[1].get(
+                        'gpu_kernel_time_seconds', item[1].get('execution_time', float('inf'))
+                    )
+                )[:min(10, len(rule_performance))]
+                top_rules = [self._literal_rule_command(rule) or '<empty rule>' for rule, _ in top_10]
+                top_times = [
+                    data.get('gpu_kernel_time_seconds', data.get('execution_time', float('inf'))) * 1_000_000
+                    for _, data in top_10
+                ]
                 fastest_us = min(top_times)
                 slower_pct = [((value / fastest_us) - 1.0) * 100.0 if fastest_us > 0 else 0.0
                               for value in top_times]
+                y_positions = np.arange(len(top_rules))
                 bars = axes[1,0].barh(
-                    top_rules, slower_pct,
+                    y_positions, slower_pct,
                     color=plt.cm.Greens_r(np.linspace(0.2, 0.8, len(top_rules)))
                 )
+                axes[1,0].set_yticks(y_positions, labels=top_rules)
                 axes[1,0].set_xlabel('Slower than fastest rule (%)')
-                axes[1,0].set_title('Top 10 Fastest Rules')
+                axes[1,0].set_ylabel('Exact Hashcat rule-file command')
+                axes[1,0].set_title('Top 10 Fastest Hashcat Rule Commands')
                 axes[1,0].grid(True, alpha=0.3, axis='x')
-                axes[1,0].invert_yaxis()  # fastest rule at the top
+                axes[1,0].invert_yaxis()  # rank 1 (fastest) at the top
+                for tick in axes[1,0].get_yticklabels():
+                    tick.set_fontfamily('DejaVu Sans Mono')
+                    tick.set_fontsize(8)
+                    tick.set_parse_math(False)
                 max_delta = max(slower_pct, default=0.0)
                 x_max = max(max_delta * 1.35, 0.12)
                 axes[1,0].set_xlim(0, x_max)
@@ -910,12 +937,16 @@ class VisualizationEngine:
                         f'{absolute_us:.3f} µs  (+{delta_pct:.3f}%)',
                         ha='left', va='center', fontsize=8
                     )
+                axes[1,0].text(
+                    0.0, -0.20,
+                    'Labels are the exact rule commands from the input file (not descriptive rule names).',
+                    ha='left', va='top', fontsize=8, transform=axes[1,0].transAxes
+                )
             else:
                 axes[1,0].text(0.5, 0.5, 'No rule performance data', ha='center', va='center', transform=axes[1,0].transAxes)
-                axes[1,0].set_title('Top 10 Fastest Rules (No Data)')
-            # 4. Relative performance tiers. Absolute cut-offs such as 10/100 µs
-            # misclassify results when GPU launch and measurement overhead is
-            # larger than the differences between individual rules.
+                axes[1,0].set_title('Top 10 Fastest Hashcat Rule Commands (No Data)')
+            # 4. Relative performance tiers describe differences between GPU
+            # kernel timings without relying on hardware-specific cut-offs.
             if times:
                 counts, categories, category_colors = self._relative_performance_tiers(times)
                 if counts:
@@ -924,18 +955,18 @@ class VisualizationEngine:
                         autopct='%1.1f%%', startangle=90,
                         wedgeprops={'edgecolor': 'white', 'linewidth': 1}
                     )
-                    axes[1,1].set_title('Relative Performance Tiers')
+                    axes[1,1].set_title('Relative GPU Performance Tiers')
                     axes[1,1].text(
                         0.5, -0.08,
-                        'Within this file · lower execution time is faster · equal timings stay together',
+                        'Within this file · GPU kernel time · lower is faster · equal timings stay together',
                         ha='center', va='top', fontsize=8, transform=axes[1,1].transAxes
                     )
                 else:
                     axes[1,1].text(0.5, 0.5, 'No performance category data', ha='center', va='center', transform=axes[1,1].transAxes)
-                    axes[1,1].set_title('Relative Performance Tiers (No Data)')
+                    axes[1,1].set_title('Relative GPU Performance Tiers (No Data)')
             else:
                 axes[1,1].text(0.5, 0.5, 'No execution time data', ha='center', va='center', transform=axes[1,1].transAxes)
-                axes[1,1].set_title('Relative Performance Tiers (No Data)')
+                axes[1,1].set_title('Relative GPU Performance Tiers (No Data)')
             plt.suptitle('Comprehensive Statistical Summary', fontsize=16, y=0.98)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, f"{filename}_statistical.png"), dpi=300, bbox_inches='tight')
@@ -965,7 +996,7 @@ class VisualizationEngine:
                 pass
             axes[0,0].axvline(np.mean(times), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(times):.2f}μs')
             axes[0,0].axvline(np.median(times), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(times):.2f}μs')
-            axes[0,0].set_xlabel('Execution Time (μs)')
+            axes[0,0].set_xlabel('GPU Kernel Time (μs)')
             axes[0,0].set_ylabel('Density')
             axes[0,0].set_title('Performance Distribution with Density Curve')
             axes[0,0].legend()
@@ -974,8 +1005,8 @@ class VisualizationEngine:
             box_plot = axes[0,1].boxplot([times], vert=True, patch_artist=True,
                                           boxprops=dict(facecolor='lightgreen', alpha=0.7),
                                           medianprops=dict(color='red', linewidth=2))
-            axes[0,1].set_ylabel('Execution Time (μs)')
-            axes[0,1].set_title('Performance Box Plot')
+            axes[0,1].set_ylabel('GPU Kernel Time (μs)')
+            axes[0,1].set_title('GPU Kernel Time Box Plot')
             axes[0,1].set_xticks([1])
             axes[0,1].set_xticklabels(['All Rules'])
             axes[0,1].grid(True, alpha=0.3)
@@ -994,9 +1025,9 @@ Q3: {np.percentile(times, 75):.2f}μs"""
             sorted_times = np.sort(times)
             cdf = np.arange(1, len(sorted_times)+1) / len(sorted_times)
             axes[1,0].plot(sorted_times, cdf, 'b-', linewidth=2, label='CDF')
-            axes[1,0].set_xlabel('Execution Time (μs)')
+            axes[1,0].set_xlabel('GPU Kernel Time (μs)')
             axes[1,0].set_ylabel('Cumulative Probability')
-            axes[1,0].set_title('Cumulative Distribution Function')
+            axes[1,0].set_title('GPU Kernel Time Cumulative Distribution')
             axes[1,0].grid(True, alpha=0.3)
             axes[1,0].legend()
             for p in [25,50,75,90,95]:
@@ -1011,18 +1042,18 @@ Q3: {np.percentile(times, 75):.2f}μs"""
                     pc.set_alpha(0.7)
                 violin_parts['cmeans'].set_color('green')
                 violin_parts['cmedians'].set_color('blue')
-                axes[1,1].set_ylabel('Execution Time (μs)')
-                axes[1,1].set_title('Performance Violin Plot')
+                axes[1,1].set_ylabel('GPU Kernel Time (μs)')
+                axes[1,1].set_title('GPU Kernel Time Violin Plot')
                 axes[1,1].set_xticks([1])
                 axes[1,1].set_xticklabels(['All Rules'])
                 axes[1,1].grid(True, alpha=0.3)
             except:
                 axes[1,1].hist(times, bins=30, alpha=0.7, color='lightcoral', edgecolor='black')
-                axes[1,1].set_xlabel('Execution Time (μs)')
+                axes[1,1].set_xlabel('GPU Kernel Time (μs)')
                 axes[1,1].set_ylabel('Frequency')
-                axes[1,1].set_title('Performance Distribution (Fallback)')
+                axes[1,1].set_title('GPU Kernel Time Distribution (Fallback)')
                 axes[1,1].grid(True, alpha=0.3)
-            plt.suptitle('Detailed Performance Distribution Analysis', fontsize=16, y=0.98)
+            plt.suptitle('GPU Kernel Time Distribution Analysis', fontsize=16, y=0.98)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, f"{filename}_distribution.png"), dpi=300, bbox_inches='tight')
             plt.close()
@@ -1060,14 +1091,28 @@ class RulePerformanceTester:
             platform = platforms[platform_index]
             devices = platform.get_devices(cl.device_type.GPU)
             if not devices:
-                print(f"{Colors.YELLOW}No GPU devices found, trying CPU...{Colors.END}")
-                devices = platform.get_devices(cl.device_type.CPU)
-            if not devices: raise RuntimeError("No OpenCL devices found")
+                raise RuntimeError(
+                    "No OpenCL GPU device found. Aether reports GPU kernel timing "
+                    "and will not silently fall back to a CPU device."
+                )
             device = devices[device_index]
             print(f"{Colors.GREEN}Using device: {device.name}{Colors.END}")
             print(f"{Colors.CYAN}Device memory: {device.global_mem_size // (1024*1024)} MB{Colors.END}")
             self.context = cl.Context([device])
-            self.queue = cl.CommandQueue(self.context)
+            # Aether always profiles OpenCL events. This is deliberately not
+            # an opt-in setting: GPU Kernel Time, ranking and optimization
+            # budgets all depend on device-side START/END timestamps.
+            self.profiling_enabled = True
+            queue_properties = cl.command_queue_properties.PROFILING_ENABLE
+            self.queue = cl.CommandQueue(
+                self.context,
+                properties=queue_properties
+            )
+            self.device = device
+            print(
+                f"{Colors.GREEN}OpenCL event profiling: ENABLED "
+                f"(PROFILING_ENABLE; required for GPU Kernel Time){Colors.END}"
+            )
             try:
                 self.program = cl.Program(self.context, OPENCL_KERNEL_SOURCE).build()
                 self.kernel = cl.Kernel(self.program, 'rule_processor')
@@ -1118,23 +1163,46 @@ class RulePerformanceTester:
         print(f"{Colors.CYAN}Max rule length: {self.max_rule_len}{Colors.END}")
         print(f"{Colors.CYAN}Max result length: {self.max_result_len}{Colors.END}")
     
-    def calculate_performance_metrics(self, execution_times: List[float]) -> Dict[str, Any]:
-        if not execution_times: return {}
-        mean = np.mean(execution_times)
-        std = np.std(execution_times)
+    @staticmethod
+    def calculate_performance_metrics(execution_times: List[float]) -> Dict[str, Any]:
+        """Summarize per-run average durations (seconds per kernel launch)."""
+        if not execution_times:
+            return {}
+        mean = float(np.mean(execution_times))
+        std = float(np.std(execution_times))
         filtered_times = [t for t in execution_times if abs(t - mean) <= 2 * std]
-        if not filtered_times: filtered_times = execution_times
-        cv_percent = (np.std(filtered_times) / np.mean(filtered_times)) * 100 if np.mean(filtered_times) > 0 else 0
+        if not filtered_times:
+            filtered_times = execution_times
+        filtered_mean = float(np.mean(filtered_times))
+        cv_percent = (float(np.std(filtered_times)) / filtered_mean) * 100 if filtered_mean > 0 else 0.0
         return {
-            'mean_time': np.mean(filtered_times),
-            'median_time': np.median(filtered_times),
-            'std_time': np.std(filtered_times),
-            'min_time': min(filtered_times),
-            'max_time': max(filtered_times),
-            'cv_percent': cv_percent,
+            'mean_time': filtered_mean,
+            'median_time': float(np.median(filtered_times)),
+            'std_time': float(np.std(filtered_times)),
+            'min_time': float(min(filtered_times)),
+            'max_time': float(max(filtered_times)),
+            'cv_percent': float(cv_percent),
             'sample_size': len(filtered_times),
             'outliers_removed': len(execution_times) - len(filtered_times)
         }
+
+    @staticmethod
+    def _event_kernel_time_seconds(event) -> float:
+        """Return actual device execution time from OpenCL event timestamps."""
+        try:
+            start_ns = int(event.profile.start)
+            end_ns = int(event.profile.end)
+        except Exception as exc:
+            raise RuntimeError(
+                "OpenCL event profiling data is unavailable. Ensure the command "
+                "queue was created with PROFILING_ENABLE and the event completed."
+            ) from exc
+        elapsed_ns = end_ns - start_ns
+        if elapsed_ns <= 0:
+            raise RuntimeError(
+                f"OpenCL reported an invalid kernel profiling interval: {start_ns}..{end_ns} ns"
+            )
+        return elapsed_ns / 1_000_000_000.0
     
     def prepare_rule_buffers(self, rules: List[bytes]) -> Tuple[cl.Buffer, int]:
         rule_buffer_size = len(rules) * self.max_rule_len
@@ -1157,52 +1225,111 @@ class RulePerformanceTester:
         return words_buf, len(words)
     
     def test_single_rule_performance(self, rule: bytes, test_runs: int = 5) -> Dict[str, Any]:
+        """Benchmark one rule with GPU-only and host end-to-end timings.
+
+        The primary execution_time metric is derived exclusively from OpenCL
+        event START/END timestamps. End-to-end timing separately includes the
+        Python enqueue loop and queue completion wait, but excludes buffer
+        allocation and one-time kernel argument setup.
+        """
         try:
-            execution_times = []
-            for run in range(test_runs):
-                words_buf, num_words = self.prepare_word_buffers(self.test_words)
-                rules_buf, num_rules = self.prepare_rule_buffers([rule])
-                result_size = num_words * num_rules * self.max_result_len
-                result_buf = cl.Buffer(self.context, cl.mem_flags.WRITE_ONLY, result_size)
-                global_size = (num_words * num_rules,)
-                self.kernel.set_args(words_buf, rules_buf, result_buf,
-                                   np.uint32(num_words), np.uint32(num_rules),
-                                   np.uint32(self.max_word_len), np.uint32(self.max_rule_len),
-                                   np.uint32(self.max_result_len))
-                cl.enqueue_nd_range_kernel(self.queue, self.kernel, global_size, None)
-                self.queue.finish()
-                start_time = time.time()
-                for _ in range(self.iterations):
-                    cl.enqueue_nd_range_kernel(self.queue, self.kernel, global_size, None)
-                self.queue.finish()
-                end_time = time.time()
-                total_time = end_time - start_time
-                avg_time = total_time / self.iterations
-                execution_times.append(avg_time)
-                words_buf.release()
-                rules_buf.release()
-                result_buf.release()
-            metrics = self.calculate_performance_metrics(execution_times)
-            total_operations = num_words * num_rules * self.iterations
-            operations_per_sec = total_operations / metrics['mean_time'] if metrics['mean_time'] > 0 else 0
+            gpu_kernel_times = []
+            end_to_end_times = []
+            for _run in range(test_runs):
+                words_buf = rules_buf = result_buf = None
+                warmup_events = []
+                measured_events = []
+                try:
+                    words_buf, num_words = self.prepare_word_buffers(self.test_words)
+                    rules_buf, num_rules = self.prepare_rule_buffers([rule])
+                    result_size = num_words * num_rules * self.max_result_len
+                    result_buf = cl.Buffer(self.context, cl.mem_flags.WRITE_ONLY, result_size)
+                    global_size = (num_words * num_rules,)
+                    self.kernel.set_args(
+                        words_buf, rules_buf, result_buf,
+                        np.uint32(num_words), np.uint32(num_rules),
+                        np.uint32(self.max_word_len), np.uint32(self.max_rule_len),
+                        np.uint32(self.max_result_len)
+                    )
+
+                    # Warm up this rule's kernel before collecting timestamps.
+                    # Warm-up events are never included in either metric.
+                    warmup_iterations = max(3, min(10, self.iterations // 10))
+                    warmup_events = [
+                        cl.enqueue_nd_range_kernel(self.queue, self.kernel, global_size, None)
+                        for _ in range(warmup_iterations)
+                    ]
+                    self.queue.finish()
+
+                    # OpenCL event START..END measures device execution only.
+                    # Wall time separately captures host dispatch + completion.
+                    end_to_end_start_ns = time.perf_counter_ns()
+                    for _ in range(self.iterations):
+                        measured_events.append(
+                            cl.enqueue_nd_range_kernel(self.queue, self.kernel, global_size, None)
+                        )
+                    self.queue.finish()
+                    end_to_end_elapsed_ns = time.perf_counter_ns() - end_to_end_start_ns
+
+                    event_durations = [
+                        self._event_kernel_time_seconds(event) for event in measured_events
+                    ]
+                    gpu_kernel_times.append(sum(event_durations) / self.iterations)
+                    end_to_end_times.append(
+                        (end_to_end_elapsed_ns / 1_000_000_000.0) / self.iterations
+                    )
+                finally:
+                    for event in warmup_events + measured_events:
+                        if hasattr(event, 'release'):
+                            event.release()
+                    for buffer in (words_buf, rules_buf, result_buf):
+                        if buffer is not None and hasattr(buffer, 'release'):
+                            buffer.release()
+
+            gpu_metrics = self.calculate_performance_metrics(gpu_kernel_times)
+            end_to_end_metrics = self.calculate_performance_metrics(end_to_end_times)
+            total_operations = num_words * num_rules * self.iterations * test_runs
+            operations_per_kernel = num_words * num_rules
+            gpu_operations_per_sec = (
+                operations_per_kernel / gpu_metrics['mean_time']
+                if gpu_metrics['mean_time'] > 0 else 0
+            )
+            end_to_end_operations_per_sec = (
+                operations_per_kernel / end_to_end_metrics['mean_time']
+                if end_to_end_metrics['mean_time'] > 0 else 0
+            )
             return {
-                'execution_time': metrics['mean_time'],
+                # Backward-compatible aliases: existing charts, sorted files,
+                # and optimizer continue to consume the primary GPU-only time.
+                'execution_time': gpu_metrics['mean_time'],
+                'gpu_kernel_time_seconds': gpu_metrics['mean_time'],
+                'end_to_end_time_seconds': end_to_end_metrics['mean_time'],
+                'operations_per_sec': gpu_operations_per_sec,
+                'gpu_operations_per_sec': gpu_operations_per_sec,
+                'end_to_end_operations_per_sec': end_to_end_operations_per_sec,
+                'operations_per_kernel': operations_per_kernel,
                 'total_operations': total_operations,
-                'operations_per_sec': operations_per_sec,
+                'timing_method': 'opencl_event_profiling',
                 'success': True,
-                'metrics': metrics,
-                'test_runs': test_runs
+                'metrics': gpu_metrics,
+                'gpu_kernel_metrics': gpu_metrics,
+                'end_to_end_metrics': end_to_end_metrics,
+                'test_runs': test_runs,
+                'iterations_per_run': self.iterations
             }
         except Exception as e:
             print(f"{Colors.RED}Error testing rule {rule}: {e}{Colors.END}")
             return {
                 'execution_time': float('inf'),
+                'gpu_kernel_time_seconds': float('inf'),
+                'end_to_end_time_seconds': float('inf'),
                 'total_operations': 0,
                 'operations_per_sec': 0,
                 'success': False,
+                'timing_method': 'opencl_event_profiling',
                 'error': str(e)
             }
-    
+
     def test_rule_file_performance(self, rule_file_path: str, test_runs: int = 3, max_test_rules: int = 1000, output_basename: str = None) -> List[Tuple[str, Dict[str, Any]]]:
         print(f"\n{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.END}")
         print(f"{Colors.BOLD}{Colors.CYAN}Testing rule file: {rule_file_path}{Colors.END}")
@@ -1226,8 +1353,9 @@ class RulePerformanceTester:
                 rule_performance.append((rule_str, performance_data))
                 time_color = Colors.GREEN if performance_data['execution_time'] < 0.001 else Colors.YELLOW if performance_data['execution_time'] < 0.01 else Colors.RED
                 cv_color = Colors.GREEN if performance_data['metrics']['cv_percent'] < 10 else Colors.YELLOW if performance_data['metrics']['cv_percent'] < 20 else Colors.RED
-                print(f"    {Colors.CYAN}Time:{Colors.END} {time_color}{performance_data['execution_time']:.6f}s{Colors.END} "
-                      f"{Colors.CYAN}Ops/sec:{Colors.END} {Colors.MAGENTA}{performance_data['operations_per_sec']:,.0f}{Colors.END} "
+                print(f"    {Colors.CYAN}GPU kernel:{Colors.END} {time_color}{performance_data['gpu_kernel_time_seconds'] * 1e6:.3f} µs{Colors.END} "
+                      f"{Colors.CYAN}End-to-end:{Colors.END} {performance_data['end_to_end_time_seconds'] * 1e6:.3f} µs "
+                      f"{Colors.CYAN}GPU ops/sec:{Colors.END} {Colors.MAGENTA}{performance_data['gpu_operations_per_sec']:,.0f}{Colors.END} "
                       f"{Colors.CYAN}CV:{Colors.END} {cv_color}{performance_data['metrics']['cv_percent']:.1f}%{Colors.END} "
                       f"{Colors.CYAN}Runs:{Colors.END} {performance_data['test_runs']}")
             else:
@@ -1261,9 +1389,16 @@ class RulePerformanceTester:
                 f.write(f"# Generated by RulePerformanceTester\n")
                 f.write(f"# Total rules: {len(rule_performance)}\n")
                 f.write(f"# Test date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"# Format: rule # execution_time_seconds operations_per_second coefficient_of_variation\n\n")
+                f.write(f"# Primary metric: GPU kernel execution time from OpenCL event START..END timestamps\n")
+                f.write(f"# End-to-end time includes host enqueue + queue completion wait (diagnostic only)\n")
+                f.write(f"# Format: rule # gpu_kernel_time_seconds end_to_end_time_seconds gpu_operations_per_sec coefficient_of_variation\n\n")
                 for rule, perf_data in rule_performance:
-                    f.write(f"{rule} # {perf_data['execution_time']:.6f}s {perf_data['operations_per_sec']:,.0f} ops/sec {perf_data['metrics']['cv_percent']:.1f}% CV\n")
+                    f.write(
+                        f"{rule} # GPU {perf_data['gpu_kernel_time_seconds']:.9f}s | "
+                        f"E2E {perf_data['end_to_end_time_seconds']:.9f}s | "
+                        f"{perf_data['gpu_operations_per_sec']:,.0f} GPU ops/sec | "
+                        f"{perf_data['metrics']['cv_percent']:.1f}% CV\n"
+                    )
             print(f"{Colors.GREEN}Sorted rules saved to: {output_file}{Colors.END}")
         except Exception as e:
             print(f"{Colors.RED}Error saving sorted rules: {e}{Colors.END}")
@@ -1276,19 +1411,37 @@ class RulePerformanceTester:
                     "total_rules": len(rule_performance),
                     "test_date": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "test_iterations": self.iterations,
+                    "test_runs_per_rule": (rule_performance[0][1].get("test_runs", 0) if rule_performance else 0),
                     "test_words_count": len(self.test_words),
                     "max_word_len": self.max_word_len,
                     "max_rule_len": self.max_rule_len,
-                    "identical_dicts_mode": identical_dicts
+                    "identical_dicts_mode": identical_dicts,
+                    "timing_method": "opencl_event_profiling",
+                    "opencl_profiling_enabled": bool(getattr(self, "profiling_enabled", False)),
+                    "opencl_command_queue_property": "PROFILING_ENABLE",
+                    "primary_time_metric": "gpu_kernel_time_seconds",
+                    "end_to_end_time_definition": "Host enqueue loop plus queue completion wait; excludes buffer allocation and kernel argument setup.",
+                    "device_name": str(getattr(getattr(self, 'device', None), 'name', 'unknown')),
+                    "device_type": "GPU",
+                    "profiling_timer_resolution_ns": int(getattr(getattr(self, 'device', None), 'profiling_timer_resolution', 0) or 0)
                 },
                 "rules": [
                     {
                         "rule": rule,
-                        "execution_time_seconds": perf_data['execution_time'],
-                        "operations_per_second": perf_data['operations_per_sec'],
+                        # Keep execution_time_seconds for compatibility; it now
+                        # explicitly aliases the GPU-only OpenCL event duration.
+                        "execution_time_seconds": perf_data['gpu_kernel_time_seconds'],
+                        "gpu_kernel_time_seconds": perf_data['gpu_kernel_time_seconds'],
+                        "end_to_end_time_seconds": perf_data['end_to_end_time_seconds'],
+                        "operations_per_second": perf_data['gpu_operations_per_sec'],
+                        "gpu_operations_per_second": perf_data['gpu_operations_per_sec'],
+                        "end_to_end_operations_per_second": perf_data['end_to_end_operations_per_sec'],
+                        "operations_per_kernel": perf_data['operations_per_kernel'],
+                        "timing_method": perf_data['timing_method'],
                         "total_operations": perf_data['total_operations'],
                         "performance_rank": i + 1,
-                        "statistical_metrics": perf_data['metrics']
+                        "statistical_metrics": perf_data['gpu_kernel_metrics'],
+                        "end_to_end_statistical_metrics": perf_data['end_to_end_metrics']
                     }
                     for i, (rule, perf_data) in enumerate(rule_performance)
                 ]
@@ -1318,19 +1471,23 @@ class RuleSetOptimizer:
         if not all_rules:
             print(f"{Colors.RED}No performance data found!{Colors.END}")
             return
-        all_rules.sort(key=lambda x: x['execution_time_seconds'])
+        def gpu_time(rule):
+            return rule.get('gpu_kernel_time_seconds', rule.get('execution_time_seconds', float('inf')))
+
+        all_rules.sort(key=gpu_time)
         selected_rules = []
         total_time = 0.0
         for rule in all_rules:
-            if len(selected_rules) < self.max_rules and total_time + rule['execution_time_seconds'] <= self.max_total_time:
+            rule_gpu_time = gpu_time(rule)
+            if len(selected_rules) < self.max_rules and total_time + rule_gpu_time <= self.max_total_time:
                 selected_rules.append(rule)
-                total_time += rule['execution_time_seconds']
+                total_time += rule_gpu_time
         with open(output_file, 'w') as f:
-            f.write("# Optimized rule set - fastest rules\n")
+            f.write("# Optimized rule set - fastest GPU-kernel-time rules\n")
             f.write(f"# Total rules: {len(selected_rules)}\n")
-            f.write(f"# Estimated total time: {total_time:.6f}s\n")
+            f.write(f"# Estimated cumulative GPU kernel time: {total_time:.9f}s\n")
             f.write(f"# Max rules constraint: {self.max_rules}\n")
-            f.write(f"# Max time constraint: {self.max_total_time}s\n")
+            f.write(f"# Max cumulative GPU kernel time constraint: {self.max_total_time}s\n")
             f.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             for rule in selected_rules:
                 f.write(f"{rule['rule']}\n")
@@ -1340,14 +1497,15 @@ class RuleSetOptimizer:
                 "max_rules": self.max_rules,
                 "max_total_time": self.max_total_time,
                 "actual_rules_selected": len(selected_rules),
-                "actual_total_time": total_time
+                "actual_total_gpu_kernel_time_seconds": total_time,
+                "timing_metric": "gpu_kernel_time_seconds"
             },
             "selected_rules": selected_rules
         }
         with open(report_file, 'w') as f:
             json.dump(optimization_report, f, indent=2)
         print(f"\n{Colors.GREEN}Optimized rule set created: {output_file}{Colors.END}")
-        print(f"{Colors.CYAN}Selected {len(selected_rules)} rules with total time {total_time:.6f}s{Colors.END}")
+        print(f"{Colors.CYAN}Selected {len(selected_rules)} rules with cumulative GPU kernel time {total_time:.9f}s{Colors.END}")
         print(f"{Colors.CYAN}Optimization report: {report_file}{Colors.END}")
 
 def find_rule_files(rule_paths: List[str]) -> List[str]:
@@ -1421,7 +1579,7 @@ def main():
     parser.add_argument('--max-test-rules', type=int, default=1000, help='Maximum number of rules to test')
     parser.add_argument('--optimize', action='store_true', help='Create optimized rule set after benchmarking')
     parser.add_argument('--max-optimize-rules', type=int, default=500, help='Maximum rules for optimized set')
-    parser.add_argument('--max-time', type=float, default=30.0, help='Maximum cumulative rule execution time in seconds for optimized set')
+    parser.add_argument('--max-time', type=float, default=30.0, help='Maximum cumulative GPU kernel execution time in seconds for optimized set')
     parser.add_argument('--visualize', action='store_true', help='Generate comprehensive visualizations')
     parser.add_argument('--dpi', type=int, default=300, help='DPI for output images')
     parser.add_argument('--visualization-output', default=None, help='Separate output directory for visualizations')
@@ -1494,13 +1652,16 @@ def main():
             print(f"\n{Colors.BOLD}{Colors.CYAN}Performance Summary for {rule_file}:{Colors.END}")
             fastest_time = rule_performance[0][1]['execution_time']
             fastest_color = Colors.GREEN if fastest_time < 0.001 else Colors.YELLOW if fastest_time < 0.01 else Colors.RED
-            print(f"  {Colors.WHITE}Fastest rule:{Colors.END} {Colors.YELLOW}{rule_performance[0][0]}{Colors.END} {Colors.CYAN}({fastest_color}{rule_performance[0][1]['execution_time']:.6f}s{Colors.CYAN}){Colors.END}")
+            print(f"  {Colors.WHITE}Fastest GPU rule:{Colors.END} {Colors.YELLOW}{rule_performance[0][0]}{Colors.END} {Colors.CYAN}({fastest_color}{fastest_time * 1e6:.3f} µs GPU kernel){Colors.END}")
+            print(f"  {Colors.WHITE}Fastest end-to-end:{Colors.END} {rule_performance[0][1]['end_to_end_time_seconds'] * 1e6:.3f} µs (host + GPU wait)")
             slowest_time = rule_performance[-1][1]['execution_time']
             slowest_color = Colors.GREEN if slowest_time < 0.001 else Colors.YELLOW if slowest_time < 0.01 else Colors.RED
-            print(f"  {Colors.WHITE}Slowest rule:{Colors.END} {Colors.YELLOW}{rule_performance[-1][0]}{Colors.END} {Colors.CYAN}({slowest_color}{rule_performance[-1][1]['execution_time']:.6f}s{Colors.CYAN}){Colors.END}")
+            print(f"  {Colors.WHITE}Slowest GPU rule:{Colors.END} {Colors.YELLOW}{rule_performance[-1][0]}{Colors.END} {Colors.CYAN}({slowest_color}{slowest_time * 1e6:.3f} µs GPU kernel){Colors.END}")
             avg_time = sum(p[1]['execution_time'] for p in rule_performance) / len(rule_performance)
             avg_color = Colors.GREEN if avg_time < 0.001 else Colors.YELLOW if avg_time < 0.01 else Colors.RED
-            print(f"  {Colors.WHITE}Average time:{Colors.END} {avg_color}{avg_time:.6f}s{Colors.END}\n")
+            avg_e2e = sum(p[1]['end_to_end_time_seconds'] for p in rule_performance) / len(rule_performance)
+            print(f"  {Colors.WHITE}Average GPU kernel time:{Colors.END} {avg_color}{avg_time * 1e6:.3f} µs{Colors.END}")
+            print(f"  {Colors.WHITE}Average end-to-end time:{Colors.END} {avg_e2e * 1e6:.3f} µs\n")
     
     if args.optimize and performance_reports:
         print(f"\n{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.END}")

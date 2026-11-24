@@ -2268,3 +2268,13 @@ body{
   .reset-defaults-heading { align-items:center; }
   .topn-pcfg-note { font-size:8px; }
 }
+
+/* Aether: OpenCL event profiling is mandatory and always enabled. */
+.aether-profiling-banner{margin:0 0 16px;padding:12px 14px;border:1px solid #40533a;border-radius:9px;background:linear-gradient(120deg,#1a241b,#151d21);}
+.aether-profiling-banner-head{display:flex;align-items:center;gap:8px;min-width:0;}
+.aether-profiling-indicator{width:7px;height:7px;flex:none;border-radius:50%;background:var(--accent);box-shadow:0 0 9px #b8f36b88;}
+.aether-profiling-banner-head>b{font-size:10px;color:#dce8d4;}
+.aether-profiling-state{margin-left:auto;font:8px var(--mono);letter-spacing:.08em;color:var(--accent);white-space:nowrap;}
+.aether-profiling-banner p{margin:8px 0 0 15px;max-width:1050px;font-size:9px;line-height:1.55;color:#9aa895;}
+.aether-profiling-banner code,.notes-panel code{font:8px var(--mono);color:#c5e99d;background:#202b20;border:1px solid #35452f;border-radius:4px;padding:2px 4px;}
+@media(max-width:650px){.aether-profiling-banner-head{flex-wrap:wrap}.aether-profiling-state{margin-left:15px}.aether-profiling-banner p{margin-left:0;}}

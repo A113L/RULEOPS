@@ -60,7 +60,7 @@ questions:
 | **Rule Ranker** | Scores a candidate `.rule` file against a wordlist + cracked-password list; supports an adaptive multi-armed-bandit (MAB) mode and a legacy exhaustive mode. |
 | **Ranker CELF optimizer** | Runs greedy/CELF max-coverage selection over ranked candidates (GPU coverage pass + CPU or GPU CELF) to produce a compact, high-coverage rule file. |
 | **Concentrator** | Extracts, generates, and cleans rule collections from existing material. |
-| **Aether** | Benchmarks Hashcat rule throughput on an OpenCL GPU, produces per-file dashboards, and can build a fastest-first ruleset under a cumulative execution-time budget. |
+| **Aether** | Benchmarks Hashcat rule throughput on an OpenCL GPU using device-side event profiling, reports separate GPU Kernel Time and host End-to-End Time metrics, produces per-file dashboards, and can build a fastest-first ruleset under a cumulative GPU-kernel-time budget. |
 | **Rulestripper** | Empirically derives rule chains by decomposing TARGET words into BASE-word stems and transformations (14 extraction modes). |
 | **PCFG Corpus Profiler** | Produces aggregate-only length and character-class statistics for password-security auditing; it does not emit candidate values or rules. |
 | **Rule Minimizer** | Removes functionally/behaviorally equivalent rules by comparing their output over a probe word set. |

@@ -25,6 +25,46 @@ class CelfSeedLoadStats:
     capped: bool = False
 
 
+def format_celf_seed_status_messages(
+    seed_paths,
+    loaded_rules,
+    stats: CelfSeedLoadStats | None,
+    *,
+    max_rules: int,
+    max_depth: int,
+    stage_seed_path: str | Path | None = None,
+) -> list[str]:
+    """Describe whether optional CELF seed injection is disabled or imported."""
+    paths = list(seed_paths or ())
+    if not paths:
+        if stage_seed_path:
+            return [
+                "[CELF SEED] Disabled (optional) — a custom seed file is configured "
+                "for Stage S only; enable CELF seed injection to add it to the CELF pool."
+            ]
+        return [
+            "[CELF SEED] Disabled (optional) — no custom CELF seed file was supplied."
+        ]
+
+    names = ", ".join(Path(path).name for path in paths)
+    accepted = len(loaded_rules or ())
+    if stats is None:
+        return [
+            f"[CELF SEED] Enabled | files={len(paths)} ({names}) | "
+            "validation statistics unavailable."
+        ]
+
+    cap_note = " | limit_reached=yes" if stats.capped else " | limit_reached=no"
+    return [
+        f"[CELF SEED] Enabled | files={len(paths)} ({names}) | "
+        f"max_rules={int(max_rules):,} | max_depth={int(max_depth)}",
+        f"[CELF SEED] File scan complete | accepted={accepted:,} | "
+        f"files_read={stats.files:,} | lines_scanned={stats.lines:,} | "
+        f"invalid={stats.invalid:,} | duplicates={stats.duplicates:,} | "
+        f"over_depth={stats.over_depth:,}{cap_note}",
+    ]
+
+
 def load_celf_seed_rules(
     paths: Iterable[str | Path],
     *,

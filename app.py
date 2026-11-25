@@ -180,7 +180,7 @@ VALUE_OPTIONS = {
     "genetic_generations": "--genetic-generations", "genetic_pop": "--genetic-pop",
     "genetic_elite": "--genetic-elite", "select_mode": "--select-mode",
     "select_budget": "--select-budget", "select_budgets": "--select-budgets",
-    "select_cost_alpha": "--select-cost-alpha",
+    "select_cost_alpha": "--select-cost-alpha", "output_format": "--output-format",
 }
 
 
@@ -3137,6 +3137,9 @@ def build_command(options: dict, run_dir: Path):
     if not base or not target:
         raise ValueError("Upload both BASE and TARGET wordlists before starting a run.")
     output_name = safe_name(options.get("output_name", "rulest_output.txt"))
+    output_format = options.get("output_format", "line")
+    if output_format not in {"line", "expanded"}:
+        raise ValueError("Output format must be 'line' or 'expanded'.")
     if output_name.lower() == "control.txt":
         raise ValueError("The output filename 'control.txt' is reserved for run controls.")
     output_path = run_dir / output_name

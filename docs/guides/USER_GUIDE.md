@@ -255,6 +255,7 @@ Use **Detect GPUs** to refresh the device list. A detailed diagnostic report is 
 - **Selection budget** — maximum number of selected rules; `0` in Greedy mode means continue until the candidate pool is saturated.
 - **Additional budget sweep** — comma-separated budgets; one CELF run can produce several files of different sizes.
 - **Cost alpha** — increasing this value favors shorter chains when coverage gains are similar.
+- **Output format** — `Compact · Hashcat line` preserves concatenated operators (default); `Expanded · spaced operators` separates every operator and its arguments with spaces, using the same readable layout as Concentrator's Expanded mode. The expanded layout is intended for inspection and RULEOPS workflows; choose Compact when a downstream tool requires standard compact rule lines.
 - **CELF cost profile** — optional PCFG profile used to cost-weight literal characters in Greedy mode.
 - **Report exact recovery** — adds a report with the exact number of distinct TARGET items recovered by the selected rules. It does not run a second exact-scoring phase.
 
@@ -273,7 +274,7 @@ To use CELF import:
 4. Enter a positive number in **Maximum imported CELF rules**. The default is 1000; there is no fixed upper limit.
 5. Run RULEST.
 
-Each rule is validated, filtered against the maximum-depth limit, deduplicated, and exactly scored. An imported rule is a candidate—it is **not selected automatically**. See [RULEST CELF seed files](RULEST_CELF_SEEDS.md) for details.
+Each rule is validated, filtered against the maximum-depth limit, deduplicated, and exactly scored. An imported rule is a candidate—it is **not selected automatically**. See [RULEST CELF seed files](RULEST_CELF_SEEDS.md) for details. The run log reports whether the optional import is disabled or enabled, the validation counts (including zero accepted rules), and the number of external candidates actually added to CELF.
 
 ### 4.2 RULEST in the CLI
 
@@ -282,6 +283,14 @@ Basic syntax:
 ```bash
 python run_rulest.py BASE.txt TARGET.txt --output candidates.rule
 ```
+
+To write the same operator-spaced layout as Concentrator's Expanded mode:
+
+```bash
+python run_rulest.py BASE.txt TARGET.txt --output candidates-expanded.rule --output-format expanded
+```
+
+The default `line` format keeps each rule compact. `expanded` inserts spaces between individual operator+argument tokens in every output rule, including custom CELF candidates that make it into the selected output.
 
 Example with greater depth, a longer budget, and a deterministic seed:
 
@@ -349,6 +358,7 @@ Common CLI options:
 | `-a`, `--select-cost-alpha` | Weight for rule-chain length cost. |
 | `--select-cost-profile` | Aggregated PCFG profile for CELF cost weighting. |
 | `--celf-seed-rules`, `--celf-seed-max-rules` | External CELF candidates and their import limit. |
+| `--output-format line / expanded` | Compact output (default) or operator-spaced expanded output. |
 | `-e`, `--exact-recovery` | Adds an exact TARGET recovery report. |
 | `-S`, `--seed` | Random seed for reproducibility. |
 | `-D`, `--debug` | Verbose logging. |

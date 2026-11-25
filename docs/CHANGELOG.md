@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — RULEST expanded output format
+
+- Added a RULEST output-format selector for compact Hashcat lines or Concentrator-style expanded operator spacing, available in both CLI and Control Center UI.
+- Unified Hashcat operator tokenization between RULEST and Concentrator and included RULEST's `v`/`B` extended operators so expanded output does not silently omit them.
+
+## [Unreleased] — Explicit RULEST CELF seed logging
+
+- Added startup log messages that always state whether optional CELF seed injection is disabled, enabled, or configured for Stage S only. Enabled imports now report source files, accepted rules, scanned lines, validation rejects, duplicates, depth rejects and limit status, including when zero rules are accepted.
+- Added a post-merge summary showing how many external rules were added, how many already existed in extraction, and the final CELF candidate-pool size. Early cancellation before CELF selection is now reported explicitly.
+
 ## [Unreleased] — English user guide for all RULEOPS tools
 
 - Added the complete English CLI + UI guide covering all Control Center tools, standalone CLI utilities, common run/storage workflows, example pipelines and troubleshooting.

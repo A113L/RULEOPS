@@ -56,3 +56,21 @@ the RULEST CELF correctness and GPU execution details.
 The upload and saved-library selectors in Rule selection are synchronized with
 the matching controls in Input files. The same selected file is reused; it is
 not uploaded twice. The file must still satisfy the import validation above.
+
+
+## Runtime log messages
+
+RULEST reports the optional input even when CELF seed injection is not enabled:
+
+- **Disabled (optional)** means no `--celf-seed-rules` file was supplied. If a
+  regular `--seed-rules` file is present, the message clarifies that it is
+  configured for Stage S only and is not being added to CELF.
+- **Enabled / File scan complete** identifies the imported file(s) and reports
+  accepted rules, scanned lines, invalid entries, duplicates, depth rejects,
+  and whether the configured import limit was reached. This summary is shown
+  even when no rule passes validation.
+- **Candidate merge complete** reports the number of external rules added to
+  the CELF pool, how many were already present in normal extraction, and the
+  resulting total candidate-pool size.
+- If the run is stopped before CELF selection, the log states that validated
+  external candidates were not merged into the selection pool.

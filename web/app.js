@@ -72,7 +72,7 @@ const defaults = {
   token_strip_max_suffix: 4, token_strip_min_leet_amb: 3, token_strip_workers: 0, token_strip_chunk_size: 0,
   token_strip_bloom_mb: 0,
   genetic: false, genetic_generations: 50, genetic_pop: 200, genetic_elite: 0.15,
-  select_mode: 'frequency', select_budget: 0, select_budgets: '', select_cost_alpha: 0, exact_recovery: false,
+  select_mode: 'frequency', select_budget: 0, select_budgets: '', select_cost_alpha: 0, output_format: 'line', exact_recovery: false,
   celf_seed_into_celf: false, celf_seed_max_rules: 1000,
   debug: false, profile: false,
 };

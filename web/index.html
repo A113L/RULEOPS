@@ -235,6 +235,7 @@
               <label class="field"><span>Selection mode</span><select id="select_mode"><option value="frequency">Frequency · GPU hit count</option><option value="greedy">Greedy · Marginal coverage</option></select><small>Greedy evaluates exact target coverage.</small></label>
               <label class="field"><span>Selection budget</span><div class="input-suffix"><input type="number" min="0" value="0" id="select_budget"><b>rules</b></div><small>0 = continue to saturation (greedy mode).</small></label>
               <label class="field"><span>Cost alpha</span><input type="number" min="0" step="0.1" value="0" id="select_cost_alpha"><small>Higher values favour shorter chains.</small></label>
+              <label class="field"><span>Output format</span><select id="output_format"><option value="line">Compact · Hashcat line</option><option value="expanded">Expanded · spaced operators</option></select><small>Expanded uses the same operator spacing as Concentrator. Compact is the default for direct Hashcat use.</small></label>
               <label class="field field-wide"><span>Additional budget sweep</span><input type="text" id="select_budgets" placeholder="100, 1000, 10000"><small>Comma-separated rule budgets; emits separate prefix files.</small></label>
             </div>
             <div class="optional-copy" style="margin-top:0.85rem">

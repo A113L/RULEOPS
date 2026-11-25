@@ -85,3 +85,47 @@ def test_accepts_more_than_one_thousand_seed_rules(tmp_path, monkeypatch):
     assert len(rules) == 1505
     assert stats.valid == 1505
     assert stats.capped is True
+
+
+def test_celf_seed_status_reports_optional_disabled_state_and_stage_s_only(tmp_path):
+    from rulest.celf_seed_rules import format_celf_seed_status_messages
+
+    disabled = format_celf_seed_status_messages(
+        [], [], None, max_rules=1000, max_depth=2
+    )
+    assert len(disabled) == 1
+    assert "Disabled (optional)" in disabled[0]
+    assert "no custom CELF seed file" in disabled[0]
+
+    stage_s_only = format_celf_seed_status_messages(
+        [], [], None, max_rules=1000, max_depth=2,
+        stage_seed_path=tmp_path / "stage-s.rule",
+    )
+    assert "Stage S only" in stage_s_only[0]
+    assert "CELF pool" in stage_s_only[0]
+
+
+def test_celf_seed_status_reports_zero_valid_rules_and_validation_counts(tmp_path):
+    from rulest.celf_seed_rules import (
+        CelfSeedLoadStats,
+        format_celf_seed_status_messages,
+    )
+
+    messages = format_celf_seed_status_messages(
+        [tmp_path / "curated.rule"],
+        [],
+        CelfSeedLoadStats(
+            files=1, lines=17, valid=0, invalid=12, duplicates=2,
+            over_depth=3, capped=False,
+        ),
+        max_rules=2500,
+        max_depth=2,
+    )
+    assert "curated.rule" in messages[0]
+    assert "max_rules=2,500" in messages[0]
+    assert "accepted=0" in messages[1]
+    assert "lines_scanned=17" in messages[1]
+    assert "invalid=12" in messages[1]
+    assert "duplicates=2" in messages[1]
+    assert "over_depth=3" in messages[1]
+    assert "limit_reached=no" in messages[1]

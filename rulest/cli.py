@@ -27,9 +27,12 @@ from .extractor import GPUExtractor
 from .multi_gpu import MultiGPUEngine
 from .minimize import minimize_by_signature
 from .selection import select_rules_by_marginal_coverage
-from .celf_seed_rules import load_celf_seed_rules
+from .celf_seed_rules import load_celf_seed_rules, format_celf_seed_status_messages
 from .io_utils import load_wordlist
 from .profiling import stage_profiler
+from hashcat_rule_format import format_hashcat_rule
+
+
 
 def main():
     ap = argparse.ArgumentParser(prog='rulest', description='GPU-Compatible Hashcat Rules Engine (optimized)',
@@ -44,6 +47,8 @@ def main():
     ap.add_argument('base_wordlist', nargs='?')
     ap.add_argument('target_wordlist', nargs='?')
     ap.add_argument('-o','--output', default='rulest_output.txt')
+    ap.add_argument('--output-format', choices=['line', 'expanded'], default='line',
+                    help='Rule file format: compact Hashcat lines (default) or operator-spaced expanded format, like Concentrator.')
     ap.add_argument('-d', '--device', default=None, metavar='SPEC',
                     help='Device index, name substring, "all" to run every detected GPU in parallel, '
                          'or a comma-separated list of indices (e.g. "0,1") to run only those GPUs in parallel '
@@ -203,6 +208,11 @@ def main():
     if args.celf_seed_rules and args.select_mode != 'greedy':
         log_error('--celf-seed-rules requires --select-mode greedy')
         sys.exit(1)
+    if args.max_depth > MAX_HASHCAT_CHAIN:
+        log_warn(f"Depth capped to {MAX_HASHCAT_CHAIN}"); args.max_depth=MAX_HASHCAT_CHAIN
+    elif args.max_depth < 1:
+        log_error("--max-depth >=1")
+        sys.exit(1)
     celf_seed_rules = []
     celf_seed_stats = None
     if args.celf_seed_rules:
@@ -215,9 +225,15 @@ def main():
         except (OSError, ValueError) as exc:
             log_error(f'[CELF SEED] {exc}')
             sys.exit(1)
-    if args.max_depth > MAX_HASHCAT_CHAIN:
-        log_warn(f"Depth capped to {MAX_HASHCAT_CHAIN}"); args.max_depth=MAX_HASHCAT_CHAIN
-    elif args.max_depth<1: log_error("--max-depth >=1"); sys.exit(1)
+    for message in format_celf_seed_status_messages(
+        args.celf_seed_rules,
+        celf_seed_rules,
+        celf_seed_stats,
+        max_rules=args.celf_seed_max_rules,
+        max_depth=args.max_depth,
+        stage_seed_path=args.seed_rules,
+    ):
+        log_info(message)
 
     log_info(f"  base      : {bold(args.base_wordlist)}")
     log_info(f"  target    : {bold(args.target_wordlist)}")
@@ -469,6 +485,7 @@ def main():
             f.write(f"# Base           : {os.path.basename(args.base_wordlist)}\n")
             f.write(f"# Target         : {os.path.basename(args.target_wordlist)}\n")
             f.write(f"# Depth          : 1-{args.max_depth}\n")
+            f.write(f"# Format         : {args.output_format}\n")
             bloom_mb = args.bloom_mb if args.bloom_mb>0 else "auto"
             f.write(f"# Bloom          : {bloom_mb} MB  (sharding: {'disabled' if args.bloom_no_shard else 'auto'})\n")
             f.write(f"# STAGE 0        : core + insert mode  GPU-verified candidates\n")
@@ -497,7 +514,7 @@ def main():
                 if not quit_at_write_start and index % 8192 == 0 and _kb.poll():
                     break
                 if r != ':':
-                    f.write(f"{r}\n")
+                    f.write(format_hashcat_rule(r, args.output_format) + "\n")
                     written += 1
             if written < len(ordered_rules) and _kb.quit_requested:
                 f.write(f"# EARLY EXIT: wrote {written:,} of {len(ordered_rules):,} requested rules.\n")
@@ -510,18 +527,16 @@ def main():
                       "healthy --device.")
             sys.exit(1)
         candidate_rules = [r for r in final_counts if r != ':']
-        if celf_seed_rules:
+        if celf_seed_stats is not None:
             # final_counts is already a hash table; use it for overlap checks
             # instead of materializing another set the size of a huge candidate pool.
             celf_seed_new = [rule for rule in celf_seed_rules if rule not in final_counts]
             celf_seed_stats.already_present += len(celf_seed_rules) - len(celf_seed_new)
             candidate_rules.extend(celf_seed_new)
-            cap_note = ' (limit reached)' if celf_seed_stats.capped else ''
             log_info(
-                f"[CELF SEED] Added {bold(cyan(str(len(celf_seed_new))))} candidate(s) "
-                f"from {celf_seed_stats.files} file(s) | valid={celf_seed_stats.valid:,}, "
-                f"invalid={celf_seed_stats.invalid:,}, over-depth={celf_seed_stats.over_depth:,}, "
-                f"duplicates={celf_seed_stats.duplicates:,}, already in extraction={celf_seed_stats.already_present:,}{cap_note}"
+                f"[CELF SEED] Candidate merge complete | external_added={len(celf_seed_new):,} | "
+                f"already_in_extraction={celf_seed_stats.already_present:,} | "
+                f"CELF_candidate_pool={len(candidate_rules):,}"
             )
         # load_wordlist preserves every valid wordlist entry, including repeats.
         n_target = len(target_words)
@@ -621,6 +636,11 @@ def main():
         del target_words
         gc.collect()
     else:
+        if args.select_mode == 'greedy' and _kb.quit_requested and celf_seed_stats is not None:
+            log_warn(
+                "[CELF SEED] File validation completed, but external candidates were not "
+                "merged because the run was stopped before CELF selection."
+            )
         ordered_rules = [r for r, _ in si if r != ':']
         # si is fully superseded by ordered_rules now (final_counts is
         # still needed below for the end-of-run frequency summary) --

@@ -28,6 +28,10 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Callable, Any, Set, Optional
 
 from hashcat_rule_ops import apply_hashcat8_operator
+from hashcat_rule_format import (
+    PRINTABLE_ASCII, OPERATOR_ARGS, ALL_OPERATORS, ALL_RULE_CHARS,
+    TOKEN_REGEX, OPERATOR_REGEX, OPERATORS_REQUIRING_ARGS, expand_hashcat_rule,
+)
 
 # -----------------------------------------------------------------------------
 # Windows terminal color support (ANSI → WinAPI conversion)
@@ -152,54 +156,6 @@ class Colors:
 # ==============================================================================
 
 BASE36_CHARS  = set('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-PRINTABLE_ASCII = set(chr(i) for i in range(32, 127))
-
-# Maps operator character → list of argument types ('num' or 'char')
-OPERATOR_ARGS: Dict[str, List[str]] = {
-    # No arguments
-    ':': [], 'l': [], 'u': [], 'c': [], 'C': [], 't': [], 'r': [], 'd': [], 'f': [],
-    '{': [], '}': [], '[': [], ']': [], 'q': [], 'M': [], '4': [], '6': [], 'k': [], 'K': [],
-    'Q': [], 'E': [],
-    # One base-36 number
-    'T': ['num'], 'p': ['num'], 'D': ['num'], 'z': ['num'], 'Z': ['num'], "'": ['num'],
-    '+': ['num'], '-': ['num'], '.': ['num'], ',': ['num'], 'L': ['num'], 'R': ['num'],
-    'y': ['num'], 'Y': ['num'], '<': ['num'], '>': ['num'], '_': ['num'],
-    # Two base-36 numbers
-    'x': ['num', 'num'], 'O': ['num', 'num'], '*': ['num', 'num'],
-    # One literal character
-    '$': ['char'], '^': ['char'], '@': ['char'], '!': ['char'], '/': ['char'],
-    '(': ['char'], ')': ['char'],
-    # Two literal characters
-    's': ['char', 'char'],
-    # One base-36 number + one literal character
-    'i': ['num', 'char'], 'o': ['num', 'char'], '=': ['num', 'char'], '%': ['num', 'char'],
-    '3': ['num', 'char'],
-    # Three base-36 numbers
-    'X': ['num', 'num', 'num'],
-    # One literal character (eX)
-    'e': ['char'],
-}
-
-ALL_OPERATORS = list(OPERATOR_ARGS.keys())
-
-# ALL_RULE_CHARS: every character that may legally appear in a hashcat rule.
-# This includes all printable ASCII except space (space is only a token
-# *separator* in expanded-format files; it is never stripped as an argument
-# because process_single_file normalises via TOKEN_REGEX which preserves
-# embedded-space arguments).
-#
-# v3.5 fix: the previous hard-coded set was missing the following valid
-# operator/argument characters, causing them to be silently stripped from
-# every rule during loading and corrupting any rule that used them:
-#   {  }   — rotate-left / rotate-right (zero-arg operators)
-#   _      — reject-unless-length  (one-num-arg operator, e.g.  _8)
-#   '      — truncate-at           (one-num-arg operator, e.g.  '6)
-#   \      — valid literal character argument for s, i, o, $, ^ …
-#   "      — ditto
-#   ;      — ditto
-# Using PRINTABLE_ASCII minus space is both correct and forward-compatible:
-# any future hashcat operator that uses a printable char will be handled.
-ALL_RULE_CHARS: Set[str] = PRINTABLE_ASCII - {' '}
 
 # ---------------------------------------------------------------------------
 # NEVER_PRODUCE_OPS  (v3.1)
@@ -244,31 +200,6 @@ def _has_banned_op(rule: str) -> bool:
     return any(t[0] in NEVER_PRODUCE_OPS for t in tokens)
 
 
-def _build_token_regex() -> re.Pattern:
-    """Compile regex that tokenizes a hashcat rule into operator+arg chunks."""
-    patterns = []
-    for op, args in OPERATOR_ARGS.items():
-        escaped = re.escape(op)
-        arg_pat = ''.join('[0-9A-Z]' if a == 'num' else '[ -~]' for a in args)
-        patterns.append(escaped + arg_pat)
-    patterns.sort(key=len, reverse=True)
-    return re.compile('|'.join(patterns))
-
-
-def _build_count_regex() -> re.Pattern:
-    """Compile regex that matches any operator character (for counting)."""
-    # Single-char operators — length sorting is irrelevant, but keep for safety
-    patterns = [re.escape(op) for op in ALL_OPERATORS]
-    patterns.sort(key=len, reverse=True)
-    return re.compile('|'.join(patterns))
-
-
-TOKEN_REGEX    = _build_token_regex()
-OPERATOR_REGEX = _build_count_regex()
-
-OPERATORS_REQUIRING_ARGS: Dict[str, int] = {
-    op: len(args) for op, args in OPERATOR_ARGS.items() if args
-}
 
 
 # ==============================================================================

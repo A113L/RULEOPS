@@ -895,9 +895,13 @@ async function openToolRunHistoryRun(runId, groupName = '') {
         const row = document.createElement('article'); row.className = 'tool-history-artifact-row';
         const icon = document.createElement('span'); icon.className = 'output-file-icon'; icon.textContent = String(file.type || 'file').slice(0, 4).toUpperCase();
         const copy = document.createElement('div'); copy.className = 'output-meta';
-        const name = document.createElement('b'); name.textContent = file.path || file.name;
+        const relativePath = String(file.path || file.name || '');
+        const name = document.createElement('b'); name.textContent = relativePath.split('/').pop() || relativePath;
+        const filepath = document.createElement('small'); filepath.className = 'tool-history-artifact-path';
+        filepath.textContent = `Filepath: ${relativePath}`;
+        filepath.title = relativePath;
         const size = document.createElement('small'); size.textContent = humanSize(Number(file.size || 0));
-        copy.append(name, size);
+        copy.append(name, filepath, size);
         const actions = document.createElement('div'); actions.className = 'tool-history-artifact-actions';
         if (file.previewable) {
           const preview = document.createElement('a'); preview.className = 'secondary-button'; preview.textContent = 'Preview';

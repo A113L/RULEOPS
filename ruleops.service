@@ -1,6 +1,6 @@
 # RULEOPS systemd service template.
 # Replace @RULEOPS_USER@, @RULEOPS_GROUP@ and @RULEOPS_DIR@ before installing.
-# See docs/SYSTEMD_SERVICE.md for the install and configuration instructions.
+# See docs/operations/SYSTEMD_SERVICE.md for the install and configuration instructions.
 
 [Unit]
 Description=RULEOPS Hashcat Rule Toolchain

@@ -6,7 +6,7 @@
 
 RULEOPS is a cybersecurity research workbench for building, benchmarking, scoring, and compressing
 password-cracking rulesets used with [Hashcat](https://hashcat.net/hashcat/).
-It brings together seven complementary tools behind one authenticated local
+It brings together a set of complementary tools behind one authenticated local
 web UI (plus standalone CLIs for each), aimed at studying how rule-based
 password transformations can be generated and selected more efficiently than
 hand-tuned rule lists.
@@ -58,7 +58,7 @@ questions:
 |---|---|
 | **RULEST** | Generates candidate rule sets from BASE/TARGET wordlist pairs (optional Stage 0 pass and genetic-algorithm refinement), GPU-accelerated. |
 | **Rule Ranker** | Scores a candidate `.rule` file against a wordlist + cracked-password list; supports an adaptive multi-armed-bandit (MAB) mode and a legacy exhaustive mode. |
-| **Ranker CELF optimizer** | Runs greedy/CELF max-coverage selection over ranked candidates (GPU coverage pass + CPU or GPU CELF) to produce a compact, high-coverage rule file. |
+| **Ranker CELF optimizer** | Runs greedy/CELF max-coverage selection over ranked candidates using GPU recomputation for exact marginal-coverage scoring and host-side candidate coordination. |
 | **Concentrator** | Extracts, generates, and cleans rule collections from existing material. |
 | **Aether** | Benchmarks Hashcat rule throughput on an OpenCL GPU using device-side event profiling, reports separate GPU Kernel Time and host End-to-End Time metrics, produces per-file dashboards, and can build a fastest-first ruleset under a cumulative GPU-kernel-time budget. |
 | **Rulestripper** | Empirically derives rule chains by decomposing TARGET words into BASE-word stems and transformations (14 extraction modes). |
@@ -166,6 +166,31 @@ python minimizer.py celf_selected.rule --output final.rule --workers 4
 
 Each step is also available from the Control Center UI.
 
+### Curated rule-file candidates in RULEST CELF
+
+RULEST can add curated Hashcat rules directly to its CELF candidate pool. The
+imported rules are checked for GPU compatibility, chain depth and duplicates,
+then receive the same exact marginal-coverage scoring as generated rules.
+They are **candidates only**: CELF does not force them into the output. The
+input-file order is preserved. The default import cap is 1,000 unique rules;
+`--celf-seed-max-rules` accepts any positive integer and has no fixed upper
+bound. Full CLI/UI instructions and validation details are in the
+[seed-file guide](docs/guides/RULEST_CELF_SEEDS.md).
+
+```bash
+python run_rulest.py BASE.txt TARGET.txt --select-mode greedy \
+    --select-budget 5000 --celf-seed-rules curated.rule \
+    --celf-seed-max-rules 500 --output celf_selected.rule
+```
+
+Repeat `--celf-seed-rules PATH` to read multiple files; the cap applies across
+them all. Raise `--celf-seed-max-rules` above 1,000 when importing larger files.
+`--celf-seed-rules` requires `--select-mode greedy`. The existing `--seed-rules`
+option remains unchanged and continues to feed STAGE S. In the web UI, enable
+**Inject custom seed file into CELF** in Rule selection to reuse the uploaded
+Custom seed rules file as CELF candidates; the cap field has no fixed upper
+bound.
+
 ## PCFG Corpus Profiling
 
 Create an aggregate-only profile of a target wordlist with weighted and
@@ -184,7 +209,7 @@ python run_pcfg_profile.py MEDIUM.txt --compare reports/small-profile.json \
   --output reports/medium-profile.json
 ```
 
-See [`docs/PCFG_PROFILE.md`](docs/PCFG_PROFILE.md) for the report schema,
+See [`docs/guides/PCFG_PROFILE.md`](docs/guides/PCFG_PROFILE.md) for the report schema,
 comparison behavior, and frequency-list handling details.
 
 ## Project structure
@@ -202,20 +227,17 @@ RULEOPS/
 ├── rulest/                 # RULEST engine package
 ├── rule_ranker/            # Ranking + CELF postprocessing package
 ├── web/                    # Front-end assets
-├── docs/                   # Design notes, fixes, and performance logs
+├── docs/                   # Guides, engineering references, and operations docs
 └── tests/                  # Unit and integration tests
 ```
 
 ## Documentation
 
-Deeper design notes live under [`docs/`](docs/), including:
-
-- [`docs/RANKER_README.md`](docs/RANKER_README.md) — Rule Ranker package/CLI reference
-- [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) — web-server limits and hardening
-- [`docs/SYSTEMD_SERVICE.md`](docs/SYSTEMD_SERVICE.md) — running as a Linux service
-- [`docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md`](docs/CELF_GPU_EXACT_SCORING_AND_PROGRESS_2026-11-14.md) — CELF selection algorithm, correctness constraints, and benchmarks
-- [`docs/INPUT_LIBRARY.md`](docs/INPUT_LIBRARY.md), [`docs/MEMORY_OPTIMIZATION.md`](docs/MEMORY_OPTIMIZATION.md) — supporting subsystems
-- [`docs/PCFG_PROFILE.md`](docs/PCFG_PROFILE.md) — aggregate-only PCFG corpus profile CLI and report schema
+The documentation has a dedicated [index](docs/README.md), organized into user
+[guides](docs/README.md#user-guides), [engineering references](docs/README.md#engineering-references),
+and [operations](docs/README.md#operations-and-maintenance). The English [user guide for all tools
+(CLI + UI)](docs/guides/USER_GUIDE.md) covers practical workflows, and the
+[CHANGELOG](docs/CHANGELOG.md) is the chronological record of project changes.
 
 ## Testing
 

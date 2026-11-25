@@ -1,8 +1,22 @@
 # Run RULEOPS with systemd (Linux)
 
+> [← Documentation index](../README.md)
+
+
 This guide installs RULEOPS as a system-wide systemd service. The service starts at boot, runs under the normal Linux account that owns the project, writes logs to the system journal, and restarts after an unexpected failure.
 
-The repository contains the matching unit template at [`ruleops.service`](../ruleops.service). It has three placeholders that must be rendered for the local machine before it is installed. Do not copy the unrendered template directly into `/etc/systemd/system/`.
+The repository contains the matching unit template at [`ruleops.service`](../../ruleops.service). It has three placeholders that must be rendered for the local machine before it is installed. Do not copy the unrendered template directly into `/etc/systemd/system/`.
+
+## Contents
+
+- [Requirements](#1-requirements)
+- [Prepare the project environment](#2-prepare-the-project-environment)
+- [Install the systemd unit](#3-render-and-install-ruleopsservice)
+- [Network access and first-time setup](#4-network-access-and-first-time-password-setup)
+- [Service management](#5-service-management)
+- [Updating RULEOPS](#6-updating-ruleops)
+- [Troubleshooting](#7-troubleshooting)
+- [Persistent application data](#8-persistent-application-data)
 
 ## 1. Requirements
 

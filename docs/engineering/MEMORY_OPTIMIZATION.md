@@ -1,19 +1,27 @@
-# Wordlist RAM and Stage-0 multiprocessing
+# RULEST wordlist RAM and Stage-0 multiprocessing
 
-The wordlist path is RAM-resident again. It does **not** use temporary
+> [← Documentation index](../README.md)
+
+
+**Scope:** `rulest.io_utils.load_wordlist()`, Stage 0 and RULEST GPU preparation.
+This does not describe the separate Rule Ranker wordlist reader.
+
+The RULEST wordlist path is RAM-resident. It does **not** use temporary
 wordlist files, `mmap`, or disk-backed random access.
 
 ## Loading model
 
 `rulest.io_utils.load_wordlist()` builds a `SharedWordList`:
 
-- unique word bytes are stored in a named `multiprocessing.shared_memory`
-  segment;
-- a `uint64` offset segment provides O(1) access to each word;
-- normalization and deduplication happen during load;
+- every valid normalized entry is stored in a named
+  `multiprocessing.shared_memory` byte segment, preserving input order and
+  repeated entries;
+- a `uint64` offset segment provides O(1) access to each entry;
+- invalid / empty lines are filtered during normalization, but duplicate
+  entries are **not** removed;
 - the original file is read in two sequential passes (one pass to size the
-  offset/hash structures, one pass to populate shared RAM); phases after
-  loading do not read the wordlist file again.
+  offset and optional membership structures, one pass to populate shared RAM);
+  phases after loading do not read the wordlist file again.
 
 The loader reports the reserved shared-memory sizes for data, offsets, and
 (optional) membership index. The data segment is reserved to the source file
@@ -22,19 +30,28 @@ files with many duplicate rows can have some unused offset capacity.
 
 ## Stage 0
 
-When token-strip uses the default exact-membership mode, the base wordlist
-retains a compact `FlatHashSet64` in shared memory. Every worker attaches to
-the same table by name. Windows `spawn` workers therefore receive descriptors,
-not a serialized Python `set[str]` containing millions of words.
+For exact base-word membership, RULEST chooses between two representations.
+On POSIX systems using `fork`, it prefers CPython's native `set[str]` when the
+estimated memory requirement (including a 512 MiB reserve) fits available RAM.
+Workers inherit that set copy-on-write, avoiding per-worker serialization and
+the Python-level fingerprint loop used by the compact table. If memory headroom
+is insufficient, the platform uses `spawn`, or the native-set path cannot be
+built, RULEST uses a compact shared `FlatHashSet64` table. Large Windows
+`spawn` jobs therefore attach to shared-memory descriptors rather than
+receiving a serialized multi-million-entry Python set. Small pre-existing sets
+may also be reused directly.
 
-The target list is not packed a second time for Stage 0: workers attach to the
+The TARGET list is not packed a second time for Stage 0: workers attach to the
 loader's existing shared byte and offset segments. Pool tasks contain only
-`(start, stop)` word-index pairs. The base membership table is unlinked after
-Stage 0 completes, before the later GPU stages need the RAM.
+`(start, stop)` word-index pairs. The optional base membership index is
+released after Stage 0 completes, before later GPU stages need the RAM.
 
 The compact membership table stores 63-bit FNV fingerprints (the project's
 existing exact-in-practice hash-index representation); as with any finite
-fingerprint table, a hash collision is theoretically possible.
+fingerprint table, a hash collision is theoretically possible. The POSIX
+native-set path uses Python's normal exact string equality checks. When a Bloom
+filter is explicitly selected instead, false positives can add CPU work, but
+rule-chain verification still checks actual transformations.
 
 ## GPU host buffers
 

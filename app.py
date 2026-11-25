@@ -3194,6 +3194,8 @@ def build_command(options: dict, run_dir: Path):
         profile_out.write_text(json.dumps(select_cost_profile_inline), encoding="utf-8")
         cmd.extend(["--select-cost-profile", str(profile_out)])
     for key, flag in VALUE_OPTIONS.items():
+        if key == "celf_seed_max_rules" and not options.get("celf_seed_into_celf"):
+            continue
         value = options.get(key)
         if value is None or value == "":
             continue
@@ -3215,6 +3217,13 @@ def build_command(options: dict, run_dir: Path):
     seed = UPLOADS_META.get("seed")
     if seed:
         cmd.extend(["--seed-rules", str(seed["path"])])
+    if options.get("celf_seed_into_celf"):
+        celf_seed_limit = _int_option(options, "celf_seed_max_rules", 1000, 1)
+        if options.get("select_mode", "frequency") != "greedy":
+            raise ValueError("CELF seed injection requires Greedy selection mode.")
+        if not seed or not Path(seed["path"]).is_file():
+            raise ValueError("Upload a custom seed rules file before enabling CELF seed injection.")
+        cmd.extend(["--celf-seed-rules", str(seed["path"]), "--celf-seed-max-rules", str(celf_seed_limit)])
     for depth in range(2, 11):
         value = options.get(f"depth{depth}_chains")
         if value not in (None, ""):
@@ -5753,7 +5762,7 @@ class Handler(BaseHTTPRequestHandler):
         adaptive = bool(_adaptive_raw) if _adaptive_raw is not None else True
 
         # Optional aggregate PCFG corpus profile (see run_pcfg_profile.py /
-        # docs/PCFG_PROFILE.md): the browser reads the user's previously
+        # docs/guides/PCFG_PROFILE.md): the browser reads the user's previously
         # generated report JSON client-side and sends the parsed object
         # here, so no server-side upload slot is needed for it. It only
         # nudges the existing family-budget priors toward this corpus's

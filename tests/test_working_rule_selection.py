@@ -25,4 +25,4 @@ def test_work_folder_rule_selection_uses_safe_resolver_and_transient_copy():
 
 def test_working_rule_selection_cache_key_was_bumped():
     source = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-    assert "working-rule-load=20261125b" in source
+    assert "working-rule-load=20261125e" in source

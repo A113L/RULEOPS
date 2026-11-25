@@ -73,6 +73,7 @@ const defaults = {
   token_strip_bloom_mb: 0,
   genetic: false, genetic_generations: 50, genetic_pop: 200, genetic_elite: 0.15,
   select_mode: 'frequency', select_budget: 0, select_budgets: '', select_cost_alpha: 0, exact_recovery: false,
+  celf_seed_into_celf: false, celf_seed_max_rules: 1000,
   debug: false, profile: false,
 };
 
@@ -238,7 +239,7 @@ async function selectLibraryAsset(field, assetId, select) {
       renderMultiFileState(field);
     } else {
       uploadState[field] = meta;
-      if (field === 'seed') $('seed-state').textContent = `✓ ${result.name} · ${humanSize(result.size)} · saved`;
+      if (field === 'seed') setSeedFileStatus(`✓ ${result.name} · ${humanSize(result.size)} · saved`);
       else setUploadCard(field, meta);
     }
     toast(`Loaded saved ${result.category === 'wordlists' ? 'wordlist' : 'rules'}: ${result.name}`);
@@ -380,8 +381,21 @@ function updateTopNFromTargetSize(sizeBytes) {
     hint.textContent = `≈ ${approxLines.toLocaleString()} lines estimated from TARGET size (${humanSize(size)}). 0 = unlimited (scan the whole file). Adjust if needed.`;
   }
 }
+function setSeedFileStatus(message, { error = false } = {}) {
+  // The Input files and Rule selection panels intentionally share one active
+  // seed file. Mirror status in both places so users can manage CELF inputs
+  // without scrolling back to the top of the form.
+  [$('seed-state'), $('celf-seed-state')].filter(Boolean).forEach((el) => {
+    el.textContent = message;
+    el.classList.toggle('error', error);
+  });
+}
 function setUploadError(field, message) {
-  const el = field === 'seed' ? $('seed-state') : $(`${field}-state`);
+  if (field === 'seed') {
+    setSeedFileStatus(message, { error: true });
+    return;
+  }
+  const el = $(`${field}-state`);
   el.classList.add('error'); el.textContent = message;
 }
 function clearUploadField(field) {
@@ -389,7 +403,7 @@ function clearUploadField(field) {
   const stateEl = field === 'seed' ? $('seed-state') : $(`${field}-state`);
   stateEl.classList.remove('uploaded', 'error');
   if (field === 'seed') {
-    stateEl.textContent = 'No custom seed rules uploaded';
+    setSeedFileStatus('No custom seed rules uploaded');
   } else if (field in MULTI_FILE_FIELDS) {
     stateEl.innerHTML = '';
     const dot = document.createElement('span'); dot.className = 'file-state-dot';
@@ -415,7 +429,7 @@ function uploadFile(field, file) {
   if (field !== 'seed') {
     stateEl.classList.remove('uploaded', 'error');
     stateEl.textContent = `Uploading ${file.name}…`;
-  } else stateEl.textContent = `Uploading ${file.name}…`;
+  } else setSeedFileStatus(`Uploading ${file.name}…`);
   if (progress) progress.style.width = '0%';
   const xhr = new XMLHttpRequest();
   const uploadEndpoint = field.startsWith('ranker_') ? `/api/ranker/upload/${field}` : ['rulestripper_base','rulestripper_target','minimizer_rules','minimizer_probe'].includes(field) ? `/api/tools/upload/${field}` : MULTI_FILE_FIELDS[field] ? `${MULTI_FILE_FIELDS[field].endpointBase}/${field}` : `/api/upload/${field}`;
@@ -434,7 +448,7 @@ function uploadFile(field, file) {
       uploadStateRevision[field] += 1;
       uploadState[field] = { name: result.name, size: result.size, library: !!result.library, asset_id: result.asset_id, category: result.category };
       if (field === 'seed') {
-        stateEl.classList.remove('error'); stateEl.textContent = `✓ ${result.name} · ${humanSize(result.size)}`;
+        setSeedFileStatus(`✓ ${result.name} · ${humanSize(result.size)}`);
       } else setUploadCard(field, file);
       if (field === 'target') updateTopNFromTargetSize(result.size);
       if (progress) progress.style.width = '100%';
@@ -1908,7 +1922,7 @@ async function pollStatus() {
           clearUploadField(field);
         } else if (upload && !uploadState[field]) {
           uploadState[field] = upload;
-          if (field === 'seed') $('seed-state').textContent = `✓ ${upload.name} · ${humanSize(upload.size)}`;
+          if (field === 'seed') setSeedFileStatus(`✓ ${upload.name} · ${humanSize(upload.size)}`);
           else {
             const stateEl = $(`${field}-state`); stateEl.classList.add('uploaded');
             stateEl.innerHTML = ''; const dot = document.createElement('span'); dot.className = 'file-state-dot';
@@ -1978,6 +1992,7 @@ async function startRun() {
     ['genetic_generations', 1, Infinity, 'Generations must be at least 1.'],
     ['genetic_pop', 1, Infinity, 'Population size must be at least 1.'],
     ['select_budget', 0, Infinity, 'Selection budget cannot be negative.'],
+    ['celf_seed_max_rules', 1, Infinity, 'CELF seed limit must be at least 1.'],
     ['select_cost_alpha', 0, Infinity, 'Cost alpha cannot be negative.'],
     ['token_strip_min_stem', 1, Infinity, 'Minimum stem length must be at least 1.'],
     ['token_strip_max_prefix', 0, Infinity, 'Maximum prefix length cannot be negative.'],
@@ -1989,6 +2004,8 @@ async function startRun() {
   ];
   if (Number(config.max_depth) < 1 || Number(config.max_depth) > 31) { toast('Maximum depth must be between 1 and 31.', true); return; }
   if (config.genetic && Number(config.max_depth) < 2) { toast('Genetic Algorithm requires Maximum depth ≥ 2. Increase Maximum depth or switch Genetic off.', true); return; }
+  if (config.celf_seed_into_celf && !uploadState.seed) { toast('Upload a custom seed rules file before enabling CELF seed injection.', true); return; }
+  if (config.celf_seed_into_celf && config.select_mode !== 'greedy') { toast('CELF seed injection requires Greedy selection mode.', true); return; }
   if (Number(config.genetic_elite) <= 0 || Number(config.genetic_elite) >= 1 || !Number.isFinite(Number(config.genetic_elite))) { toast('Elite ratio must be between 0 and 1.', true); return; }
   for (const [key, min, max, message] of numericRanges) {
     const value = Number(config[key]);
@@ -2966,8 +2983,7 @@ function wireTopNSeedGenerator() {
       }
       stateEl.textContent = `✓ ${data.seeds_generated.toLocaleString()} seeds · ${data.output_name || 'topn_seeds.rule'}${summaryNote}`;
       if (data.registered_as_seed) {
-        const seedState = document.getElementById('seed-state');
-        if (seedState) seedState.textContent = `✓ ${data.output_name} · auto-loaded from Top-N generator`;
+        setSeedFileStatus(`✓ ${data.output_name} · auto-loaded from Top-N generator`);
       }
       toast(`Generated ${data.seeds_generated.toLocaleString()} Top-N seeds`);
     } catch (error) {

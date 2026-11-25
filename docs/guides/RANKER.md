@@ -1,32 +1,44 @@
-# rule_ranker
+# Rule Ranker
 
-A modular package wrapping three previously-standalone scripts into one
-installable Python package with a single dispatcher CLI:
+> [← Documentation index](../README.md)
+
+
+The Rule Ranker package provides candidate scoring, CSV analysis and CELF-based
+rule selection. Its `postprocess` stage uses GPU recomputation for exact
+candidate coverage scoring; the greedy heap and control flow are coordinated on
+the host. The current implementation does not build the former dense
+`candidate × target` coverage matrix.
+
+The `rule_ranker` package contains three workflows exposed through one
+dispatcher CLI:
 
 | Original script          | Package module                    | What it does                                              |
 |---------------------------|------------------------------------|-------------------------------------------------------------|
 | `ranker.py`                | `rule_ranker.ranker`               | GPU-accelerated Hashcat rule ranking (MAB or legacy exhaustive) |
 | `ranker_handler.py`        | `rule_ranker.ranker_handler`       | Fast analysis/summarization of ranker output CSVs           |
-| `ranker_postprocess.py`    | `rule_ranker.ranker_postprocess`   | GPU/CPU CELF greedy max-coverage rule selection post-stage   |
+| `ranker_postprocess.py`    | `rule_ranker.ranker_postprocess`   | GPU-recomputed CELF greedy max-coverage rule selection post-stage |
 
-None of the original logic was rewritten -- each file was relocated
-into the package as-is, with only its `if __name__ == '__main__':`
-block turned into a `main(argv=None)` function so it's callable both as
-a script and programmatically (e.g. from tests or the dispatcher).
+## Contents
+
+- [Install](#install)
+- [Usage](#usage)
+- [Typical pipeline](#typical-pipeline)
+- [Tests](#tests)
+- [Unified web interface](#unified-web-interface)
 
 ## Install
 
 ```bash
-pip install -r requirements.txt
-# or, editable install with console script:
-pip install -e .
+python -m pip install -r requirements.txt
 ```
 
 `numpy` and `tqdm` are required by all three tools. `pyopencl` (with a
 working OpenCL ICD / GPU driver) is required by `rank` and by the GPU
 coverage pass of `postprocess`. `handler` has no GPU dependency at all.
-`postprocess`'s CELF greedy-select phase runs entirely on CPU and
-parallelizes its work across cores.
+`postprocess` uses the recompute-GPU scoring path for exact marginal coverage.
+The host manages CELF candidate priorities, heap operations and winner
+coordination; the detailed GPU path is described in
+[`../engineering/CELF_RANKER.md`](../engineering/CELF_RANKER.md).
 
 ## Usage
 
@@ -72,7 +84,7 @@ python3 run_ranker.py rank -w rockyou.txt -r hashcat_rules.rule -c cracked.txt -
 # 2. (Optional) Summarize/clean the ranking output
 python3 run_ranker.py handler -i ranking.csv -o summary.txt -r top_rules.rule -t 5000
 
-# 3. Run CELF greedy max-coverage selection on the top candidates (GPU coverage pass + CPU/GPU CELF)
+# 3. Run CELF greedy max-coverage selection on the top candidates (GPU exact scoring + host-side selection)
 python3 run_ranker.py postprocess -r ranking.csv -w rockyou.txt -k cracked.txt \
     -o celf_final.rule --candidates 20000 --budget 5000
 ```
@@ -80,8 +92,8 @@ python3 run_ranker.py postprocess -r ranking.csv -w rockyou.txt -k cracked.txt \
 ## Tests
 
 ```bash
-pip install -r requirements.txt   # or at least: numpy, tqdm, pytest
-python3 -m pytest tests/ -v
+python -m pip install -r requirements-dev.txt
+python -m pytest tests/ -v
 ```
 
 Tests cover the pure-Python/NumPy logic in each module -- rule

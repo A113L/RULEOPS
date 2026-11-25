@@ -27,6 +27,7 @@ from .extractor import GPUExtractor
 from .multi_gpu import MultiGPUEngine
 from .minimize import minimize_by_signature
 from .selection import select_rules_by_marginal_coverage
+from .celf_seed_rules import load_celf_seed_rules
 from .io_utils import load_wordlist
 from .profiling import stage_profiler
 
@@ -126,6 +127,11 @@ def main():
                            "seed pool's own family budgets once that pool is generated unlimited "
                            "-- favors characteristically common, cheap literals over rare ones. "
                            "Works with or without --select-cost-alpha (chain-depth cost).")
+    sel.add_argument('--celf-seed-rules', action='append', default=[], metavar='PATH',
+                     help='Add a curated Hashcat rule file directly to the CELF candidate pool. '
+                          'May be repeated; imported rules are validated and exact-scored, not preselected.')
+    sel.add_argument('--celf-seed-max-rules', type=int, default=1000, metavar='N',
+                     help='Maximum unique external CELF seed candidates across all files (any positive integer; default 1000).')
     sel.add_argument('-e', '--exact-recovery', action='store_true',
                       help="Explicitly report exact distinct target-word recovery after greedy "
                            "selection. Greedy coverage is already exact: bloom-positive GPU "
@@ -191,6 +197,24 @@ def main():
     if args.list_devices: list_devices(); sys.exit(0)
     if not args.base_wordlist or not args.target_wordlist:
         ap.print_help(); print(); log_error("Both BASE and TARGET wordlists required"); sys.exit(1)
+    if args.celf_seed_max_rules < 1:
+        log_error('--celf-seed-max-rules must be at least 1')
+        sys.exit(1)
+    if args.celf_seed_rules and args.select_mode != 'greedy':
+        log_error('--celf-seed-rules requires --select-mode greedy')
+        sys.exit(1)
+    celf_seed_rules = []
+    celf_seed_stats = None
+    if args.celf_seed_rules:
+        try:
+            celf_seed_rules, celf_seed_stats = load_celf_seed_rules(
+                args.celf_seed_rules,
+                max_rules=args.celf_seed_max_rules,
+                max_depth=args.max_depth,
+            )
+        except (OSError, ValueError) as exc:
+            log_error(f'[CELF SEED] {exc}')
+            sys.exit(1)
     if args.max_depth > MAX_HASHCAT_CHAIN:
         log_warn(f"Depth capped to {MAX_HASHCAT_CHAIN}"); args.max_depth=MAX_HASHCAT_CHAIN
     elif args.max_depth<1: log_error("--max-depth >=1"); sys.exit(1)
@@ -486,6 +510,19 @@ def main():
                       "healthy --device.")
             sys.exit(1)
         candidate_rules = [r for r in final_counts if r != ':']
+        if celf_seed_rules:
+            # final_counts is already a hash table; use it for overlap checks
+            # instead of materializing another set the size of a huge candidate pool.
+            celf_seed_new = [rule for rule in celf_seed_rules if rule not in final_counts]
+            celf_seed_stats.already_present += len(celf_seed_rules) - len(celf_seed_new)
+            candidate_rules.extend(celf_seed_new)
+            cap_note = ' (limit reached)' if celf_seed_stats.capped else ''
+            log_info(
+                f"[CELF SEED] Added {bold(cyan(str(len(celf_seed_new))))} candidate(s) "
+                f"from {celf_seed_stats.files} file(s) | valid={celf_seed_stats.valid:,}, "
+                f"invalid={celf_seed_stats.invalid:,}, over-depth={celf_seed_stats.over_depth:,}, "
+                f"duplicates={celf_seed_stats.duplicates:,}, already in extraction={celf_seed_stats.already_present:,}{cap_note}"
+            )
         # load_wordlist preserves every valid wordlist entry, including repeats.
         n_target = len(target_words)
         budget = args.select_budget if args.select_budget > 0 else None

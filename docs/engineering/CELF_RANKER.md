@@ -1,8 +1,24 @@
-# CELF GPU Exact Scoring, Deduplication, Progress, and Profiling
+# Rule Ranker CELF: exact GPU scoring and progress
+
+> [← Documentation index](../README.md)
+
+
+**Scope:** Rule Ranker → `postprocess` / **Optimize ruleset** (`rule_ranker/`).
+This is not the separate RULEST CELF selector; see [`RULEST_CELF.md`](RULEST_CELF.md).
 
 **Implementation note:** 2026-11-14
 
 **Area:** Rule Ranker / CELF recompute-GPU selection
+
+## Contents
+
+- [CELF scoring and correctness](#2-celf-scoring-and-correctness)
+- [Progress and throughput](#3-progress-reporting-and-throughput-metrics)
+- [Profiling](#4-profiling)
+- [Configuration reference](#5-configuration-reference)
+- [Observed run](#6-observed-run-2026-11-14-165447170037)
+- [Validation and benchmark interpretation](#7-validation-and-benchmark-interpretation)
+- [Runtime reliability notes](#runtime-reliability-notes)
 
 ## 1. Overview
 
@@ -217,3 +233,33 @@ The recorded runs do not, by themselves, establish a speedup against a controlle
 - final selected-rule coverage and exact output ordering.
 
 Do not infer a hardware speedup from `rule/s` alone or compare rolling `rule/s` from one run with cumulative throughput from an older log.
+
+
+## Runtime reliability notes
+
+### Winner ID readback compatibility
+
+The GPU winner-bitmap path reads the compacted TARGET ID prefix into a NumPy
+view sized to the exact number of IDs. The host-array `cl.enqueue_copy` overload
+derives transfer length from that destination view; it must not be passed the
+`byte_count` keyword used by the separate buffer-to-buffer overload. If snapshot
+materialization fails or its compact count does not match the exact gain, the
+verified Record Mode path remains the correctness fallback. Useful runtime
+indicators include `winner_snapshot_calls`, `winner_compaction_calls` and a low
+`exact_record_scans` count. These counters should be checked on the target GPU;
+the original fix note did not include a hardware OpenCL run.
+
+### Progress and log-line separation
+
+CELF progress frames use carriage returns to update one live terminal row.
+Ordinary log output is routed through the progress renderer so diagnostics first
+terminate the active progress row, print on their own line, and then redraw the
+progress frame. This affects terminal/log readability only; it does not change
+scoring, heap order, tie-breaking or selected rules.
+
+### OpenCL compiler warnings
+
+The recompute-GPU path suppresses only PyOpenCL's generic `CompilerWarning`
+during the specific `Program.build()` call. `BuildError`, driver exceptions and
+unrelated Python warnings remain visible. Driver-specific compiler diagnostics
+are not independently captured by this change.

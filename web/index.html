@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0e13">
   <title>RULEOPS — Hashcat Rule Toolchain</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=ruleops-brand-1">
-  <link rel="stylesheet" href="/styles.css?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&topn-pcfg-ui=20261120a&select-cost-profile=20261121a&unified-run-storage=20261124c&storage-scrollbar=20261125a&working-rule-load=20261125b">
+  <link rel="stylesheet" href="/styles.css?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&about-layout=20261115c&eta=20261115&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&topn-pcfg-ui=20261120a&select-cost-profile=20261121a&unified-run-storage=20261124c&storage-scrollbar=20261125a&working-rule-load=20261125e">
 </head>
 <body>
   <div class="app-shell">
@@ -107,7 +107,7 @@
             </div>
             <div class="optional-upload-row">
               <div class="optional-copy"><span class="optional-icon">＋</span><div><b>Custom seed rules <span>OPTIONAL</span></b><small>Upload a Hashcat rules file to extend the seed pool.</small></div></div>
-              <label class="secondary-upload" for="seed-file">＋ Add rules file<input id="seed-file" type="file"></label>
+              <label class="secondary-upload" for="seed-file">＋ Add rules file<input id="seed-file" type="file" accept=".rule,.rules,.hr,.hashcat,.txt,text/plain"></label>
             </div>
             <div class="seed-file-state" id="seed-state">No custom seed rules uploaded</div>
             <div class="library-pick seed-library-pick"><label for="library-seed">Or reuse saved rules</label><select id="library-seed" data-library-field="seed"><option value="">Choose saved rule file…</option></select></div>
@@ -251,6 +251,19 @@
               </select>
             </div>
             <div class="seed-file-state" id="select-cost-profile-state">No cost profile attached</div>
+            <div class="toggle-row compact-toggle" style="margin-top:0.85rem"><div><b>Inject custom seed file into CELF</b><small>Add the selected custom rules file as CELF candidates. Each rule is validated and exact-scored; no rule is preselected.</small></div><label class="switch"><input type="checkbox" id="celf_seed_into_celf"><span></span></label></div>
+            <div class="celf-seed-source" aria-label="CELF custom seed rules source">
+              <div class="optional-upload-row celf-seed-upload-row">
+                <div class="optional-copy"><span class="optional-icon">＋</span><div><b>Custom CELF seed rules <span>OPTIONAL</span></b><small>Upload a Hashcat rules file here, or choose one from the saved rules library.</small></div></div>
+                <label class="secondary-upload" for="seed-file">＋ Upload rules file</label>
+              </div>
+              <div class="library-pick celf-seed-library-pick">
+                <label for="celf-library-seed">Saved rule file</label>
+                <select id="celf-library-seed" data-library-field="seed"><option value="">Choose saved rule file…</option></select>
+              </div>
+              <div class="seed-file-state" id="celf-seed-state" aria-live="polite">No custom seed rules uploaded</div>
+            </div>
+            <label class="field" style="margin-top:0.85rem"><span>Maximum imported CELF rules</span><input type="number" min="1" step="1" value="1000" id="celf_seed_max_rules"><small>Default 1000; no fixed upper limit. Enter any positive integer to import a larger curated pool. Requires Greedy mode and a custom seed file.</small></label>
             <div class="toggle-row compact-toggle" style="margin-top:0.85rem"><div><b>Report exact recovery</b><small>Explicitly report distinct target-word recovery in greedy mode.</small></div><label class="switch"><input type="checkbox" id="exact_recovery"><span></span></label></div>
           </section>
 
@@ -1166,6 +1179,6 @@
   </dialog>
   <div class="toast" id="toast" role="status"></div>
 
-      <script src="/app.js?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&select-cost-profile=20261121a&aether-nav-units=20261123a&unified-run-history=20261124c&history-compat=20261124a&aether-export-count=20261124a&storage-absolute-filepaths=20261125b&working-rule-load=20261125b"></script>
+      <script src="/app.js?v=2.6.5-aether-integration&ui-polish=20261116a&build=2.6.5-aether-integration&metrics=2.6.5&eta=20261115&about-layout=20261115b&run-clean=20261115a&library=20261115a&work-search=20261115a&dup-work=20261115b&about-brand=20261123a&storage-intel=20261115b&select-cost-profile=20261121a&aether-nav-units=20261123a&unified-run-history=20261124c&history-compat=20261124a&aether-export-count=20261124a&storage-absolute-filepaths=20261125b&working-rule-load=20261125e"></script>
 </body>
 </html>

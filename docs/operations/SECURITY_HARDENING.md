@@ -1,6 +1,21 @@
-# RULEOPS Web Security Hardening
+# Web server security and resource limits
+
+> [← Documentation index](../README.md)
+
+
+**Scope:** the built-in authenticated Control Center server. For a full Linux
+service deployment procedure, see [`SYSTEMD_SERVICE.md`](SYSTEMD_SERVICE.md).
 
 This build adds server-side resource controls and browser security headers. These controls reduce risk on a trusted LAN; they do not make the built-in HTTP server suitable for direct public-internet exposure. Use a VPN or a TLS reverse proxy and restrict firewall access.
+
+## Contents
+
+- [Built-in limits](#built-in-limits)
+- [Connection and Slowloris protection](#connection-and-slowloris-protection)
+- [Storage protection](#storage-protection)
+- [Browser security policy](#browser-security-policy)
+- [Durable login throttling](#durable-login-throttling)
+- [Operational notes](#operational-notes)
 
 ## Built-in limits
 

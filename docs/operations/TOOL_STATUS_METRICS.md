@@ -1,5 +1,8 @@
 # Per-tool run status metrics
 
+> [← Documentation index](../README.md)
+
+
 Every RULEOPS tool now presents the same five-card run summary:
 
 - **Engine Status** — idle, running, paused, stopping, completed, stopped or failed.

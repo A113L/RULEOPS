@@ -2408,3 +2408,44 @@ body{
   line-height:1.6;
   overflow-wrap:anywhere;
 }
+
+/* CELF seed source controls mirror the Custom seed rules input above. */
+.celf-seed-source {
+  margin-top: 0.55rem;
+  padding: 0.2rem 0 0;
+  border-top: 1px solid #252d3b;
+}
+.celf-seed-upload-row {
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+}
+.celf-seed-library-pick {
+  margin: 8px 0 0;
+  max-width: none;
+}
+.celf-seed-library-pick label {
+  min-width: 102px;
+}
+.celf-seed-source .seed-file-state {
+  margin: 7px 0 0;
+  overflow-wrap: anywhere;
+}
+.seed-file-state.error {
+  color: var(--red);
+}
+@media (max-width: 650px) {
+  .celf-seed-upload-row {
+    align-items: flex-start;
+  }
+  .celf-seed-upload-row .secondary-upload {
+    margin-left: 35px;
+  }
+  .celf-seed-library-pick {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .celf-seed-library-pick label {
+    min-width: 0;
+  }
+}

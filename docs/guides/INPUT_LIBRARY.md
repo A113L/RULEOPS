@@ -1,5 +1,11 @@
 # Reusable input library
 
+> [← Documentation index](../README.md)
+
+
+**Scope:** persistent storage for reusable wordlists and Hashcat rule files.
+
+
 RULEOPS now retains uploaded wordlists and Hashcat rule files for reuse between jobs and across server restarts.
 
 ## Storage layout

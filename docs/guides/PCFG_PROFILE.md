@@ -1,10 +1,24 @@
-# PCFG Corpus Profile
+# PCFG corpus profile
+
+> [← Documentation index](../README.md)
+
+
+**Scope:** aggregate-only wordlist composition reporting. The profiler does
+not generate password candidates or rules.
+
 
 RULEOPS includes an aggregate-only profiler for inspecting the composition of a
 wordlist before an authorized password-security assessment. It reports length
 buckets, character-class presence, broad class combinations, and simple length
 policy indicators. It does not produce PCFG productions, password candidates,
 affix values, or Hashcat rules.
+
+## Contents
+
+- [Usage](#usage)
+- [Input format and encoding](#input-format-and-encoding)
+- [Report fields](#report-fields)
+- [Using a profile to inform Top-N / PCFG-Lite seed generation](#using-a-profile-to-inform-top-n-pcfg-lite-seed-generation)
 
 ## Usage
 
@@ -24,6 +38,8 @@ python run_pcfg_profile.py MEDIUM.txt \
 
 The output contains the new profile and a `comparison` section with weighted
 and unweighted percentage-point changes relative to the reference profile.
+
+## Input format and encoding
 
 Input format can be selected explicitly. The default `auto` preserves the earlier
 behavior: any line beginning with decimal digits followed by spaces or a tab is
@@ -123,4 +139,4 @@ server-side upload slot). Only the aggregate composition shares documented
 above are read -- this does not change what the profiler itself reports, and
 it still never derives or uses specific passwords, affixes, or candidates.
 See the "PCFG-Lite seed generation informed by aggregate corpus profiles"
-entry in `docs/CHANGELOG.md` for what this does and does not improve.
+entry in `../CHANGELOG.md` for what this does and does not improve.

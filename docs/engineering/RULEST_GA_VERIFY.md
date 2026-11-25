@@ -1,6 +1,11 @@
-# Stage 3 GA Verify performance improvement (2026-11-10)
+# RULEST Stage 3: exact GA candidate verification
 
-## What changed
+> [← Documentation index](../README.md)
+
+
+**Scope:** RULEST Stage 3 genetic-algorithm verification (`rulest/genetic.py`).
+
+## Execution model
 
 The final full-BASE correction for sampled GA candidates now uses a dedicated
 OpenCL count-only kernel (`count_rule_chains_gpu`). It applies the same ordered

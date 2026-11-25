@@ -1,16 +1,22 @@
 # PCFG-profile guided optimization (hashmob.medium)
 
+> [← Documentation index](../README.md)
+
+
 > This file previously described a planned `--topn-digit-heavy` /
 > `FAMILY_BUDGET_DIGIT_HEAVY` toggle that was never actually implemented.
 > What shipped instead is the more general, continuous mechanism below
 > (`--pcfg-profile` / `profile_informed_priors`), which supersedes that plan.
-> See `docs/CHANGELOG.md` for the full history, including the CELF
+> See `../CHANGELOG.md` for the full history, including the CELF
 > cost-profile follow-up this file now also documents.
 
 ## Source profile
 
-- File: `reports/hashmob.medium.plain.json` (example)
-- Schema: `ruleops.pcfg-profile.v1` (see `run_pcfg_profile.py` / `docs/PCFG_PROFILE.md`)
+The measurements below refer to an example profile used when this behavior was
+implemented. That input profile is not bundled with the repository.
+
+- Example file: `reports/hashmob.medium.plain.json`
+- Schema: `ruleops.pcfg-profile.v1` (see `run_pcfg_profile.py` / `../guides/PCFG_PROFILE.md`)
 - Corpus: hashmob.medium.found (~12.9M entries)
 - Key composition signals:
   - Length: 8-11 ≈ 62%, 2-7 ≈ 33%, ≥12 ≈ 5%
@@ -66,4 +72,4 @@ neither.
    candidates make the final cut.
 3. If coverage still plateaus across very different cap sizes, that is more
    likely a ceiling of affix-style rules against your base wordlist than a
-   tuning problem -- see the "known remaining gap" note in `docs/CHANGELOG.md`.
+   tuning problem -- see the "known remaining gap" note in `../CHANGELOG.md`.

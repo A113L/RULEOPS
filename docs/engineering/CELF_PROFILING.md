@@ -1,6 +1,9 @@
-# Rule Ranker CELF GPU profiling
+# Rule Ranker CELF profiling
 
-The `Enable GPU profiling` toggle is located inside the **Optimize ruleset** workflow panel, directly below that panel heading. It is therefore visible when the Optimize ruleset tab is selected and is not shown in Rank rules or Analyze CSV.
+> [← Documentation index](../README.md)
+
+
+**Scope:** Rule Ranker → Optimize ruleset. This page documents the optional performance instrumentation; it does not change CELF scoring or selection semantics.
 
 When enabled, RULEOPS starts that Ranker job with `RANKER_GREEDY_PROFILE=1`. The CELF
 scorer then emits its detailed stage breakdown and creates its OpenCL command queue with
@@ -39,3 +42,13 @@ The top-10/top-100 distributions are deliberately labelled *raw upper bounds*:
 the scoring kernel counts `(word, rule)` hits before per-rule deduplication. Only
 `exact_gain` is a deduplicated marginal coverage value that may decide the winner.
 The extra distribution pass is performed only when `RANKER_GREEDY_PROFILE=1`.
+
+
+## Web UI control
+
+The **Enable GPU profiling** control is placed directly below the **Optimize
+ruleset** panel heading. It affects only that workflow. When unchecked, the
+server removes the variable from the child environment so a stale shell setting
+cannot silently enable profiling. Rank rules, Analyze CSV and RULEST runs are
+not affected. Profiling remains opt-in because event instrumentation and
+additional accounting can affect runtime.

@@ -1,3 +1,11 @@
+# Screenshots
+
+> [← Documentation index](../README.md)
+
+
+The images below show selected RULEOPS interface views. Screenshots are
+hosted externally; availability and rendering depend on that host.
+
 [![ruleops1.jpg](https://i.postimg.cc/PxnWCnNw/ruleops1.jpg)](https://postimg.cc/sBKQL8Yj)
 
 [![ruleops2.jpg](https://i.postimg.cc/zv0K2L7h/ruleops2.jpg)](https://postimg.cc/FkkY7H2F)

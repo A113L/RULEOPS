@@ -1,47 +1,31 @@
-## 2026-11-25 — RULEOPS storage quota
-
-- Increased the default aggregate RULEOPS data-storage quota from 10 GiB to 50 GiB. The `RULEOPS_MAX_DATA_STORAGE_BYTES` environment variable can still override the default.
-
-## 2026-11-25 — Recent commits recorded from `main`
-
-### Aether: benchmark, validation and report improvements
-
-- Added configurable export of the fastest N rules from the interactive HTML report. Commit: [56c8ac5](https://github.com/A113L/RULEOPS/commit/56c8ac5e6679f707d0ae9c345f3d6a60a0eb9d77).
-- Deferred full rule validation until optimized-rule generation; upload and reusable-library selection no longer trigger the expensive validation path. Commits: [aec1a23](https://github.com/A113L/RULEOPS/commit/aec1a2335abe069451a9776b0af51990f31a94b6), [b117348](https://github.com/A113L/RULEOPS/commit/b11734898534fe0276f27aa44a72bd93d1f8dae7).
-- Added Hashcat 8 operators `h`, `H`, `S`, `vNX` and `BNX` across CPU and OpenCL engines and related rule tools. Commit: [5748ecd](https://github.com/A113L/RULEOPS/commit/5748ecd95e4d1259a7db42a3ecf60ad884772216).
-- Fixed interactive HTML report styling by resolving the conflicting Content Security Policy. Commit: [92e84a8](https://github.com/A113L/RULEOPS/commit/92e84a8ae263e511d2486808089bf95dd751b6fd).
-- Updated the performance radar to show exact Hashcat commands. Commit: [15949f2](https://github.com/A113L/RULEOPS/commit/15949f29f751f6d63597afe474c556f418b57130).
-- Made dictionary benchmark workloads use the same configured words-per-rule count in both modes and clarified this in the UI. Commit: [816b048](https://github.com/A113L/RULEOPS/commit/816b048566c802340ef467ce826c2b0db3ab7fca).
-- Enabled OpenCL event profiling by default and updated timing UI to distinguish GPU kernel time from end-to-end time. Commit: [f3fd058](https://github.com/A113L/RULEOPS/commit/f3fd0589bff8c4f81252a98c3bf7e843b31a469f).
-- Integrated GPU rule benchmarking as the seventh RULEOPS tool, including web UI, version metadata and documentation. Commits: [9801b28](https://github.com/A113L/RULEOPS/commit/9801b2835f95b5230c36dc40dbb5badd8871fbdb), [3334529](https://github.com/A113L/RULEOPS/commit/333452968a444de01044b1cf30df3c72683ce7d5).
-
-### Shared run history and Rule Ranker
-
-- Implemented unified persistent run history across the tools. Commit: [24cf172](https://github.com/A113L/RULEOPS/commit/24cf17203bbdf8edf681e754240f8a018b9de944).
-- Fixed OpenCL GPU scoring for devices requiring aligned sub-buffer offsets. Commit: [19637b6](https://github.com/A113L/RULEOPS/commit/19637b6439409388716271de6f83f259d503a7ca).
-- Fixed zero-budget greedy selection so it continues to saturation instead of stopping immediately. Commit: [8f029ea](https://github.com/A113L/RULEOPS/commit/8f029ea525ced8572d2cc1f00223e0101add67aa).
-
-### RULEST, CELF and PCFG / Top-N
-
-- Made functional rule minimization optional in RULEST. Commit: [51079df](https://github.com/A113L/RULEOPS/commit/51079df921f1c3d59bec096a0d06c3f9e468523e).
-- Connected PCFG cost profiles to CELF rule selection through the UI and CLI. Commit: [289fa4b](https://github.com/A113L/RULEOPS/commit/289fa4b6709622b4c1c02e97cce1f8272abb1ce7).
-- Built the CELF target hash table directly from shared wordlist offsets to reduce redundant memory use. Commit: [67a1b6b](https://github.com/A113L/RULEOPS/commit/67a1b6bfc1f0d3dde8d5fddf0a9296b1bbb19259).
-- Updated Top-N defaults and estimated profiling sample size from TARGET size. Commit: [7b2de47](https://github.com/A113L/RULEOPS/commit/7b2de4700202f20caf56f4d055e0bba144a4adea).
-- Corrected PCFG title-digit and digit-affix budget scaling and added `--topn-inject-cap`. Commits: [dacaaa8](https://github.com/A113L/RULEOPS/commit/dacaaa82f6b68eded396421165c1e49717832113), [1495ceb](https://github.com/A113L/RULEOPS/commit/1495ceb6d571172ab4d9aadebb0f185e6c28ce1c).
-- Added lightweight PCFG-style profiling of the first N TARGET entries and integrated its pattern information into Top-N seed generation. Commits: [57dec98](https://github.com/A113L/RULEOPS/commit/57dec983411e59386fdf52186a48c66e48a6d6eb), [5354ec6](https://github.com/A113L/RULEOPS/commit/5354ec65d20ddac871bb94f61fd3550840f7e5f7), [b0ab728](https://github.com/A113L/RULEOPS/commit/b0ab728b3489bd181af42187f77818fa6343bf98), [7d82274](https://github.com/A113L/RULEOPS/commit/7d82274b10414d4271f4e7cda0d57de3d9ca2910).
-- Added regression tests for PCFG-Lite Top-N seed generation. Commit: [f7cf0a2](https://github.com/A113L/RULEOPS/commit/f7cf0a2502c4c6d0ac8b4a34ee00ddf473a66cda).
-- Clarified in the UI that full PCFG runs prioritize maximum coverage over minimum ruleset size. Commit: [7328358](https://github.com/A113L/RULEOPS/commit/73283588f1ec52ef334b63262ac94f7dbe8fd9e0).
-- Recorded README and changelog maintenance commits associated with the PCFG / wordlist updates. Commits: [ef3dd22](https://github.com/A113L/RULEOPS/commit/ef3dd22a87e6593c61147fb43ab6a91aaeab96ad), [39f7177](https://github.com/A113L/RULEOPS/commit/39f71776ae5ea044e5ae435b733e304fabc45cdf), [71868fe](https://github.com/A113L/RULEOPS/commit/71868fe1edcb76a76fb5ff0d88cc05d053be581a).
-
 # Changelog
 
-## [Unreleased] - Recent Aether fixes and report export
+## [Unreleased] — English user guide for all RULEOPS tools
+
+- Added the complete English CLI + UI guide covering all Control Center tools, standalone CLI utilities, common run/storage workflows, example pipelines and troubleshooting.
+- Replaced the earlier Polish-language guide and updated the project README, documentation index and project website links.
+
+## [Unreleased] — Documentation structure and consolidation
+
+- Reorganized `docs/` into user guides, engineering references and operations documentation, with a central index and updated project-site links.
+- Consolidated overlapping CELF, profiling and fix notes into canonical RULEST / Rule Ranker references; removed redundant standalone notes and the duplicated commit digest.
+- Corrected stale documentation about wordlist duplicate preservation, Rule Ranker GPU CELF scoring and installation commands.
+
+> [← Documentation index](README.md)
+
+
+## [Unreleased] — Curated RULEST CELF seed candidates
+
+- Added `--celf-seed-rules` / `--celf-seed-max-rules` to import validated, deduplicated rules from one or more curated files into RULEST's CELF candidate pool. Imported rules receive the normal exact marginal-coverage scoring; they are not preselected. The default cap is 1,000, but there is no fixed upper bound: any positive integer is accepted. Added an opt-in web UI toggle that reuses the uploaded Custom seed rules file for CELF, with upload and saved-library selectors directly in Rule selection.
+- Added loader regression tests for validation, depth filtering, duplicate handling, candidate caps, imports above 1,000 rules and missing input files.
+
+## [Unreleased] — Aether report export and validation improvements
 
 - Added a configurable rule count to interactive Aether HTML report downloads. Users can choose how many of the fastest rules to export directly from the report; the export is independent of the optimization setting. Commit: [56c8ac5](https://github.com/A113L/RULEOPS/commit/56c8ac5e6679f707d0ae9c345f3d6a60a0eb9d77).
 - Deferred full rule validation until optimized-rule generation. Uploading or selecting a reusable rule file no longer runs the expensive full validation path, avoiding unnecessary delays and upload timeouts. Commits: [aec1a23](https://github.com/A113L/RULEOPS/commit/aec1a2335abe069451a9776b0af51990f31a94b6), [b117348](https://github.com/A113L/RULEOPS/commit/b11734898534fe0276f27aa44a72bd93d1f8dae7).
 - Reworked Aether opcode heatmap to benchmark individual one-command rules on the GPU and subtract the no-op baseline; results are grouped by operator and saved to a separate JSON report. Up to four argument variants per operator are sampled to keep profiling bounded.
 
-## [Unreleased] - Aether Hashcat 8 rule-chain support
+## [Unreleased] — Aether Hashcat 8 rule-chain support
 
 - Replaced Aether's one-operation-only kernel dispatch with a sequential OpenCL rule interpreter, allowing supported multi-command Hashcat `-r` lines to execute as complete chains.
 - Enabled Aether benchmarking for Hashcat 8.0 `h`, `H`, `S`, `vNX`, and `BNX` operators, including their use inside supported rule chains.
@@ -50,6 +34,22 @@
 - Updated Aether preflight validation and UI copy to distinguish malformed rules, CLI-only rules, and valid commands not yet implemented by the Aether interpreter.
 - Kept unsupported commands out of benchmark results rather than timing them as identity/no-op transformations.
 
+## 2026-11-25 — RULEOPS storage quota
+
+- Increased the default aggregate RULEOPS data-storage quota from 10 GiB to 50 GiB. The `RULEOPS_MAX_DATA_STORAGE_BYTES` environment variable can still override the default.
+
+## 2026-11-25 — Absolute file paths in persistent Run storage
+
+- Persistent run history now records the absolute server-side path for each selected input, separately from its display filename and dataset fingerprint.
+- Run-history artifact details display absolute paths while retaining relative artifact identifiers for safe preview and download routes.
+- Older run manifests remain readable; when they do not contain a recorded input path, the UI clearly marks that path as unavailable.
+
+## 2026-11-25 — Rulestripper: Hashcat 8 extraction modes
+
+- Added reverse extraction for `h` and `H` by decoding lowercase and uppercase hexadecimal output back into BASE candidates.
+- Added reverse extraction for `S` using the same byte-level keyboard mapping as Hashcat (the mapping is self-inverse).
+- Added reverse extraction for `vNX`, including the terminal inserted byte when the source length is divisible by `N`; `N` supports Hashcat base-36 values 1–35.
+- Kept extraction bounded to direct, single-operator matches and verified every candidate by reapplying the generated rule.
 
 ## v2.6.5 — Hashcat 8 rule operators across CPU and GPU engines
 
@@ -426,16 +426,3 @@ Commit: [eddc2f3](https://github.com/A113L/RULEOPS/commit/eddc2f37fc28c4c612de3e
 - The procedure prompts for the new password without echoing it and enforces a minimum length of 12 characters.
 
 Commit: [3d4c360](https://github.com/A113L/RULEOPS/commit/3d4c360c7ab1523212767e723be1a457ca61ada9)
-
-## 2026-11-25 — Absolute file paths in persistent Run storage
-
-- Persistent run history now records the absolute server-side path for each selected input, separately from its display filename and dataset fingerprint.
-- Run-history artifact details display absolute paths while retaining relative artifact identifiers for safe preview and download routes.
-- Older run manifests remain readable; when they do not contain a recorded input path, the UI clearly marks that path as unavailable.
-
-## 2026-11-25 — Rulestripper: Hashcat 8 extraction modes
-
-- Added reverse extraction for `h` and `H` by decoding lowercase and uppercase hexadecimal output back into BASE candidates.
-- Added reverse extraction for `S` using the same byte-level keyboard mapping as Hashcat (the mapping is self-inverse).
-- Added reverse extraction for `vNX`, including the terminal inserted byte when the source length is divisible by `N`; `N` supports Hashcat base-36 values 1–35.
-- Kept extraction bounded to direct, single-operator matches and verified every candidate by reapplying the generated rule.

@@ -710,6 +710,8 @@ Full option list: `python minimizer.py --help`.
 
 Aether measures rule execution time on an OpenCL GPU and creates comparative reports. It does not evaluate TARGET/CRACKED coverage. It uses a synthetic test corpus with a controlled number of work-items and a controlled profile of lengths/character classes.
 
+For the exact timing methodology, metric formulas, validation categories, report fields and interpretation caveats, see [Aether GPU Benchmarking](../engineering/AETHER_BENCHMARKING.md).
+
 ### 9.1 UI
 
 Add between 1 and 12 rule files. Each file is validated before benchmarking; the tool reports invalid syntax, CLI-only operators, and valid commands that the current OpenCL interpreter does not support separately. Only rules supported by the benchmark are measured.
@@ -726,7 +728,7 @@ Settings:
 | **GPU platform/device index** | OpenCL platform and device indices. |
 | **Visualize** | Generates PNGs and a standalone interactive HTML report; enabled by default in the UI. |
 | **Repeat identical dictionary** | Repeats the same 16-word seed set. When unchecked, variants with the same length and character-class profile are generated. Both modes execute exactly `Max words` work-items. |
-| **Optimize search** | Searches for a fast, equivalent set within a GPU-time budget. |
+| **Optimize search** | Selects the fastest measured rules within a cumulative GPU-time budget; it does not preserve target coverage or functional equivalence. |
 | **Max rules to optimize** | Limit on the number of rules in the search result/default export from the HTML report. |
 | **Max optimize time (µs)** | Cumulative GPU-kernel time budget in microseconds. `30 000 000 µs` corresponds to 30 seconds. |
 

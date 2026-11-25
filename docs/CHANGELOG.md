@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased] — Independent Persistent Run Archive scrollbars
+
+- Added a separate, keyboard-accessible scroll region to each tool category in **PERSISTENT RUN ARCHIVE**, keeping long histories from scrolling the other tools.
+- Added category-specific scrollbar colors for RULEST, Rule Ranker, Concentrator, Rulestripper, Rule Minimizer and Aether, with compact viewport-aware heights and updated frontend cache keys.
+
 ## [Unreleased] — RULEST expanded output format
 
 - Added a RULEST output-format selector for compact Hashcat lines or Concentrator-style expanded operator spacing, available in both CLI and Control Center UI.

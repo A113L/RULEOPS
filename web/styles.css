@@ -2316,38 +2316,74 @@ body{
 }
 .tool-run-history-heading>.secondary-button:hover,
 .tool-run-history-detail-actions>.secondary-button:hover{border-color:#697c60;background:#202b35;color:#e5eedc;}
-/* Persistence Storage: keep the archive panel compact and scroll the complete
-   tool/run directory list vertically once it grows beyond the visible area. */
+/* The archive itself grows with the page. Each expanded tool category owns
+   an independent scroll area so long histories never trap the other tools. */
 .tool-run-history-list{
   display:flex;
   flex-direction:column;
-  gap:7px;
-  max-height:620px;
+  gap:8px;
+  padding:2px;
+  border-radius:8px;
+}
+.tool-history-tool{
+  --tool-scroll-thumb:#81966f;
+  --tool-scroll-thumb-hover:#a2bb88;
+  --tool-scroll-thumb-end:#526b50;
+  --tool-scroll-track:#111923;
+  overflow:hidden;
+  border:1px solid #2a3542;
+  border-radius:9px;
+  background:#101720;
+}
+.tool-history-tool--rulest{
+  --tool-scroll-thumb:#91ad70;--tool-scroll-thumb-hover:#b1d58a;--tool-scroll-thumb-end:#5a7547;
+}
+.tool-history-tool--ranker{
+  --tool-scroll-thumb:#7199c1;--tool-scroll-thumb-hover:#9ac1e6;--tool-scroll-thumb-end:#456b94;
+}
+.tool-history-tool--concentrator{
+  --tool-scroll-thumb:#a18acb;--tool-scroll-thumb-hover:#c1aceb;--tool-scroll-thumb-end:#705c9b;
+}
+.tool-history-tool--rulestripper{
+  --tool-scroll-thumb:#c49a62;--tool-scroll-thumb-hover:#e2bc82;--tool-scroll-thumb-end:#89653a;
+}
+.tool-history-tool--minimizer{
+  --tool-scroll-thumb:#65aaa2;--tool-scroll-thumb-hover:#8ed0c7;--tool-scroll-thumb-end:#397b75;
+}
+.tool-history-tool--aether{
+  --tool-scroll-thumb:#c88761;--tool-scroll-thumb-hover:#e7aa82;--tool-scroll-thumb-end:#925b3c;
+}
+.tool-history-tool-content{
+  max-height:min(420px,52vh);
   overflow-y:auto;
   overflow-x:hidden;
   overscroll-behavior:contain;
   scrollbar-width:thin;
-  scrollbar-color:#647b60 #111923;
-  padding:2px 8px 2px 2px;
-  border-radius:8px;
+  scrollbar-color:var(--tool-scroll-thumb) var(--tool-scroll-track);
+  scrollbar-gutter:stable;
+  padding:0 7px 9px 0;
+  outline:none;
 }
-.tool-run-history-list::-webkit-scrollbar{width:10px;}
-.tool-run-history-list::-webkit-scrollbar-track{
+.tool-history-tool-content:focus-visible{
+  box-shadow:inset 0 0 0 1px var(--tool-scroll-thumb);
+}
+.tool-history-tool-content::-webkit-scrollbar{width:10px;}
+.tool-history-tool-content::-webkit-scrollbar-track{
+  margin:5px 0 7px;
   border:1px solid #263342;
   border-radius:10px;
   background:linear-gradient(180deg,#0d141d,#151f2a);
 }
-.tool-run-history-list::-webkit-scrollbar-thumb{
+.tool-history-tool-content::-webkit-scrollbar-thumb{
   min-height:38px;
   border:2px solid #111923;
   border-radius:10px;
-  background:linear-gradient(180deg,#81966f,#526b50);
+  background:linear-gradient(180deg,var(--tool-scroll-thumb),var(--tool-scroll-thumb-end));
 }
-.tool-run-history-list::-webkit-scrollbar-thumb:hover{
-  background:linear-gradient(180deg,#a2bb88,#6f8b65);
+.tool-history-tool-content::-webkit-scrollbar-thumb:hover{
+  background:linear-gradient(180deg,var(--tool-scroll-thumb-hover),var(--tool-scroll-thumb));
 }
-.tool-run-history-list::-webkit-scrollbar-corner{background:#111923;}
-.tool-history-tool{overflow:hidden;border:1px solid #2a3542;border-radius:9px;background:#101720;}
+.tool-history-tool-content::-webkit-scrollbar-corner{background:#111923;}
 .tool-history-tool-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px;cursor:pointer;list-style:none;background:linear-gradient(110deg,#18222d,#141c26);}
 .tool-history-tool-summary::-webkit-details-marker,.tool-history-file-group>summary::-webkit-details-marker{display:none;}
 .tool-history-tool-summary:before{content:"›";color:#a6cc7d;font-size:17px;line-height:1;transform:rotate(0);transition:transform .15s ease;}
@@ -2389,6 +2425,7 @@ body{
 .tool-history-artifact-actions .download-output{width:26px;height:26px;}
 @media(max-width:640px){
   .tool-run-history-heading,.tool-run-history-detail-head{align-items:flex-start;flex-direction:column;}
+  .tool-history-tool-content{max-height:min(360px,48vh);}
   .tool-run-history-heading>.secondary-button{width:100%;}
   .tool-history-run-row{grid-template-columns:minmax(0,1fr) auto;}
   .tool-history-run-row>.run-history-status{grid-column:2;grid-row:1;}

@@ -805,13 +805,19 @@ function renderToolRunHistory(runs = []) {
     const runIds = new Set();
     groups.forEach((items) => items.forEach((run) => runIds.add(run.run_id)));
     const toolDetails = document.createElement('details');
-    toolDetails.className = 'tool-history-tool';
+    toolDetails.className = `tool-history-tool tool-history-tool--${tool}`;
     toolDetails.open = true;
     const toolSummary = document.createElement('summary');
     toolSummary.className = 'tool-history-tool-summary';
     const toolName = document.createElement('b'); toolName.textContent = TOOL_HISTORY_LABELS[tool];
     const toolCount = document.createElement('small'); toolCount.textContent = `${runIds.size.toLocaleString()} run(s)`;
-    toolSummary.append(toolName, toolCount); toolDetails.append(toolSummary);
+    toolSummary.append(toolName, toolCount);
+    const toolContent = document.createElement('div');
+    toolContent.className = 'tool-history-tool-content';
+    toolContent.setAttribute('role', 'region');
+    toolContent.setAttribute('aria-label', `${TOOL_HISTORY_LABELS[tool]} archived runs`);
+    toolContent.tabIndex = 0;
+    toolDetails.append(toolSummary, toolContent);
 
     Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0])).forEach(([groupName, groupRuns]) => {
       const groupDetails = document.createElement('details');
@@ -848,7 +854,7 @@ function renderToolRunHistory(runs = []) {
         copy.append(open, meta, filepath);
         row.append(copy, status); groupDetails.append(row);
       });
-      toolDetails.append(groupDetails);
+      toolContent.append(groupDetails);
     });
     root.append(toolDetails);
   });

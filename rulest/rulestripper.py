@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-stripper.py — Hashcat Rule Extractor (Enhanced v1.1)
+stripper.py — Hashcat Rule Extractor (Enhanced v1.2)
 ==============================================================================
 Extracts hashcat rule chains empirically by decomposing target passwords
 into their constituent token categories and building chains that reconstruct
 each password from a base-wordlist stem.
+
+NEW IN v1.2:
+  • Hashcat 8 byte transforms (h, H, S, vNX) — reverse byte-level matching
 
 NEW IN v1.1:
   • Insert-at-Position mode (iNX) — intra-word character insertions
@@ -60,7 +63,7 @@ Usage
     --min-stem N          Minimum stem length    (default: 4)
     --leet-amb N          Max ambiguous leet positions  (default: 3)
     --no-toggle-seeds     Skip toggle-chain seed generation
-    --no-new-modes        Skip all v1.1 extraction modes
+    --no-new-modes        Skip all extended extraction modes
     --ascii-range N       Max ASCII offset for transform mode (default: 3)
 
   parallelism:
@@ -871,6 +874,88 @@ def _extract_char_duplicate_mode(
     return found
 
 
+
+def _extract_hashcat8_mode(
+    word: str, base_set: Set[str], max_depth: int,
+    min_stem_len: int,
+) -> Set[str]:
+    """Detect Hashcat 8 byte transforms h, H, S and vNX.
+
+    All inverse operations work on UTF-8 bytes, matching Hashcat's rule
+    engine. Candidates are decoded back to UTF-8 before BASE membership
+    checks because Rulestripper stores wordlists as strings.
+    """
+    found: Set[str] = set()
+    if max_depth < 1 or not word:
+        return found
+
+    try:
+        target = word.encode("utf-8")
+    except (UnicodeEncodeError, AttributeError):
+        return found
+
+    def check(candidate_bytes: bytes, rule: str) -> None:
+        try:
+            candidate = candidate_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return
+        if len(candidate) < min_stem_len or candidate not in base_set:
+            return
+        if not HashcatRuleValidator.validate_rule_for_gpu(rule):
+            return
+        if py_apply_chain(rule, candidate) == word:
+            found.add(rule)
+
+    # h/H encode each source byte as two lower-/upper-case hex digits.
+    # Validate the exact alphabet: bytes.fromhex() alone would also accept
+    # whitespace, which Hashcat's h/H operators never emit.
+    if len(target) >= min_stem_len * 2 and len(target) % 2 == 0 and word.isascii():
+        if all(char in "0123456789abcdef" for char in word):
+            try:
+                check(bytes.fromhex(word), "h")
+            except ValueError:
+                pass
+        if all(char in "0123456789ABCDEF" for char in word):
+            try:
+                check(bytes.fromhex(word), "H")
+            except ValueError:
+                pass
+
+    # S is an XOR-based keyboard-layout mapping and is self-inverse.
+    shifted_back = bytes(apply_hashcat8_operator("S", target))
+    if shifted_back != target:
+        check(shifted_back, "S")
+
+    # vNX inserts X after every N bytes. Remove each periodic marker and
+    # validate by applying the rule again. N is Hashcat base-36 (1..35).
+    # Only printable, non-whitespace ASCII arguments can be represented
+    # unambiguously in the plain-text rule-file format used by Rulestripper.
+    safe_arguments = set(range(33, 127)) - {ord("\\")}
+    target_len = len(target)
+    # No insertion can be present when N is greater than the target byte
+    # length minus one; avoid scanning impossible counts on short passwords.
+    for n in range(1, min(35, target_len - 1) + 1):
+        marker_positions = list(range(n, target_len, n + 1))
+        if not marker_positions:
+            continue
+        marker = target[marker_positions[0]]
+        if marker not in safe_arguments:
+            continue
+        if any(target[position] != marker for position in marker_positions[1:]):
+            continue
+
+        marker_set = set(marker_positions)
+        candidate_bytes = bytes(
+            value for index, value in enumerate(target)
+            if index not in marker_set
+        )
+        if len(candidate_bytes) >= min_stem_len:
+            n_char = str(n) if n < 10 else chr(ord("A") + n - 10)
+            check(candidate_bytes, "v" + n_char + chr(marker))
+
+    return found
+
+
 def _extract_ascii_transform_mode(
     word: str, base_set: Set[str], max_depth: int,
     min_stem_len: int, max_leet_amb: int,
@@ -1421,6 +1506,8 @@ def _process_one_target_word(word):
         found |= _extract_duplicate_mode(word, base_set, max_depth, min_stem_len)
 
     if enable_new_modes:
+        if max_depth >= 1:
+            found |= _extract_hashcat8_mode(word, base_set, max_depth, min_stem_len)
         if max_depth >= 2:
             found |= _extract_insert_mode(word, base_set, max_depth, min_stem_len, max_leet_ambiguity)
         if max_depth >= 1:
@@ -1509,7 +1596,7 @@ def extract_stripper_rules_mp(
     log_info("")
     log_info(sep_line)
     log_info("  " + bold(green("rulestripper")) + " — Hashcat Rule Extractor")
-    log_info("  " + bold(cyan("v1.1 · shared-memory")) + " — 14 extraction modes")
+    log_info("  " + bold(cyan("v1.2 · shared-memory")) + " — 15 extraction modes")
     log_info(sep_line)
     log_info("  target words  : " + bold(f"{n_words:,}"))
     log_info("  base words    : " + bold(f"{len(base_buffer):,}"))
@@ -1668,7 +1755,7 @@ def load_wordlist(path: str) -> List[str]:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='stripper',
-        description='Stripper — Hashcat Rule Extractor (Enhanced v1.1)',
+        description='Stripper — Hashcat Rule Extractor (Enhanced v1.2)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -1689,7 +1776,7 @@ def build_parser() -> argparse.ArgumentParser:
     tun.add_argument('--no-toggle-seeds', action='store_true',
                      help='Skip toggle-chain seed generation')
     tun.add_argument('--no-new-modes', action='store_true',
-                     help='Skip all v1.1 extraction modes (insert, swap, range, etc.)')
+                     help='Skip extended extraction modes (insert, swap, range, Hashcat 8, etc.)')
     tun.add_argument('--ascii-range',  type=int, default=3,
                      metavar='N', help='Max ASCII offset for transform mode (default: 3)')
 
@@ -1729,8 +1816,8 @@ def main() -> None:
         "  \\_| \\_|\\___/\\_____/\\____/\\____/  \\_/ \\_| \\_|\\___/\\_|   \\_|   \\____/\\_| \\_|"
     )
     print(cyan(BANNER))
-    print("  " + bold("Hashcat Rule Extractor") + "  " + green("v1.1") +
-          "  —  " + cyan("14 extraction modes") + "  |  multiprocessing")
+    print("  " + bold("Hashcat Rule Extractor") + "  " + green("v1.2") +
+          "  —  " + cyan("15 extraction modes") + "  |  multiprocessing")
     print()
 
     # Stream both lists directly into shared UTF-8 buffers.  No million-item
@@ -1784,7 +1871,7 @@ def main() -> None:
     depth_summary = '  '.join(f"d{d}:{depth_dist[d]:,}" for d in sorted(depth_dist))
 
     with open(args.output, 'w', encoding='utf-8') as fh:
-        fh.write("# stripper — Hashcat Rule Extractor (Enhanced v1.1)\n")
+        fh.write("# stripper — Hashcat Rule Extractor (Enhanced v1.2)\n")
         fh.write("# Generated      : " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n")
         fh.write("# Base           : " + os.path.basename(args.base_wordlist) + "\n")
         fh.write("# Target         : " + os.path.basename(args.target_wordlist) + "\n")

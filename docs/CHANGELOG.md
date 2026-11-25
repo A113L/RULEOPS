@@ -432,3 +432,10 @@ Commit: [3d4c360](https://github.com/A113L/RULEOPS/commit/3d4c360c7ab1523212767e
 - Persistent run history now records the absolute server-side path for each selected input, separately from its display filename and dataset fingerprint.
 - Run-history artifact details display absolute paths while retaining relative artifact identifiers for safe preview and download routes.
 - Older run manifests remain readable; when they do not contain a recorded input path, the UI clearly marks that path as unavailable.
+
+## 2026-11-25 — Rulestripper: Hashcat 8 extraction modes
+
+- Added reverse extraction for `h` and `H` by decoding lowercase and uppercase hexadecimal output back into BASE candidates.
+- Added reverse extraction for `S` using the same byte-level keyboard mapping as Hashcat (the mapping is self-inverse).
+- Added reverse extraction for `vNX`, including the terminal inserted byte when the source length is divisible by `N`; `N` supports Hashcat base-36 values 1–35.
+- Kept extraction bounded to direct, single-operator matches and verified every candidate by reapplying the generated rule.

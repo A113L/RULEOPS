@@ -173,16 +173,34 @@ async function refreshLibraryMenus(showToast = false) {
         const field = select.dataset.libraryField;
         const category = LIBRARY_FIELD_CATEGORIES[field];
         const items = Array.isArray(library[category]) ? library[category] : [];
+        const workingRules = category === 'rules' && Array.isArray(library.working_rules) ? library.working_rules : [];
         const placeholder = document.createElement('option');
         placeholder.value = '';
-        placeholder.textContent = items.length ? libraryPlaceholder(field) : `No saved ${category === 'wordlists' ? 'wordlists' : 'rule files'}`;
+        placeholder.textContent = items.length || workingRules.length ? libraryPlaceholder(field) : `No saved ${category === 'wordlists' ? 'wordlists' : 'rule files'}`;
         select.replaceChildren(placeholder);
-        items.forEach((item) => {
-          const option = document.createElement('option');
-          option.value = item.id;
-          option.textContent = `${item.label || item.name} · ${humanSize(Number(item.size))}`;
-          select.append(option);
-        });
+        if (items.length) {
+          const group = document.createElement('optgroup'); group.label = 'Saved library';
+          items.forEach((item) => {
+            const option = document.createElement('option');
+            option.value = item.id;
+            option.textContent = `${item.label || item.name} · ${humanSize(Number(item.size))}`;
+            group.append(option);
+          });
+          select.append(group);
+        }
+        if (workingRules.length) {
+          const group = document.createElement('optgroup'); group.label = 'Persistence Storage · working folders';
+          workingRules.forEach((item) => {
+            const option = document.createElement('option');
+            option.value = `run:${item.run_id}:${item.relative_path}`;
+            option.dataset.source = 'run';
+            option.dataset.runId = item.run_id;
+            option.dataset.relativePath = item.relative_path;
+            option.textContent = `${item.label || item.name} · ${humanSize(Number(item.size))}`;
+            group.append(option);
+          });
+          select.append(group);
+        }
         // Keep an empty menu openable so it can display its empty-state text.
         select.disabled = currentStatus === 'running' || currentStatus === 'stopping';
       });
@@ -208,7 +226,11 @@ async function refreshLibraryMenus(showToast = false) {
 async function selectLibraryAsset(field, assetId, select) {
   if (!assetId) return;
   try {
-    const result = await apiPost('/api/library/select', { field, asset_id: assetId });
+    const selectedOption = select && select.selectedOptions ? select.selectedOptions[0] : null;
+    const selection = selectedOption && selectedOption.dataset.source === 'run'
+      ? { field, source: 'run', run_id: selectedOption.dataset.runId, relative_path: selectedOption.dataset.relativePath }
+      : { field, asset_id: assetId };
+    const result = await apiPost('/api/library/select', selection);
     const meta = { name: result.name, size: result.size, library: true, asset_id: result.asset_id, category: result.category, rule_count: result.rule_count };
     uploadStateRevision[field] += 1;
     if (field in MULTI_FILE_FIELDS) {

@@ -674,8 +674,41 @@ def list_library_assets() -> dict:
     menu refresh. Different content is always kept selectable and labelled with
     a short ID suffix so same-name variants remain distinguishable.
     """
-    result = {"wordlists": [], "rules": []}
-    for category in result:
+    result = {"wordlists": [], "rules": [], "working_rules": []}
+    # Rule artifacts produced by previous runs are reusable inputs too. Keep
+    # them separate from the persistent library so selecting one never moves,
+    # renames, or deletes the original work-folder output.
+    for run in list_tool_run_history():
+        run_id = str(run.get("run_id") or "")
+        tool = str(run.get("tool") or "RULEOPS")
+        if not run_id:
+            continue
+        try:
+            # The history summary intentionally omits file details. Resolve the
+            # full run record here so the picker sees its actual output files.
+            full_run, _run_directory = get_tool_history_run(run_id)
+        except (OSError, ValueError):
+            continue
+        for artifact in full_run.get("files", []):
+            relative = str(artifact.get("path") or "")
+            name = str(artifact.get("name") or Path(relative).name)
+            if Path(name).suffix.lower() not in {".rule", ".rules"}:
+                continue
+            try:
+                descriptor, metadata, _resolved = open_run_folder_file(run_id, relative)
+                os.close(descriptor)
+            except (OSError, ValueError):
+                continue
+            result["working_rules"].append({
+                "id": run_id + "|" + relative,
+                "run_id": run_id,
+                "relative_path": relative,
+                "name": name,
+                "size": int(metadata.st_size),
+                "label": f"{name} · {tool} · {run_id}",
+            })
+    result["working_rules"].sort(key=lambda item: (item["name"].casefold(), item["run_id"], item["relative_path"]))
+    for category in ("wordlists", "rules"):
         folder = library_category_dir(category)
         try:
             entries = list(folder.iterdir())
@@ -1489,6 +1522,37 @@ def upload_meta_for_library_asset(category: str, asset_id: str) -> dict:
         "sha256": _library_asset_sha256(category, path, stat),
         "file_signature": _library_file_signature(stat),
     }
+
+
+def upload_meta_for_working_rule(run_id: str, relative_path: str) -> dict:
+    """Copy a safe .rule/.rules artifact into transient uploads for tool selection."""
+    descriptor, metadata, resolved = open_run_folder_file(run_id, relative_path)
+    try:
+        if resolved.suffix.lower() not in {".rule", ".rules"}:
+            raise ValueError("Only .rule and .rules files can be loaded from work folders.")
+        stored = UPLOADS / (uuid.uuid4().hex + "_" + safe_name(resolved.name, "rules.rule"))
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as source, stored.open("xb") as target:
+            descriptor = None
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+                target.write(block)
+        final_stat = stored.stat()
+        return {
+            "path": stored, "name": resolved.name, "size": int(final_stat.st_size),
+            "library": False, "asset_id": "run:" + run_id + ":" + relative_path,
+            "category": "rules", "sha256": digest.hexdigest(),
+            "file_signature": _library_file_signature(final_stat),
+            "source_run_id": run_id, "source_relative_path": relative_path,
+        }
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            stored.unlink(missing_ok=True)
+        except (OSError, UnboundLocalError):
+            pass
+        raise
 
 
 def remove_temporary_upload(meta):
@@ -5150,7 +5214,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "This input does not support reusable library items."}, 400)
             return
         try:
-            meta = upload_meta_for_library_asset(category, data.get("asset_id"))
+            if data.get("source") == "run":
+                if category != "rules":
+                    raise ValueError("Work-folder files can only be loaded into rule inputs.")
+                meta = upload_meta_for_working_rule(data.get("run_id"), data.get("relative_path"))
+            else:
+                meta = upload_meta_for_library_asset(category, data.get("asset_id"))
             if field == "aether_files":
                 meta["rule_count"] = count_aether_rules(meta["path"])
         except ValueError as exc:

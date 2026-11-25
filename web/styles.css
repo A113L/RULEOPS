@@ -2316,7 +2316,37 @@ body{
 }
 .tool-run-history-heading>.secondary-button:hover,
 .tool-run-history-detail-actions>.secondary-button:hover{border-color:#697c60;background:#202b35;color:#e5eedc;}
-.tool-run-history-list{display:flex;flex-direction:column;gap:7px;}
+/* Persistence Storage: keep the archive panel compact and scroll the complete
+   tool/run directory list vertically once it grows beyond the visible area. */
+.tool-run-history-list{
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  max-height:620px;
+  overflow-y:auto;
+  overflow-x:hidden;
+  overscroll-behavior:contain;
+  scrollbar-width:thin;
+  scrollbar-color:#647b60 #111923;
+  padding:2px 8px 2px 2px;
+  border-radius:8px;
+}
+.tool-run-history-list::-webkit-scrollbar{width:10px;}
+.tool-run-history-list::-webkit-scrollbar-track{
+  border:1px solid #263342;
+  border-radius:10px;
+  background:linear-gradient(180deg,#0d141d,#151f2a);
+}
+.tool-run-history-list::-webkit-scrollbar-thumb{
+  min-height:38px;
+  border:2px solid #111923;
+  border-radius:10px;
+  background:linear-gradient(180deg,#81966f,#526b50);
+}
+.tool-run-history-list::-webkit-scrollbar-thumb:hover{
+  background:linear-gradient(180deg,#a2bb88,#6f8b65);
+}
+.tool-run-history-list::-webkit-scrollbar-corner{background:#111923;}
 .tool-history-tool{overflow:hidden;border:1px solid #2a3542;border-radius:9px;background:#101720;}
 .tool-history-tool-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px;cursor:pointer;list-style:none;background:linear-gradient(110deg,#18222d,#141c26);}
 .tool-history-tool-summary::-webkit-details-marker,.tool-history-file-group>summary::-webkit-details-marker{display:none;}

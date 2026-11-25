@@ -4,7 +4,7 @@
 
 **Benchmark date:** 2026-11-25  
 **Source revision:** [`A113L/hashcat-rules-comparison@cc99ee6`](https://github.com/A113L/hashcat-rules-comparison/commit/cc99ee6a69b767b0991ebdb17ba8b3870bfbbb72)  
-**Analysis prepared with:** **OpenAI GPT-6**. Codex was not used for this analysis.
+**Analysis prepared with:** **OpenAI GPT-6**.
 
 ## Executive summary
 
@@ -158,4 +158,3 @@ The published results support the following conclusions:
 ---
 
 **Prepared by OpenAI GPT-6**  
-*Codex was not used to run this benchmark analysis.*

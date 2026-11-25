@@ -15,6 +15,7 @@ repository [README](../README.md).
 | Use the Rule Ranker CLI and web workflows | [Rule Ranker guide](guides/RANKER.md) |
 | Understand CELF exact scoring in Rule Ranker | [Rule Ranker CELF internals](engineering/CELF_RANKER.md) |
 | Profile Rule Ranker CELF runs | [CELF profiling](engineering/CELF_PROFILING.md) |
+| Compare published RULEOPS ruleset results with other benchmark entries | [Ruleset quality benchmark](engineering/RULESET_QUALITY_BENCHMARK.md) |
 | Deploy the web app as a Linux service | [systemd deployment](operations/SYSTEMD_SERVICE.md) |
 | Configure limits and secure the web server | [Security hardening](operations/SECURITY_HARDENING.md) |
 
@@ -40,6 +41,7 @@ repository [README](../README.md).
 | [Memory optimization](engineering/MEMORY_OPTIMIZATION.md) | Shared wordlists, Stage 0 membership, GPU host buffers and large-target GA behavior |
 | [PCFG-guided optimization](engineering/PCFG_GUIDED_OPTIMIZATION.md) | How aggregate corpus profiles affect Top-N seed budgets and CELF cost-aware ranking |
 | [Performance diagnostics](engineering/PERFORMANCE_DIAGNOSTICS.md) | Progress reporting for operations whose total work is not known in advance and safe performance comparisons |
+| [Ruleset quality benchmark](engineering/RULESET_QUALITY_BENCHMARK.md) | Published recovery and efficiency comparison by ruleset size and RULEOPS tool family |
 
 ## Operations and maintenance
 

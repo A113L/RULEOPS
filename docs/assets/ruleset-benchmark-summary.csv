@@ -1,0 +1,17 @@
+section,group_or_size,sample_n,median_recovered_pct,mean_recovered_pct,median_rules_count,median_avg_crack_rate_per_hour,median_efficiency_score,other_sample_n,other_median_recovered_pct,other_median_efficiency_score
+overall,RULEOPS_plus_Sapphire,138,30.2,28.084,39133,7879.84,0.735,349,14.66,0.854
+overall,External_README_rulesets,349,14.66,18.359,11721,4308.6,0.854,,,
+family,RULEST,82,30.2,28.32,50001,7353.705,0.6723,,,
+family,Rule Ranker / CELF,23,25.49,24.835,10001,3583.0,2.2948,,,
+family,Concentrator (non-Sapphire),22,25.745,25.341,11938,15379.995,2.191,,,
+family,Sapphire (Concentrator-derived),9,40.15,38.207,100000,8641.0,0.4015,,,
+family,Rulestripper,2,40.56,40.56,621678,2065.64,0.0658,,,
+size_bucket,<1.5k,23,5.01,,,,34.4,128,3.99,27.2915
+size_bucket,1.5–5k,9,15.43,,,,9.2072,13,13.73,3.4804
+size_bucket,5–15k,21,21.49,,,,2.55,38,20.68,2.2701
+size_bucket,15–30k,16,29.73,,,,1.1842,19,23.18,0.9272
+size_bucket,30–75k,19,33.89,,,,0.6662,49,29.63,0.5896
+size_bucket,75–200k,23,39.29,,,,0.2592,40,30.83,0.248
+size_bucket,200–800k,23,41.55,,,,0.0959,41,39.79,0.098
+size_bucket,>800k,4,48.1,,,,0.0342,21,43.41,0.0273
+sapphire,Sapphire_Concentrator_derived,9,40.15,38.207,100000,8641,0.4015,,,

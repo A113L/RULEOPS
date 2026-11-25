@@ -237,7 +237,7 @@ The documentation has a dedicated [index](docs/README.md), organized into user
 [guides](docs/README.md#user-guides), [engineering references](docs/README.md#engineering-references),
 and [operations](docs/README.md#operations-and-maintenance). The English [user guide for all tools
 (CLI + UI)](docs/guides/USER_GUIDE.md) covers practical workflows, and the
-[CHANGELOG](docs/CHANGELOG.md) is the chronological record of project changes.
+[CHANGELOG](docs/CHANGELOG.md) is the chronological record of project changes. The published [ruleset quality benchmark](docs/engineering/RULESET_QUALITY_BENCHMARK.md) compares RULEOPS-attributed outputs (including Concentrator-derived Sapphire rules) with the remaining benchmark entries.
 
 ## Testing
 

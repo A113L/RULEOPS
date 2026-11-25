@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased] — Published ruleset quality benchmark
+
+- Added an English, charted comparison of RULEOPS-attributed rulesets against the remaining entries in the A113L benchmark, stratified by ruleset size and tool family. Included nine Sapphire rulesets as Concentrator-derived based on project-owner provenance clarification; documented source revision, duplicate rows, assumptions and limitations. See [Ruleset quality benchmark](engineering/RULESET_QUALITY_BENCHMARK.md).
+
 ## [Unreleased] — Independent Persistent Run Archive scrollbars
 
 - Added a separate, keyboard-accessible scroll region to each tool category in **PERSISTENT RUN ARCHIVE**, keeping long histories from scrolling the other tools.

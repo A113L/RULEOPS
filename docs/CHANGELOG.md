@@ -426,3 +426,9 @@ Commit: [eddc2f3](https://github.com/A113L/RULEOPS/commit/eddc2f37fc28c4c612de3e
 - The procedure prompts for the new password without echoing it and enforces a minimum length of 12 characters.
 
 Commit: [3d4c360](https://github.com/A113L/RULEOPS/commit/3d4c360c7ab1523212767e723be1a457ca61ada9)
+
+## 2026-11-25 — Absolute file paths in persistent Run storage
+
+- Persistent run history now records the absolute server-side path for each selected input, separately from its display filename and dataset fingerprint.
+- Run-history artifact details display absolute paths while retaining relative artifact identifiers for safe preview and download routes.
+- Older run manifests remain readable; when they do not contain a recorded input path, the UI clearly marks that path as unavailable.

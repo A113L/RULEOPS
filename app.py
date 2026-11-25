@@ -1736,11 +1736,14 @@ def _write_run_history_manifest(run_dir: Path, tool: str, mode: str) -> dict | N
         inputs = []
         for index, item in enumerate(selected):
             name = safe_name(item.get("name") or "input", "input")
+            raw_path = str(item.get("path") or "")
             record = {
                 "slot": index + 1,
                 "name": name,
                 "size": max(0, int(item.get("size") or 0)),
             }
+            if raw_path:
+                record["filepath"] = os.path.abspath(raw_path)
             if tool == "aether":
                 raw_path = str(item.get("path") or "")
                 record["output_stem"] = output_stems.get(raw_path) or _aether_output_stem(name, set())
@@ -1805,6 +1808,9 @@ def _validated_run_history_manifest(manifest: object, expected_run_id: str | Non
         if slot != index:
             return None
         normalized = {"slot": slot, "name": name[:220], "size": size}
+        filepath = item.get("filepath")
+        if isinstance(filepath, str) and filepath and len(filepath) <= 4096 and os.path.isabs(filepath):
+            normalized["filepath"] = filepath
         if tool == "aether":
             stem = str(item.get("output_stem") or "")
             if stem:
@@ -1913,6 +1919,7 @@ def _stable_run_input_record(meta: dict, slot: int) -> dict:
     return {
         "slot": int(slot),
         "name": safe_name(meta.get("name") or path.name, "input"),
+        "filepath": str(path.resolve()),
         "size": int(before.st_size),
         "sha256": digest,
     }
@@ -1987,7 +1994,11 @@ def _validated_run_dataset_manifest(manifest: object) -> dict | None:
             return None
         if slot != expected_slot or size < 0 or not re.fullmatch(r"[a-f0-9]{64}", digest):
             return None
-        normalized.append({"slot": slot, "size": size, "sha256": digest, "name": name[:220]})
+        normalized_item = {"slot": slot, "size": size, "sha256": digest, "name": name[:220]}
+        filepath = item.get("filepath")
+        if isinstance(filepath, str) and filepath and len(filepath) <= 4096 and os.path.isabs(filepath):
+            normalized_item["filepath"] = filepath
+        normalized.append(normalized_item)
     fingerprint = _dataset_fingerprint(tool, mode, normalized)
     stored_fingerprint = manifest.get("dataset_fingerprint")
     if stored_fingerprint and not hmac.compare_digest(str(stored_fingerprint), fingerprint):
@@ -3607,6 +3618,7 @@ def _tool_history_files(directory: Path, directory_metadata: dict | None = None)
         rows.append({
             "name": path.name,
             "path": path.as_posix(),
+            "absolute_path": os.path.abspath(str(directory / Path(path.as_posix()))),
             "size": max(0, int(item.get("size") or 0)),
             "type": suffix.lstrip(".") or "file",
             "previewable": suffix in {".png", ".html", ".txt", ".csv", ".json", ".rule", ".rules", ".log", ".md"},
@@ -3634,12 +3646,16 @@ def _tool_history_manifest_for_directory(directory: Path) -> dict | None:
         inputs = []
         for index, item in enumerate(legacy_aether.get("inputs", []), start=1):
             name = safe_name(item.get("name") or "rules.rule", "rules.rule")
+            dataset_input = next((entry for entry in (dataset or {}).get("inputs", [])
+                                  if str(entry.get("name") or "") == name), {})
             normalized = {
                 "slot": index,
                 "name": name,
                 "size": sizes_by_name.get(name, 0),
                 "output_stem": str(item.get("output_stem") or _aether_output_stem(name, set())),
             }
+            if dataset_input.get("filepath"):
+                normalized["filepath"] = dataset_input["filepath"]
             if isinstance(item.get("rule_count"), int) and item["rule_count"] >= 0:
                 normalized["rule_count"] = item["rule_count"]
             inputs.append(normalized)
@@ -3664,11 +3680,16 @@ def _tool_history_manifest_for_directory(directory: Path) -> dict | None:
         return None
     inputs = dataset.get("inputs") or []
     groups = _run_history_group_names(dataset.get("tool", ""), dataset.get("mode", ""), inputs)
-    normalized_inputs = [
-        {"slot": int(item.get("slot") or index + 1), "name": str(item.get("name") or "input"),
-         "size": max(0, int(item.get("size") or 0))}
-        for index, item in enumerate(inputs)
-    ]
+    normalized_inputs = []
+    for index, item in enumerate(inputs):
+        normalized = {
+            "slot": int(item.get("slot") or index + 1),
+            "name": str(item.get("name") or "input"),
+            "size": max(0, int(item.get("size") or 0)),
+        }
+        if item.get("filepath"):
+            normalized["filepath"] = str(item["filepath"])
+        normalized_inputs.append(normalized)
     if dataset.get("tool") == "aether":
         used_names: set[str] = set()
         for item in normalized_inputs:

@@ -796,11 +796,21 @@ function renderToolRunHistory(runs = []) {
         const groupArtifactCount = run.group_output_counts && Number.isFinite(Number(run.group_output_counts[groupName]))
           ? Number(run.group_output_counts[groupName]) : Number(run.output_count || 0);
         meta.textContent = `${groupArtifactCount.toLocaleString()} artifact(s) · ${humanSize(Number(run.bytes || 0))}`;
+        const allInputs = Array.isArray(run.inputs) ? run.inputs : [];
+        const matchingInputs = allInputs.filter((input) => String(input.name || '') === groupName);
+        const pathInputs = matchingInputs.length ? matchingInputs : allInputs;
+        const absoluteInputPaths = Array.from(new Set(pathInputs.map((input) => String(input.filepath || '')).filter(Boolean)));
+        const filepath = document.createElement('small');
+        filepath.className = 'tool-history-artifact-path';
+        filepath.textContent = absoluteInputPaths.length ? `Input filepath: ${absoluteInputPaths.join(' · ')}` : 'Input filepath: unavailable for this older run';
+        filepath.title = absoluteInputPaths.join('\n');
         const statusData = toolHistoryStatus(run.status);
         const status = document.createElement('span');
         status.className = `run-history-status ${statusData.className}`;
         status.textContent = statusData.label;
-        row.append(open, meta, status); groupDetails.append(row);
+        const copy = document.createElement('div'); copy.className = 'tool-history-run-copy';
+        copy.append(open, meta, filepath);
+        row.append(copy, status); groupDetails.append(row);
       });
       toolDetails.append(groupDetails);
     });
@@ -898,8 +908,9 @@ async function openToolRunHistoryRun(runId, groupName = '') {
         const relativePath = String(file.path || file.name || '');
         const name = document.createElement('b'); name.textContent = relativePath.split('/').pop() || relativePath;
         const filepath = document.createElement('small'); filepath.className = 'tool-history-artifact-path';
-        filepath.textContent = `Filepath: ${relativePath}`;
-        filepath.title = relativePath;
+        const absolutePath = String(file.absolute_path || relativePath);
+        filepath.textContent = `Filepath: ${absolutePath}`;
+        filepath.title = absolutePath;
         const size = document.createElement('small'); size.textContent = humanSize(Number(file.size || 0));
         copy.append(name, filepath, size);
         const actions = document.createElement('div'); actions.className = 'tool-history-artifact-actions';

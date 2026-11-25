@@ -141,7 +141,7 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 # bounds around the server's temporary and persistent data directories.
 MAX_UPLOAD_BYTES = _env_int("RULEOPS_MAX_UPLOAD_FILE_BYTES", 20 * 1024**3)
 MAX_TOTAL_UPLOAD_BYTES = _env_int("RULEOPS_MAX_UPLOAD_TOTAL_BYTES", 40 * 1024**3)
-MAX_DATA_STORAGE_BYTES = _env_int("RULEOPS_MAX_DATA_STORAGE_BYTES", 10 * 1024**3)
+MAX_DATA_STORAGE_BYTES = _env_int("RULEOPS_MAX_DATA_STORAGE_BYTES", 50 * 1024**3)
 MIN_FREE_DISK_BYTES = _env_int("RULEOPS_MIN_FREE_DISK_BYTES", 1 * 1024**3, minimum=0)
 MAX_CONCURRENT_CONNECTIONS = min(64, _env_int("RULEOPS_MAX_CONNECTIONS", 16, minimum=2))
 HEADER_TIMEOUT_SECONDS = _env_int("RULEOPS_HEADER_TIMEOUT_SECONDS", 15)

@@ -1,3 +1,7 @@
+## 2026-11-25 — RULEOPS storage quota
+
+- Increased the default aggregate RULEOPS data-storage quota from 10 GiB to 50 GiB. The `RULEOPS_MAX_DATA_STORAGE_BYTES` environment variable can still override the default.
+
 ## 2026-11-25 — Recent commits recorded from `main`
 
 ### Aether: benchmark, validation and report improvements

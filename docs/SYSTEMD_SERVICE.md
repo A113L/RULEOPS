@@ -200,7 +200,7 @@ The service runs as the account shown in `User=`. That account needs write permi
 
 ## 8. Persistent application data
 
-The service does not move or reset RULEOPS data. By default, RULEOPS enforces a **10 GiB aggregate data quota** across run outputs, reusable library files and temporary uploads. This application quota is separate from physical filesystem capacity and can be overridden with `RULEOPS_MAX_DATA_STORAGE_BYTES` when the available disk space and retention policy justify it. Storage Intelligence displays both measurements separately.
+The service does not move or reset RULEOPS data. By default, RULEOPS enforces a **50 GiB aggregate data quota** across run outputs, reusable library files and temporary uploads. This application quota is separate from physical filesystem capacity and can be overridden with `RULEOPS_MAX_DATA_STORAGE_BYTES` when the available disk space and retention policy justify it. Storage Intelligence displays both measurements separately.
 
 To override the quota for this systemd service, create a service drop-in (replace the value only after checking free disk capacity):
 

@@ -35,6 +35,7 @@
 
 - Added a configurable rule count to interactive Aether HTML report downloads. Users can choose how many of the fastest rules to export directly from the report; the export is independent of the optimization setting. Commit: [56c8ac5](https://github.com/A113L/RULEOPS/commit/56c8ac5e6679f707d0ae9c345f3d6a60a0eb9d77).
 - Deferred full rule validation until optimized-rule generation. Uploading or selecting a reusable rule file no longer runs the expensive full validation path, avoiding unnecessary delays and upload timeouts. Commits: [aec1a23](https://github.com/A113L/RULEOPS/commit/aec1a2335abe069451a9776b0af51990f31a94b6), [b117348](https://github.com/A113L/RULEOPS/commit/b11734898534fe0276f27aa44a72bd93d1f8dae7).
+- Reworked Aether opcode heatmap to benchmark individual one-command rules on the GPU and subtract the no-op baseline; results are grouped by operator and saved to a separate JSON report. Up to four argument variants per operator are sampled to keep profiling bounded.
 
 ## [Unreleased] - Aether Hashcat 8 rule-chain support
 

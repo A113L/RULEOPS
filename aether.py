@@ -22,7 +22,7 @@ import seaborn as sns
 import pandas as pd
 from datetime import datetime
 
-from aether_validation import validate_rule_file, validate_rule_records, write_validation_artifacts
+from aether_validation import validate_rule_file, validate_rule_records, write_validation_artifacts, _parse_rule
 
 # Color codes for terminal output
 class Colors:
@@ -498,46 +498,35 @@ class VisualizationEngine:
         plt.close(fig)
         print(f"{Colors.GREEN}Radar chart saved: {filename}_radar.png{Colors.END}")
     
-    def create_performance_heatmap(self, rule_performance: List[Tuple[str, Dict]], filename: str):
-        if not rule_performance: return
-        rule_types = {}
-        for rule, data in rule_performance:
-            rule_char = rule[0] if rule else '?'
-            if rule_char not in rule_types:
-                rule_types[rule_char] = []
-            rule_types[rule_char].append(data['execution_time'] * 1000000)
-        rule_chars = list(rule_types.keys())
-        performance_data = []
-        for char in rule_chars:
-            times = rule_types[char]
-            if times:
-                performance_data.append(np.mean(times))
-        if not performance_data: return
-        grid_size = int(np.ceil(np.sqrt(len(rule_chars))))
+    def create_performance_heatmap(self, operator_performance: Dict[str, Dict], filename: str):
+        """Plot isolated, baseline-subtracted GPU cost for individual operators."""
+        if not operator_performance:
+            return
+        operator_names = sorted(operator_performance)
+        costs = [operator_performance[name]['incremental_cost_us'] for name in operator_names]
+        grid_size = int(np.ceil(np.sqrt(len(operator_names))))
         heatmap_data = np.full((grid_size, grid_size), np.nan)
         char_labels = np.full((grid_size, grid_size), '', dtype=object)
-        for idx, (char, perf) in enumerate(zip(rule_chars, performance_data)):
-            row = idx // grid_size
-            col = idx % grid_size
-            if row < grid_size and col < grid_size:
-                heatmap_data[row, col] = perf
-                char_labels[row, col] = char
+        for idx, (name, cost) in enumerate(zip(operator_names, costs)):
+            row, col = divmod(idx, grid_size)
+            heatmap_data[row, col] = cost
+            char_labels[row, col] = name
         fig, ax = plt.subplots(figsize=(12, 10))
         im = ax.imshow(heatmap_data, cmap='RdYlGn_r', aspect='auto')
         for i in range(grid_size):
             for j in range(grid_size):
                 if not np.isnan(heatmap_data[i, j]):
-                    ax.text(j, i, f"{char_labels[i, j]}\n{heatmap_data[i, j]:.1f}μs",
+                    ax.text(j, i, f"{char_labels[i, j]}\n{heatmap_data[i, j]:.3f}μs",
                             ha="center", va="center", color="black", fontsize=8,
                             bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.7))
-        plt.colorbar(im, ax=ax, label='GPU Kernel Time (μs)')
-        ax.set_title('Rule Type Performance Heatmap\n(GPU Kernel Time · Lower = Faster)', pad=20)
+        plt.colorbar(im, ax=ax, label='Incremental GPU Kernel Time (μs)')
+        ax.set_title('Individual Operator Cost\n(Single-command kernel minus no-op baseline · Lower = Cheaper)', pad=20)
         ax.set_xticks([])
         ax.set_yticks([])
         plt.tight_layout()
         plt.savefig(os.path.join(self.output_dir, f"{filename}_heatmap.png"), dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"{Colors.GREEN}Heatmap saved: {filename}_heatmap.png{Colors.END}")
+        print(f"{Colors.GREEN}Operator-cost heatmap saved: {filename}_heatmap.png{Colors.END}")
     
     @staticmethod
     def _relative_tier_specs(times_us: List[float]):
@@ -983,7 +972,7 @@ Q3: {np.percentile(times, 75):.2f}μs"""
         if 'rule_performance' in performance_data:
             rp = performance_data['rule_performance']
             self.create_performance_radar(rp, filename)
-            self.create_performance_heatmap(rp, filename)
+            self.create_performance_heatmap(performance_data.get('operator_performance', {}), filename)
             mode = performance_data.get('word_corpus_mode', 'unknown').replace('_', ' ').title()
             words = int(performance_data.get('test_words_count', 0) or 0)
             corpus_description = f'{mode} corpus · {words:,} words per rule' if words else ''
@@ -1307,6 +1296,76 @@ class RulePerformanceTester:
                 'error': str(e)
             }
 
+    def benchmark_individual_operators(self, rules: List[bytes], test_runs: int = 3) -> Dict[str, Dict[str, Any]]:
+        """Measure each supported command alone and subtract the no-op kernel baseline.
+
+        Each distinct (operator, arguments) signature found in the validated rule
+        file is benchmarked as a one-command rule. Results are then averaged by
+        operator symbol, so chain position and neighboring commands cannot
+        contribute to the measured operator cost.
+        """
+        signatures = {}
+        for raw_rule in rules:
+            try:
+                rule_text = raw_rule.decode('ascii', errors='strict')
+                status, _reason, _count, parsed = _parse_rule(rule_text)
+                if status != 'valid':
+                    continue
+                for operator, args in parsed:
+                    single_command = operator + args
+                    signatures.setdefault(operator, set()).add(single_command)
+            except (UnicodeDecodeError, TypeError, ValueError):
+                continue
+
+        if not signatures:
+            return {}
+
+        baseline = self.test_single_rule_performance(b':', test_runs=test_runs)
+        if not baseline.get('success'):
+            print(f"{Colors.YELLOW}Could not measure no-op baseline; operator costs unavailable.{Colors.END}")
+            return {}
+        baseline_seconds = baseline['gpu_kernel_time_seconds']
+        results = {}
+        # Keep the added profiling pass bounded even for very large rule files
+        # containing many argument variants of the same opcode.
+        max_variants_per_operator = 4
+        sampled_commands = {}
+        for operator, command_set in signatures.items():
+            ordered = sorted(command_set)
+            if len(ordered) > max_variants_per_operator:
+                sample_indices = np.linspace(0, len(ordered) - 1, max_variants_per_operator, dtype=int)
+                ordered = [ordered[index] for index in sample_indices]
+            sampled_commands[operator] = ordered
+        total_variants = sum(len(commands) for commands in sampled_commands.values())
+        completed = 0
+        for operator in sorted(sampled_commands):
+            variant_costs = []
+            variant_raw_times = []
+            variant_errors = []
+            for command in sampled_commands[operator]:
+                completed += 1
+                measured = self.test_single_rule_performance(command.encode('ascii'), test_runs=test_runs)
+                if not measured.get('success'):
+                    variant_errors.append({'command': command, 'error': measured.get('error', 'benchmark failed')})
+                    continue
+                raw_seconds = measured['gpu_kernel_time_seconds']
+                variant_raw_times.append(raw_seconds)
+                variant_costs.append((raw_seconds - baseline_seconds) * 1_000_000.0)
+                print(f"{Colors.CYAN}  Operator {operator!r}: variant {completed}/{total_variants}, "
+                      f"incremental {(raw_seconds - baseline_seconds) * 1e6:.3f} µs{Colors.END}")
+            if variant_costs:
+                results[operator] = {
+                    'incremental_cost_us': float(np.mean(variant_costs)),
+                    'raw_single_operator_kernel_us': float(np.mean(variant_raw_times) * 1_000_000.0),
+                    'baseline_noop_kernel_us': float(baseline_seconds * 1_000_000.0),
+                    'variants_tested': len(variant_costs),
+                    'sampled_variants': len(sampled_commands[operator]),
+                    'variant_count': len(signatures[operator]),
+                    'errors': variant_errors,
+                    'measurement': 'mean(single_operator_gpu_kernel_time - noop_gpu_kernel_time)',
+                }
+        return results
+
     def test_rule_file_performance(self, rule_file_path: str, test_runs: int = 3, max_test_rules: int = 1000, output_basename: str = None) -> List[Tuple[str, Dict[str, Any]]]:
         print(f"\n{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.END}")
         print(f"{Colors.BOLD}{Colors.CYAN}Testing rule file: {rule_file_path}{Colors.END}")
@@ -1322,6 +1381,16 @@ class RulePerformanceTester:
         if not rules:
             print(f"{Colors.RED}No Aether-benchmarkable Hashcat rules found in {rule_file_path}{Colors.END}")
             return []
+        operator_performance = self.benchmark_individual_operators(rules, test_runs=test_runs)
+        if self.output_dir and operator_performance:
+            operator_report_path = os.path.join(self.output_dir, f"{base_name}_operator_costs.json")
+            with open(operator_report_path, 'w', encoding='utf-8') as operator_report:
+                json.dump({
+                    'measurement': 'isolated one-command GPU kernel time minus no-op baseline',
+                    'baseline_noop_kernel_us': next(iter(operator_performance.values()))['baseline_noop_kernel_us'],
+                    'operators': operator_performance,
+                }, operator_report, indent=2, ensure_ascii=False)
+            print(f"{Colors.GREEN}Individual operator cost report saved: {operator_report_path}{Colors.END}")
         if len(rules) > max_test_rules:
             print(f"{Colors.YELLOW}Limiting to first {max_test_rules} benchmarkable rules (out of {len(rules)}){Colors.END}")
             rules = rules[:max_test_rules]
@@ -1359,6 +1428,7 @@ class RulePerformanceTester:
                 'word_corpus_mode': self.word_corpus_mode,
                 'test_words_count': len(self.test_words),
                 'validation_summary': (self.last_validation_report or {}).get('summary', {}),
+                'operator_performance': operator_performance,
             }, base_name)
         return rule_performance
     

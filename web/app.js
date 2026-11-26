@@ -44,6 +44,10 @@ let lastStorageSummaryAt = 0;
 let lastToolHistoryRefresh = 0;
 let toolHistoryLoading = false;
 let selectedToolHistoryRun = null;
+let latestAetherOutputRunId = null;
+let latestAetherOutputStatus = null;
+let latestAetherOutputRequestId = 0;
+let latestAetherOutputLoading = false;
 let lastStorageIntelligenceAt = 0;
 let storageIntelligenceLoading = false;
 let lastRunStorageScan = null;
@@ -624,7 +628,6 @@ function renderOutputs(outputs = [], outputTool = 'rulest') {
     concentrator: { count: 'concentrator-output-count', list: 'concentrator-output-list' },
     rulestripper: { count: 'rulestripper-output-count', list: 'rulestripper-output-list' },
     minimizer: { count: 'minimizer-output-count', list: 'minimizer-output-list' },
-    aether: { count: 'aether-output-count', list: 'aether-output-list' },
   };
   Object.entries(outputViews).forEach(([tool, ids]) => {
     const ownedOutputs = tool === outputTool ? outputs : [];
@@ -754,6 +757,123 @@ function formatAetherDate(timestamp) {
   try { return new Date(value * 1000).toLocaleString(); } catch { return 'Date unavailable'; }
 }
 
+// The Aether download panel is intentionally backed by the newest Aether run
+// in persistent history, not STATE.outputs (which belongs to whichever tool
+// happened to run most recently). This keeps older Aether runs in Run storage
+// while exposing only one, unambiguous run on the Aether page.
+function renderAetherOutputFiles(run = null) {
+  const root = $('aether-output-list');
+  const count = $('aether-output-count');
+  const note = $('aether-output-run-note');
+  if (!root) return;
+
+  const files = run && Array.isArray(run.files) ? run.files : [];
+  const runId = run && String(run.run_id || '');
+  const status = String(run && run.status || 'archived').toLowerCase();
+  const runIsActive = ['running', 'stopping'].includes(status);
+  if (count) count.textContent = files.length.toLocaleString();
+  if (note) {
+    note.textContent = runId
+      ? `Latest Aether run · ${formatAetherDate(run.created_at)} · ${toolHistoryStatus(status).label} · ${runId}`
+      : 'Showing downloadable files from the latest Aether run only.';
+  }
+
+  root.replaceChildren();
+  if (!runId || !files.length || runIsActive) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-output';
+    empty.innerHTML = !runId
+      ? '<span>▤</span><b>No Aether runs found</b><small>Files from your latest Aether benchmark will appear here.</small>'
+      : runIsActive
+        ? '<span>◷</span><b>Aether is running</b><small>Download links will appear when this run finishes.</small>'
+        : '<span>▤</span><b>No output files in the latest run</b><small>Older Aether runs remain available in Run storage.</small>';
+    root.append(empty);
+    return;
+  }
+
+  // Keep the panel compact even when Aether generates many per-rule charts.
+  // The ZIP and expandable file list are both scoped to this one run folder.
+  if (!runIsActive) {
+    const bundle = document.createElement('a');
+    bundle.className = 'download-output-bundle';
+    bundle.href = `/api/run-history/${encodeURIComponent(runId)}/download.zip`;
+    bundle.title = `Download all ${files.length} files from the latest Aether run`;
+    bundle.setAttribute('aria-label', `Download all ${files.length} files from the latest Aether run as a ZIP archive`);
+    bundle.innerHTML = '<span aria-hidden="true">↓</span><span>Download latest run <small>ZIP · ' + files.length + '</small></span>';
+    root.append(bundle);
+  }
+
+  if (runIsActive) return;
+
+  const details = document.createElement('details');
+  details.className = 'aether-output-files-details';
+  const summary = document.createElement('summary');
+  summary.textContent = `Show individual files (${files.length.toLocaleString()})`;
+  const list = document.createElement('div');
+  list.className = 'aether-output-files-list';
+  details.append(summary, list);
+  root.append(details);
+
+  files.forEach((file) => {
+    const relativePath = String(file.path || file.name || '');
+    const filename = relativePath.split('/').pop() || relativePath;
+    const suffix = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+    const row = document.createElement('div'); row.className = 'output-item';
+    const icon = document.createElement('span'); icon.className = 'output-file-icon';
+    icon.textContent = String(file.type || suffix || 'file').slice(0, 4).toUpperCase();
+    const meta = document.createElement('div'); meta.className = 'output-meta';
+    const name = document.createElement('b'); name.textContent = filename;
+    name.title = relativePath;
+    const size = document.createElement('small'); size.textContent = humanSize(Number(file.size || 0));
+    meta.append(name, size);
+    const link = document.createElement('a'); link.className = 'download-output';
+    link.href = `/api/run-history/${encodeURIComponent(runId)}/download/${encodeURIComponent(relativePath)}`;
+    link.textContent = '↓'; link.title = `Download ${relativePath}`;
+    link.setAttribute('aria-label', `Download ${relativePath} from the latest Aether run`);
+    row.append(icon, meta, link); list.append(row);
+  });
+}
+
+async function loadLatestAetherOutputs(runs = null) {
+  // A completed run is polled every second. Keep one history/detail request in
+  // flight so a slow response is not invalidated by the next status poll.
+  if (latestAetherOutputLoading) return;
+  latestAetherOutputLoading = true;
+  const requestId = ++latestAetherOutputRequestId;
+  try {
+    const historyRuns = Array.isArray(runs) ? runs : (await apiGet('/api/run-history')).runs;
+    const latest = (Array.isArray(historyRuns) ? historyRuns : [])
+      .filter((run) => run && run.tool === 'aether')
+      .sort((a, b) => (Number(b.created_at || 0) - Number(a.created_at || 0)) || String(b.run_id || '').localeCompare(String(a.run_id || '')))[0] || null;
+    if (requestId !== latestAetherOutputRequestId) return;
+    if (!latest) {
+      latestAetherOutputRunId = null;
+      latestAetherOutputStatus = null;
+      renderAetherOutputFiles(null);
+      return;
+    }
+    const normalizedStatus = String(latest.status || 'archived').toLowerCase();
+    if (latest.run_id === latestAetherOutputRunId && normalizedStatus === latestAetherOutputStatus) return;
+    const detail = await apiGet(`/api/run-history/${encodeURIComponent(latest.run_id)}`);
+    if (requestId !== latestAetherOutputRequestId) return;
+    latestAetherOutputRunId = String(detail.run_id || latest.run_id);
+    latestAetherOutputStatus = String(detail.status || normalizedStatus).toLowerCase();
+    renderAetherOutputFiles(detail);
+  } catch (error) {
+    if (requestId !== latestAetherOutputRequestId) return;
+    const root = $('aether-output-list');
+    if (root) {
+      root.replaceChildren();
+      const empty = document.createElement('div'); empty.className = 'empty-output';
+      const title = document.createElement('b'); title.textContent = 'Aether outputs unavailable';
+      const hint = document.createElement('small'); hint.textContent = error.message || 'The latest Aether run could not be loaded.';
+      empty.append(title, hint); root.append(empty);
+    }
+  } finally {
+    latestAetherOutputLoading = false;
+  }
+}
+
 const TOOL_HISTORY_LABELS = {
   rulest: 'RULEST',
   ranker: 'Rule Ranker',
@@ -776,6 +896,9 @@ function toolHistoryStatus(status) {
 function renderToolRunHistory(runs = []) {
   const root = $('tool-run-history-list');
   if (!root) return;
+  root.setAttribute('role', 'region');
+  root.setAttribute('aria-label', 'Previous tool runs');
+  root.tabIndex = 0;
   root.replaceChildren();
   if (!runs.length) {
     const empty = document.createElement('div');
@@ -814,9 +937,6 @@ function renderToolRunHistory(runs = []) {
     toolSummary.append(toolName, toolCount);
     const toolContent = document.createElement('div');
     toolContent.className = 'tool-history-tool-content';
-    toolContent.setAttribute('role', 'region');
-    toolContent.setAttribute('aria-label', `${TOOL_HISTORY_LABELS[tool]} archived runs`);
-    toolContent.tabIndex = 0;
     toolDetails.append(toolSummary, toolContent);
 
     Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0])).forEach(([groupName, groupRuns]) => {
@@ -867,7 +987,9 @@ async function loadToolRunHistory(showToast = false) {
   lastToolHistoryRefresh = Date.now();
   try {
     const data = await apiGet('/api/run-history');
-    renderToolRunHistory(Array.isArray(data.runs) ? data.runs : []);
+    const runs = Array.isArray(data.runs) ? data.runs : [];
+    renderToolRunHistory(runs);
+    await loadLatestAetherOutputs(runs);
     if (showToast) toast('Saved tool run history refreshed.');
   } catch (error) {
     root.replaceChildren();
@@ -1852,7 +1974,25 @@ function renderStatus(data) {
   }
   ['rulest', 'ranker', 'concentrator', 'rulestripper', 'minimizer', 'aether'].forEach((tool) => renderToolMetrics(tool, data));
   renderOutputs(data.outputs || [], data.tool || 'rulest');
-  if (data.tool === 'aether') renderAetherGallery(data.outputs || []);
+  if (data.tool === 'aether') {
+    renderAetherGallery(data.outputs || []);
+    const activeAetherRun = ['running', 'stopping'].includes(String(data.status || '').toLowerCase());
+    const activeRunId = String(data.job_id || '');
+    const activeAetherStatus = String(data.status || '').toLowerCase();
+    if (activeAetherRun && activeRunId && (
+      activeRunId !== latestAetherOutputRunId || activeAetherStatus !== latestAetherOutputStatus
+    )) {
+      // Prevent an in-flight older history request from repainting the panel.
+      latestAetherOutputRequestId += 1;
+      latestAetherOutputRunId = activeRunId;
+      latestAetherOutputStatus = activeAetherStatus;
+      renderAetherOutputFiles({ run_id: activeRunId, created_at: data.started_at, status: data.status, files: [] });
+    } else if (!activeAetherRun && activeRunId && (
+      activeRunId !== latestAetherOutputRunId || latestAetherOutputStatus === 'running' || latestAetherOutputStatus === 'stopping'
+    )) {
+      loadLatestAetherOutputs();
+    }
+  }
   const storageView = $('system-view');
   if (storageView && !storageView.hidden) {
     if (Date.now() - lastStorageSummaryAt > 5000) loadRunStorageSummary();
@@ -2719,6 +2859,7 @@ function initializeApp() {
   window.addEventListener('popstate', handleNavigationState);
   setActiveNav(window.location.hash);
   detectDevices(true);
+  loadLatestAetherOutputs();
   pollStatus(); pollTimer = setInterval(pollStatus, 1000);
 }
 async function submitPasswordChange(event) {

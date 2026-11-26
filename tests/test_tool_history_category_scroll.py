@@ -10,39 +10,32 @@ def _css_rule(source: str, selector: str) -> str:
     return match.group(1)
 
 
-def test_each_tool_category_uses_its_own_keyboard_accessible_scroll_region():
+def test_previous_runs_is_one_keyboard_accessible_scroll_region():
     source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
-    assert "tool-history-tool tool-history-tool--${tool}" in source
+    assert "root.setAttribute('role', 'region')" in source
+    assert "root.setAttribute('aria-label', 'Previous tool runs')" in source
+    assert "root.tabIndex = 0" in source
     assert "toolContent.className = 'tool-history-tool-content'" in source
-    assert "toolContent.setAttribute('role', 'region')" in source
-    assert "toolContent.tabIndex = 0" in source
     assert "toolContent.append(groupDetails)" in source
-    assert "toolDetails.append(toolSummary, toolContent)" in source
 
 
-def test_archive_scroll_is_independent_per_tool_not_on_the_outer_list():
+def test_previous_runs_outer_box_owns_the_styled_scrollbar():
     source = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
     outer = _css_rule(source, ".tool-run-history-list")
     category = _css_rule(source, ".tool-history-tool-content")
 
-    assert "overflow-y" not in outer
-    assert "max-height" not in outer
-    assert "max-height" in category
-    assert "overflow-y:auto" in category
-    assert "overscroll-behavior:contain" in category
-    assert "scrollbar-width:thin" in category
-    assert "scrollbar-color:var(--tool-scroll-thumb) var(--tool-scroll-track)" in category
+    assert "height:min(590px,66vh)" in outer
+    assert "overflow-y:scroll !important" in outer
+    assert "overscroll-behavior-y:contain" in outer
+    assert "scrollbar-width:auto" in outer
+    assert "scrollbar-color:var(--history-scroll-thumb) #111923" in outer
+    assert ".tool-run-history-list::-webkit-scrollbar{width:13px;height:13px;}" in source
+    assert "overflow-y" not in category
+    assert "max-height:none !important" in category
 
 
-def test_all_six_tool_categories_have_a_distinct_scrollbar_theme():
-    source = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
-    for tool in ("rulest", "ranker", "concentrator", "rulestripper", "minimizer", "aether"):
-        rule = _css_rule(source, f".tool-history-tool--{tool}")
-        assert "--tool-scroll-thumb:" in rule
-        assert "--tool-scroll-thumb-hover:" in rule
-
-
-def test_tool_category_scrollbar_cache_key_is_bumped():
+def test_previous_runs_scrollbar_styles_are_cache_busted():
     source = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-    assert source.count("tool-category-scroll=20261125a") == 2
+    assert source.count("storage-previous-runs-scroll=20261126b") == 2
+

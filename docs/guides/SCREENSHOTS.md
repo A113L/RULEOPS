@@ -6,12 +6,12 @@
 The images below show selected RULEOPS interface views. Screenshots are
 hosted externally; availability and rendering depend on that host.
 
-[![ruleosp1.png](https://i.postimg.cc/SRRjRkTZ/ruleosp1.png)](https://postimg.cc/rR6qYXLW)
+[![ruleops1.jpg](https://i.postimg.cc/PxnWCnNw/ruleops1.jpg)](https://postimg.cc/sBKQL8Yj)
 
-[![ruleops2.png](https://i.postimg.cc/Fs21Ftj2/ruleops2.png)](https://postimg.cc/SJfmVv1r)
+[![ruleops2.jpg](https://i.postimg.cc/zv0K2L7h/ruleops2.jpg)](https://postimg.cc/FkkY7H2F)
 
-[![ruleops3.png](https://i.postimg.cc/yNKd9FpQ/ruleops3.png)](https://postimg.cc/qNm4HCTy)
+[![ruleops3.jpg](https://i.postimg.cc/7YZgGVPX/ruleops3.jpg)](https://postimg.cc/G96B6vys)
 
-[![ruleops4.png](https://i.postimg.cc/DZywp7Tg/ruleops4.png)](https://postimg.cc/KKwbRS4k)
+[![ruleops4.jpg](https://i.postimg.cc/sgB7KghS/ruleops4.jpg)](https://postimg.cc/4YgYxZwN)
 
-[![ruleops5.png](https://i.postimg.cc/jCVKTbp0/ruleops5.png)](https://postimg.cc/fSv176WB)
+[![ruleops5.jpg](https://i.postimg.cc/Sxw8PbLy/ruleops5.jpg)](https://postimg.cc/k2vBVZhZ)

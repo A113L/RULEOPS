@@ -38,6 +38,7 @@ UPLOADS = DATA / "uploads"
 RUN_DATASET_MANIFEST = ".ruleops-run.json"
 AETHER_RUN_MANIFEST = ".aether-run.json"
 RUN_HISTORY_MANIFEST = ".ruleops-history.json"
+AETHER_OUTPUTS_MANIFEST = ".aether-output-files.json"
 AUTH_FILE = ROOT / "auth.json"
 
 
@@ -835,7 +836,8 @@ def search_library_assets(query: str, limit: int = 300) -> dict:
                 )
                 for filename in sorted(file_names, key=str.casefold):
                     if filename in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
-                                     RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp"} or needle not in filename.casefold():
+                                     RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp",
+                                     AETHER_OUTPUTS_MANIFEST, AETHER_OUTPUTS_MANIFEST + ".tmp"} or needle not in filename.casefold():
                         continue
                     candidate = current_path / filename
                     try:
@@ -1151,7 +1153,8 @@ def _scan_library_duplicate_records() -> tuple[list[dict], list[dict]]:
 
                 for filename in sorted(file_names, key=str.casefold):
                     if filename in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
-                                    RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp"}:
+                                    RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp",
+                                    AETHER_OUTPUTS_MANIFEST, AETHER_OUTPUTS_MANIFEST + ".tmp"}:
                         continue
                     candidate = current_path / filename
                     try:
@@ -1830,6 +1833,8 @@ def _write_run_history_manifest(run_dir: Path, tool: str, mode: str) -> dict | N
             "inputs": inputs,
             "group_names": _run_history_group_names(tool, mode, selected),
         }
+        if tool == "aether":
+            manifest["aether_outputs_manifest_required"] = True
         target = run_dir / RUN_HISTORY_MANIFEST
         temporary = run_dir / (RUN_HISTORY_MANIFEST + ".tmp")
         temporary.write_text(json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
@@ -1917,6 +1922,7 @@ def _validated_run_history_manifest(manifest: object, expected_run_id: str | Non
         "run_id": run_id, "tool": tool, "mode": mode, "created_at": created_at,
         "finished_at": finished_at, "exit_code": exit_code, "status": status,
         "inputs": inputs, "group_names": normalized_groups, "source": "recorded",
+        "aether_outputs_manifest_required": bool(manifest.get("aether_outputs_manifest_required", False)),
     }
 
 
@@ -2260,7 +2266,7 @@ def _run_directory_metadata(directory: Path) -> dict | None:
                     "mtime_ns": child_mtime_ns,
                     "mode": int(child_stat.st_mode),
                 })
-                if relative in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, RUN_HISTORY_MANIFEST} or name == "control.txt":
+                if relative in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, RUN_HISTORY_MANIFEST, AETHER_OUTPUTS_MANIFEST} or name in {"control.txt", AETHER_OUTPUTS_MANIFEST + ".tmp"}:
                     continue
                 visible_files.append(relative)
                 if Path(name).suffix.lower() == ".log":
@@ -2649,7 +2655,8 @@ def storage_intelligence_summary() -> dict:
 
                 for filename in file_names:
                     if source == "run" and filename in {RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
-                                                          RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp"}:
+                                                          RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp",
+                                                          AETHER_OUTPUTS_MANIFEST, AETHER_OUTPUTS_MANIFEST + ".tmp"}:
                         continue
                     candidate_path = current_path / filename
                     try:
@@ -3533,12 +3540,9 @@ def build_aether_command(options: dict, run_dir: Path):
 
     Both --output and --visualization-output are pointed at run_dir itself
     (not a subfolder): every PNG/HTML/JSON/sorted-rule file Aether produces then
-    lands flat alongside the run's other outputs. run_worker's output
-    scanner only lists run_dir's immediate children, and the existing
-    /api/run-storage/download-outputs.zip bundles exactly that list -- so
-    this is what makes both the in-browser result gallery and the "download
-    everything as a zip" button work without any changes to that shared,
-    tool-agnostic machinery.
+    lands flat alongside the run's other outputs. The completed run writes an
+    Aether-specific output manifest, which is the allowlist used by Run storage
+    and the per-run ZIP endpoint. This keeps each archive scoped to one run.
     """
     uploaded = UPLOADS_META.get("aether_files") or []
     if not uploaded:
@@ -3674,21 +3678,123 @@ def _read_aether_run_manifest(directory: Path) -> dict | None:
         }
 
 
+def _read_aether_output_manifest(directory: Path) -> dict | None:
+    """Read the exact output allowlist recorded for one Aether invocation.
+
+    ``None`` means a legacy run without the manifest. An empty mapping means
+    a manifest exists but is invalid; callers must fail closed rather than
+    falling back to a broad directory scan.
+    """
+    target = directory / AETHER_OUTPUTS_MANIFEST
+    try:
+        before = os.lstat(str(target))
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {}
+    if stat_module.S_ISLNK(before.st_mode) or not stat_module.S_ISREG(before.st_mode) or before.st_size > 1024 * 1024:
+        return {}
+    try:
+        with target.open("r", encoding="utf-8") as stream:
+            raw = json.load(stream)
+        after = os.lstat(str(target))
+        if _library_file_signature(before) != _library_file_signature(after):
+            return {}
+        if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+            return {}
+        if raw.get("tool") != "aether" or raw.get("run_id") != directory.name:
+            return {}
+        entries = raw.get("files")
+        if not isinstance(entries, list):
+            return {}
+        validated = {}
+        for item in entries:
+            if not isinstance(item, dict):
+                return {}
+            relative = str(item.get("path") or "")
+            if (
+                not relative or relative in {".", ".."} or "/" in relative or "\\" in relative
+                or "\x00" in relative or safe_name(relative, "") != relative
+                or relative in validated
+            ):
+                return {}
+            size = int(item.get("size", -1))
+            mtime_ns = int(item.get("mtime_ns", -1))
+            candidate = directory / relative
+            metadata = os.lstat(str(candidate))
+            if not stat_module.S_ISREG(metadata.st_mode):
+                continue
+            current_mtime_ns = int(getattr(metadata, "st_mtime_ns", metadata.st_mtime * 1_000_000_000))
+            if int(metadata.st_size) != size or current_mtime_ns != mtime_ns:
+                continue
+            validated[relative] = {"size": size, "mtime_ns": mtime_ns}
+        return {"files": validated}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _write_aether_output_manifest(run_dir: Path, run_id: str, outputs: list[dict]) -> None:
+    """Persist the artifacts produced/changed by this Aether run only."""
+    entries = []
+    for output in outputs:
+        name = str(output.get("name") or "")
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or safe_name(name, "") != name:
+            continue
+        try:
+            target = run_dir / name
+            metadata = os.lstat(str(target))
+            if not stat_module.S_ISREG(metadata.st_mode):
+                continue
+            entries.append({
+                "path": name,
+                "size": int(metadata.st_size),
+                "mtime_ns": int(getattr(metadata, "st_mtime_ns", metadata.st_mtime * 1_000_000_000)),
+            })
+        except OSError:
+            continue
+    payload = {"schema_version": 1, "tool": "aether", "run_id": run_id, "files": entries}
+    target = run_dir / AETHER_OUTPUTS_MANIFEST
+    temporary = run_dir / (AETHER_OUTPUTS_MANIFEST + ".tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _tool_history_files(directory: Path, directory_metadata: dict | None = None) -> list[dict]:
-    """List regular artifacts from any tool run without following links."""
+    """List regular artifacts from one tool run without following links."""
     metadata = directory_metadata if directory_metadata is not None else _run_directory_metadata(directory)
     if metadata is None:
         return []
     internal = {
         RUN_DATASET_MANIFEST, RUN_DATASET_MANIFEST + ".tmp",
         RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp",
-        AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp", "control.txt",
+        AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
+        AETHER_OUTPUTS_MANIFEST, AETHER_OUTPUTS_MANIFEST + ".tmp", "control.txt",
     }
+    history_manifest = _read_run_history_manifest(directory)
+    aether_outputs = None
+    if history_manifest and history_manifest.get("tool") == "aether":
+        aether_outputs = _read_aether_output_manifest(directory)
+        if aether_outputs is None and history_manifest.get("aether_outputs_manifest_required"):
+            aether_outputs = {}
     rows = []
     for item in metadata.get("snapshot_records", []):
         relative = str(item.get("path") or "")
         if not relative or relative in internal or Path(relative).name in internal:
             continue
+        if aether_outputs is not None:
+            # A present manifest is authoritative. Invalid/empty manifests
+            # expose no files; valid manifests expose only this run's outputs.
+            expected = aether_outputs.get("files", {}).get(relative)
+            if expected is None:
+                continue
+            if int(item.get("size") or 0) != expected["size"] or int(item.get("mtime_ns") or 0) != expected["mtime_ns"]:
+                continue
         path = PurePosixPath(relative)
         suffix = Path(path.name).suffix.lower()
         rows.append({
@@ -3927,6 +4033,27 @@ def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_b
     code = None
     error = None
     outputs = []
+    aether_output_baseline = {}
+    if tool == "aether":
+        # Record any files already present in this directory. The allowlist
+        # written at completion will contain only files created or changed by
+        # this invocation, never leftovers from earlier Aether runs.
+        try:
+            for existing in run_dir.iterdir():
+                try:
+                    existing_stat = os.lstat(str(existing))
+                    if stat_module.S_ISREG(existing_stat.st_mode) and existing.name not in {
+                        RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, RUN_HISTORY_MANIFEST,
+                        AETHER_OUTPUTS_MANIFEST, "control.txt",
+                    }:
+                        aether_output_baseline[existing.name] = (
+                            int(existing_stat.st_size),
+                            int(getattr(existing_stat, "st_mtime_ns", existing_stat.st_mtime * 1_000_000_000)),
+                        )
+                except OSError:
+                    continue
+        except OSError:
+            pass
     storage_guard = {"error": None}
     storage_stop = threading.Event()
     storage_thread = None
@@ -4035,11 +4162,25 @@ def run_worker(cmd, run_id, run_dir, control_file=None, tool="rulest", storage_b
         cleanup_uploaded_files(log_message=True)
         if error is None:
             for item in sorted(run_dir.iterdir()):
-                if item.is_file() and item.name not in {
-                    "control.txt", RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
-                    RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp",
-                }:
-                    outputs.append({"name": item.name, "size": item.stat().st_size})
+                try:
+                    metadata = os.lstat(str(item))
+                    if not stat_module.S_ISREG(metadata.st_mode) or item.name in {
+                        "control.txt", RUN_DATASET_MANIFEST, AETHER_RUN_MANIFEST, AETHER_RUN_MANIFEST + ".tmp",
+                        RUN_HISTORY_MANIFEST, RUN_HISTORY_MANIFEST + ".tmp", AETHER_OUTPUTS_MANIFEST,
+                        AETHER_OUTPUTS_MANIFEST + ".tmp",
+                    }:
+                        continue
+                    signature = (
+                        int(metadata.st_size),
+                        int(getattr(metadata, "st_mtime_ns", metadata.st_mtime * 1_000_000_000)),
+                    )
+                    if tool == "aether" and aether_output_baseline.get(item.name) == signature:
+                        continue
+                    outputs.append({"name": item.name, "size": int(metadata.st_size)})
+                except OSError:
+                    continue
+        if tool == "aether":
+            _write_aether_output_manifest(run_dir, run_id, outputs)
         final_status = "failed" if error is not None or (code not in (None, 0) and not was_stopped) else ("stopped" if was_stopped else "completed")
         _update_run_history_manifest(run_dir, final_status, code)
         with LOCK:

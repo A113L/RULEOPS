@@ -2316,74 +2316,57 @@ body{
 }
 .tool-run-history-heading>.secondary-button:hover,
 .tool-run-history-detail-actions>.secondary-button:hover{border-color:#697c60;background:#202b35;color:#e5eedc;}
-/* The archive itself grows with the page. Each expanded tool category owns
-   an independent scroll area so long histories never trap the other tools. */
+/* One shared, always-visible scroll region for the complete Previous tool runs archive. */
 .tool-run-history-list{
+  --history-scroll-thumb:#a0bf7d;
+  --history-scroll-thumb-hover:#c5e6a1;
   display:flex;
   flex-direction:column;
   gap:8px;
-  padding:2px;
-  border-radius:8px;
+  height:min(590px,66vh);
+  min-height:160px;
+  overflow-x:hidden;
+  overflow-y:scroll !important;
+  overscroll-behavior-y:contain;
+  scrollbar-width:auto;
+  scrollbar-color:var(--history-scroll-thumb) #111923;
+  scrollbar-gutter:stable;
+  padding:8px 9px 8px 2px;
+  border:1px solid #354556;
+  border-radius:9px;
+  background:linear-gradient(180deg,#0d141d,#111923);
+  outline:none;
 }
+.tool-run-history-list:focus-visible{box-shadow:0 0 0 1px #9abb76,0 0 0 3px #78945e33;}
+.tool-run-history-list::-webkit-scrollbar{width:13px;height:13px;}
+.tool-run-history-list::-webkit-scrollbar-track{
+  margin:6px 2px;
+  border:1px solid #344354;
+  border-radius:12px;
+  background:linear-gradient(180deg,#0b1119,#1b2734);
+}
+.tool-run-history-list::-webkit-scrollbar-thumb{
+  min-height:44px;
+  border:2px solid #111923;
+  border-radius:12px;
+  background:linear-gradient(180deg,var(--history-scroll-thumb-hover),#607b4b);
+}
+.tool-run-history-list::-webkit-scrollbar-thumb:hover{
+  background:linear-gradient(180deg,#daf5b9,#91b66a);
+}
+.tool-run-history-list::-webkit-scrollbar-corner{background:#111923;}
 .tool-history-tool{
-  --tool-scroll-thumb:#81966f;
-  --tool-scroll-thumb-hover:#a2bb88;
-  --tool-scroll-thumb-end:#526b50;
-  --tool-scroll-track:#111923;
+  flex:0 0 auto;
   overflow:hidden;
   border:1px solid #2a3542;
   border-radius:9px;
   background:#101720;
 }
-.tool-history-tool--rulest{
-  --tool-scroll-thumb:#91ad70;--tool-scroll-thumb-hover:#b1d58a;--tool-scroll-thumb-end:#5a7547;
-}
-.tool-history-tool--ranker{
-  --tool-scroll-thumb:#7199c1;--tool-scroll-thumb-hover:#9ac1e6;--tool-scroll-thumb-end:#456b94;
-}
-.tool-history-tool--concentrator{
-  --tool-scroll-thumb:#a18acb;--tool-scroll-thumb-hover:#c1aceb;--tool-scroll-thumb-end:#705c9b;
-}
-.tool-history-tool--rulestripper{
-  --tool-scroll-thumb:#c49a62;--tool-scroll-thumb-hover:#e2bc82;--tool-scroll-thumb-end:#89653a;
-}
-.tool-history-tool--minimizer{
-  --tool-scroll-thumb:#65aaa2;--tool-scroll-thumb-hover:#8ed0c7;--tool-scroll-thumb-end:#397b75;
-}
-.tool-history-tool--aether{
-  --tool-scroll-thumb:#c88761;--tool-scroll-thumb-hover:#e7aa82;--tool-scroll-thumb-end:#925b3c;
-}
 .tool-history-tool-content{
-  max-height:min(420px,52vh);
-  overflow-y:auto;
-  overflow-x:hidden;
-  overscroll-behavior:contain;
-  scrollbar-width:thin;
-  scrollbar-color:var(--tool-scroll-thumb) var(--tool-scroll-track);
-  scrollbar-gutter:stable;
+  max-height:none !important;
+  overflow:visible !important;
   padding:0 7px 9px 0;
-  outline:none;
 }
-.tool-history-tool-content:focus-visible{
-  box-shadow:inset 0 0 0 1px var(--tool-scroll-thumb);
-}
-.tool-history-tool-content::-webkit-scrollbar{width:10px;}
-.tool-history-tool-content::-webkit-scrollbar-track{
-  margin:5px 0 7px;
-  border:1px solid #263342;
-  border-radius:10px;
-  background:linear-gradient(180deg,#0d141d,#151f2a);
-}
-.tool-history-tool-content::-webkit-scrollbar-thumb{
-  min-height:38px;
-  border:2px solid #111923;
-  border-radius:10px;
-  background:linear-gradient(180deg,var(--tool-scroll-thumb),var(--tool-scroll-thumb-end));
-}
-.tool-history-tool-content::-webkit-scrollbar-thumb:hover{
-  background:linear-gradient(180deg,var(--tool-scroll-thumb-hover),var(--tool-scroll-thumb));
-}
-.tool-history-tool-content::-webkit-scrollbar-corner{background:#111923;}
 .tool-history-tool-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px;cursor:pointer;list-style:none;background:linear-gradient(110deg,#18222d,#141c26);}
 .tool-history-tool-summary::-webkit-details-marker,.tool-history-file-group>summary::-webkit-details-marker{display:none;}
 .tool-history-tool-summary:before{content:"›";color:#a6cc7d;font-size:17px;line-height:1;transform:rotate(0);transition:transform .15s ease;}
@@ -2425,7 +2408,7 @@ body{
 .tool-history-artifact-actions .download-output{width:26px;height:26px;}
 @media(max-width:640px){
   .tool-run-history-heading,.tool-run-history-detail-head{align-items:flex-start;flex-direction:column;}
-  .tool-history-tool-content{max-height:min(360px,48vh);}
+  .tool-run-history-list{height:min(480px,58vh); min-height:150px; padding-right:7px;}
   .tool-run-history-heading>.secondary-button{width:100%;}
   .tool-history-run-row{grid-template-columns:minmax(0,1fr) auto;}
   .tool-history-run-row>.run-history-status{grid-column:2;grid-row:1;}
@@ -2485,4 +2468,54 @@ body{
   .celf-seed-library-pick label {
     min-width: 0;
   }
+}
+
+
+/* Aether download panel: one latest-run ZIP with an optional compact file list. */
+.aether-output-files-details{
+  margin-top:9px;
+  border:1px solid #293746;
+  border-radius:8px;
+  background:#0e151e;
+  overflow:hidden;
+}
+.aether-output-files-details>summary{
+  padding:9px 11px;
+  color:#c4d5b2;
+  font-size:9px;
+  font-weight:700;
+  cursor:pointer;
+  list-style:none;
+}
+.aether-output-files-details>summary::-webkit-details-marker{display:none;}
+.aether-output-files-details>summary:before{
+  content:"›";
+  display:inline-block;
+  margin-right:8px;
+  color:#a6cc7d;
+  transition:transform .15s ease;
+}
+.aether-output-files-details[open]>summary:before{transform:rotate(90deg);}
+.aether-output-files-list{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  max-height:300px;
+  overflow-y:auto;
+  padding:0 8px 8px;
+  scrollbar-width:thin;
+  scrollbar-color:#81966f #111923;
+}
+.aether-output-files-list::-webkit-scrollbar{width:8px;}
+.aether-output-files-list::-webkit-scrollbar-track{border-radius:8px;background:#111923;}
+.aether-output-files-list::-webkit-scrollbar-thumb{border:2px solid #111923;border-radius:8px;background:linear-gradient(180deg,#91ad70,#526b50);}
+
+/* Aether file list is always scoped to the newest Aether run in the archive. */
+.aether-output-run-note{
+  display:block;
+  margin:-5px 0 10px;
+  color:#82917f;
+  font:8px var(--mono);
+  line-height:1.5;
+  overflow-wrap:anywhere;
 }
